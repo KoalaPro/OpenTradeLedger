@@ -1,0 +1,324 @@
+"""FastAPI application for OpenTradeLedger (交易账本)."""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from opentradeledger import __app_name__, __app_name_zh__, __version__
+from opentradeledger.adapters.registry import AdapterRegistry, build_default_registry
+from opentradeledger.core.ai_reviewer import generate_ai_review, list_ai_models
+from opentradeledger.core.fx_rates import FxRateService
+from opentradeledger.core.ledger_service import LedgerService
+from opentradeledger.core.logo_cache import InstrumentLogos
+from opentradeledger.core.notifier import dispatch_notification
+from opentradeledger.core.store import LedgerStore
+from opentradeledger.core.sync_manager import SyncManager
+from opentradeledger.security.vault import CredentialVault, ExchangeCredentialRecord
+
+
+class JournalUpdateRequest(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class ExchangeUpsertRequest(BaseModel):
+    venue_id: str
+    label: str = ""
+    api_key: str
+    api_secret: str
+    passphrase: str = ""
+    enabled: bool = True
+
+
+class DemoToggleRequest(BaseModel):
+    enabled: bool
+
+
+class SyncRequest(BaseModel):
+    force_all: bool = True
+    venue_id: str | None = None
+
+
+class AiReviewRequest(BaseModel):
+    range_key: str = "all"
+
+
+class AiModelsRequest(BaseModel):
+    base_url: str = ""
+    api_key: str = ""
+
+
+class WatcherTargetsRequest(BaseModel):
+    targets: list[str] = Field(default_factory=list)
+
+
+def create_app(
+    *,
+    data_dir: Path | str = "./data",
+    demo_mode: bool = False,
+    web_dist_dir: Path | None = None,
+    registry: AdapterRegistry | None = None,
+    enable_background_sync: bool = True,
+    poll_interval_sec: float = 20.0,
+) -> FastAPI:
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+
+    vault = CredentialVault(data_path)
+    # Non-destructively import local data/.env read-only keys if present
+    vault.import_from_dotenv(data_path / ".env", overwrite=False)
+
+    store = LedgerStore(data_path)
+    reg = registry or build_default_registry()
+    ledger_service = LedgerService(store, vault, reg, default_demo_mode=demo_mode)
+    sync_manager = SyncManager(
+        store=store,
+        vault=vault,
+        registry=reg,
+        ledger_service=ledger_service,
+        poll_interval_sec=poll_interval_sec,
+    )
+    logo_cache = InstrumentLogos(data_path / "instrument_logos")
+    fx_service = FxRateService(store)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if enable_background_sync:
+            await sync_manager.start()
+        try:
+            yield
+        finally:
+            await sync_manager.stop()
+
+    app = FastAPI(
+        title=f"{__app_name__} ({__app_name_zh__})",
+        version=__version__,
+        description="Local-first, strictly read-only multi-exchange trade ledger.",
+        lifespan=lifespan,
+    )
+
+    @app.get("/api/v1/health")
+    async def health() -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "app": __app_name__,
+            "app_zh": __app_name_zh__,
+            "version": __version__,
+            "read_only": True,
+            "trading_enabled": False,
+            "demo_mode": ledger_service.is_demo_active(),
+            "has_live_data": ledger_service.has_live_data(),
+            "adaptive_polling": sync_manager.get_schedule_summary(),
+        }
+
+    @app.get("/api/v1/dashboard")
+    async def get_dashboard(
+        range_key: str = Query(default="all", alias="range"),
+        venue: str = Query(default="ALL"),
+        symbol: str = Query(default="ALL"),
+    ) -> dict[str, Any]:
+        return ledger_service.get_dashboard(
+            range_key=range_key,
+            venue_filter=venue,
+            symbol_filter=symbol,
+        )
+
+    @app.get("/api/v1/fx-rates")
+    async def get_fx_rates(refresh: bool = Query(default=False)) -> dict[str, Any]:
+        return await fx_service.get_rates(force_refresh=refresh)
+
+    @app.post("/api/v1/sync")
+    async def trigger_sync(body: SyncRequest | None = None) -> dict[str, Any]:
+        req_venue = body.venue_id if body else None
+        if ledger_service.is_demo_active() and not req_venue:
+            return {"ok": True, "demo_mode": True, "venues": {}}
+        return await sync_manager.sync_all(
+            force_all=body.force_all if body else True,
+            venue_id=req_venue,
+        )
+
+    @app.put("/api/v1/journal/{trade_id}")
+    async def save_journal(trade_id: str, body: JournalUpdateRequest) -> dict[str, Any]:
+        ledger_service.save_journal(trade_id, body.tags, body.note)
+        return {"ok": True, "trade_id": trade_id}
+
+    @app.get("/api/v1/settings")
+    async def get_settings() -> dict[str, Any]:
+        prefs = ledger_service.get_preferences().model_dump()
+        # Never leak raw secrets over GET settings
+        prefs["ai_api_key_set"] = bool(prefs.get("ai_api_key"))
+        prefs["ai_api_key"] = ""
+        notifs = prefs.get("notifications") or {}
+        notifs["telegram_bot_token_set"] = bool(notifs.get("telegram_bot_token"))
+        notifs["telegram_bot_token"] = ""
+        notifs["bark_push_key_set"] = bool(notifs.get("bark_push_key"))
+        notifs["bark_push_key"] = ""
+        prefs["notifications"] = notifs
+        return prefs
+
+    @app.put("/api/v1/settings")
+    async def update_settings(patch: dict[str, Any]) -> dict[str, Any]:
+        current = ledger_service.get_preferences().model_dump()
+        # Preserve existing secret fields if omitted or blank in patch
+        if "ai_api_key" in patch and not str(patch["ai_api_key"] or "").strip():
+            patch = {k: v for k, v in patch.items() if k != "ai_api_key"}
+        if isinstance(patch.get("notifications"), dict):
+            n_patch = dict(patch["notifications"])
+            for sec_k in ("telegram_bot_token", "bark_push_key"):
+                if sec_k in n_patch and not str(n_patch[sec_k] or "").strip():
+                    n_patch.pop(sec_k, None)
+            patch = {**patch, "notifications": {**current.get("notifications", {}), **n_patch}}
+        ledger_service.update_preferences(patch)
+        return await get_settings()
+
+    @app.get("/api/v1/exchanges")
+    async def list_exchanges() -> dict[str, Any]:
+        configured = {item["venue_id"]: item for item in vault.list_masked()}
+        sched_venues = sync_manager.get_schedule_summary().get("venues") or {}
+        available = []
+        for meta in reg.list_all():
+            entry = meta.model_dump()
+            entry["configured"] = meta.venue_id in configured
+            entry["credential"] = configured.get(meta.venue_id)
+            entry["poll_state"] = sched_venues.get(meta.venue_id)
+            available.append(entry)
+        return {"adapters": available, "configured": list(configured.values())}
+
+    @app.post("/api/v1/exchanges")
+    async def upsert_exchange(body: ExchangeUpsertRequest) -> dict[str, Any]:
+        vid = body.venue_id.strip().lower()
+        adapter = reg.get(vid)
+        if adapter is None:
+            raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
+        if adapter.meta.requires_passphrase and not body.passphrase.strip():
+            raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
+        masked = vault.upsert(
+            ExchangeCredentialRecord(
+                venue_id=vid,
+                label=body.label.strip() or adapter.meta.display_name,
+                api_key=body.api_key.strip(),
+                api_secret=body.api_secret.strip(),
+                passphrase=body.passphrase.strip(),
+                enabled=body.enabled,
+            )
+        )
+        return {"ok": True, "credential": masked}
+
+    @app.delete("/api/v1/exchanges/{venue_id}")
+    async def delete_exchange(venue_id: str) -> dict[str, Any]:
+        deleted = vault.delete(venue_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Exchange credential not found")
+        return {"ok": True, "venue_id": venue_id.lower()}
+
+    @app.post("/api/v1/exchanges/{venue_id}/test")
+    async def test_exchange(venue_id: str) -> dict[str, Any]:
+        vid = venue_id.strip().lower()
+        adapter = reg.get(vid)
+        cred = vault.get_decrypted(vid)
+        if adapter is None or cred is None:
+            raise HTTPException(status_code=404, detail="Exchange adapter or credential not found")
+        try:
+            return await adapter.test_connection(cred)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/api/v1/demo")
+    async def set_demo_mode(body: DemoToggleRequest) -> dict[str, Any]:
+        ledger_service.demo_mode = body.enabled
+        return {"ok": True, "demo_mode": ledger_service.is_demo_active()}
+
+    @app.post("/api/v1/ai-review")
+    async def run_ai_review(body: AiReviewRequest | None = None) -> dict[str, Any]:
+        rk = body.range_key if body else "all"
+        prefs = ledger_service.get_preferences()
+        dash = ledger_service.get_dashboard(range_key=rk)
+        review = await generate_ai_review(dash, prefs)
+        store.save_ai_review(review, float((dash.get("summary") or {}).get("total_equity_usd") or 0.0))
+        return review
+
+    @app.post("/api/v1/ai-models")
+    async def fetch_ai_models(body: AiModelsRequest | None = None) -> dict[str, Any]:
+        prefs = ledger_service.get_preferences()
+        base_url = (body.base_url.strip() if body and body.base_url.strip() else prefs.ai_base_url)
+        api_key = (body.api_key.strip() if body and body.api_key.strip() else prefs.ai_api_key)
+        if not base_url:
+            raise HTTPException(status_code=400, detail="Please enter an AI Base URL first")
+        try:
+            models = await list_ai_models(base_url, api_key)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"ok": True, "models": models, "count": len(models)}
+
+    @app.get("/api/v1/extensions/copy-watcher")
+    async def get_copy_watcher() -> dict[str, Any]:
+        prefs = ledger_service.get_preferences()
+        return {
+            "configured_targets": prefs.copy_watcher_targets,
+            "channels": {
+                "webhook": bool(prefs.notifications.webhook_url.strip()),
+                "telegram": bool(prefs.notifications.telegram_bot_token.strip() and prefs.notifications.telegram_chat_id.strip()),
+                "bark": bool(prefs.notifications.bark_push_key.strip()),
+            },
+        }
+
+    @app.put("/api/v1/extensions/copy-watcher")
+    async def update_copy_watcher(body: WatcherTargetsRequest) -> dict[str, Any]:
+        cleaned = [t.strip() for t in body.targets if t.strip()]
+        ledger_service.update_preferences({"copy_watcher_targets": cleaned})
+        return {"ok": True, "configured_targets": cleaned}
+
+    @app.post("/api/v1/extensions/copy-watcher/test-notify")
+    async def test_copy_watcher_notify() -> dict[str, Any]:
+        prefs = ledger_service.get_preferences()
+        res = await dispatch_notification(
+            prefs.notifications,
+            title="OpenTradeLedger Test Alert",
+            body="Notification channel verified successfully.",
+        )
+        if not res["sent"]:
+            return JSONResponse(status_code=400, content={"detail": "No notification channel configured in Settings"})
+        return res
+
+    @app.get("/api/v1/instrument-logos/{venue}/{instrument}.png")
+    async def get_instrument_logo(venue: str, instrument: str):
+        path = await logo_cache.find(venue.upper(), instrument.upper())
+        if path is not None and path.exists():
+            return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+        # Clean deterministic monogram SVG fallback (zero 404 console noise for new or offline symbols)
+        base = "".join(ch for ch in instrument.upper().split("_")[0] if ch.isalnum())[:2] or "?"
+        palette = ("#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#ec4899", "#06b6d4", "#6366f1")
+        color = palette[sum(ord(c) for c in base) % len(palette)]
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+            f'<circle cx="16" cy="16" r="15" fill="{color}" fill-opacity="0.18" stroke="{color}" stroke-opacity="0.55" stroke-width="1.2"/>'
+            f'<text x="16" y="20.5" text-anchor="middle" font-family="-apple-system,Inter,sans-serif" '
+            f'font-size="{11 if len(base) > 1 else 13}" font-weight="700" fill="{color}">{base}</text>'
+            f"</svg>"
+        )
+        return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=300"})
+
+    # Mount static frontend build when present
+    dist = web_dist_dir or (Path(__file__).resolve().parents[4] / "web" / "dist")
+    if dist.exists() and (dist / "index.html").exists():
+        assets_dir = dist / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+        @app.get("/{full_path:path}")
+        async def spa_fallback(full_path: str):
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not found")
+            candidate = dist / full_path
+            if full_path and candidate.is_file():
+                return FileResponse(candidate)
+            return FileResponse(dist / "index.html")
+
+    return app

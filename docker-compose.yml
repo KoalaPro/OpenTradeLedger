@@ -1,0 +1,16 @@
+services:
+  opentradeledger:
+    build: .
+    container_name: opentradeledger
+    ports:
+      - "8012:8012"
+    environment:
+      OTL_HOST: "0.0.0.0"
+      OTL_PORT: "8012"
+      OTL_DATA_DIR: "/app/data"
+      # Set to "true" to explore the UI immediately with built-in sanitized demo data.
+      # Switch to "false" once you configure read-only API keys in Settings or ./data/.env.
+      OTL_DEMO_MODE: "${OTL_DEMO_MODE:-true}"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
