@@ -110,8 +110,16 @@ export function OverviewPage({
           valueClass={pnlTone(s.whole_net_pnl_usd)}
           sub={
             <span>
-              {t('kpi_reconciled_zero')} ·{' '}
-              <b className={pnlTone(s.whole_roi_pct)}>{fmtSignedPct(s.whole_roi_pct)}</b>
+              {Math.abs(data.reconciliation.residual_usd) < 0.01 ? (
+                t('kpi_reconciled_zero')
+              ) : (
+                <span className="text-[var(--warn)] font-medium">
+                  {locale === 'en'
+                    ? `Drift ${cur.signedMoney(data.reconciliation.residual_usd)}`
+                    : `待核对差额 ${cur.signedMoney(data.reconciliation.residual_usd)}`}
+                </span>
+              )}{' '}
+              · <b className={pnlTone(s.whole_roi_pct)}>{fmtSignedPct(s.whole_roi_pct)}</b>
             </span>
           }
         />
@@ -392,6 +400,16 @@ export function OverviewPage({
                       name={locale === 'en' ? ex.display_name : ex.display_name_zh || ex.display_name}
                     />
                     <span className="text-[11.5px] text-[var(--fg-3)] whitespace-nowrap">{pct.toFixed(1)}%</span>
+                    {ex.health_status === 'error' && (
+                      <button
+                        type="button"
+                        title={locale === 'en' ? ex.error_reason : ex.error_reason_zh || ex.error_reason}
+                        onClick={() => onNavigate('settings')}
+                        className="otl-status-err px-1.5 py-0.5 rounded text-[10.5px] font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        {locale === 'en' ? 'API Error' : '连接报错'}
+                      </button>
+                    )}
                   </div>
                   <div className="flex items-center gap-3 whitespace-nowrap">
                     <span className={`text-[11.5px] sensitive ${pnlTone(ex.net_pnl_usd)}`}>
@@ -490,6 +508,7 @@ export function OverviewPage({
                       </td>
                       <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(pos.unrealized_pnl_usd)}`}>
                         {cur.signedMoney(pos.unrealized_pnl_usd)}
+                        {Math.abs(pos.unrealized_roi_pct) >= 0.01 ? ` (${fmtSignedPct(pos.unrealized_roi_pct)})` : ''}
                       </td>
                     </tr>
                   ))}

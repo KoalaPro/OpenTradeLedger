@@ -1,4 +1,4 @@
-import { Eye, EyeOff, Languages } from 'lucide-react'
+import { AlertTriangle, Eye, EyeOff, Languages } from 'lucide-react'
 import { useI18n } from '../i18n'
 import { CURRENCY_OPTIONS } from '../lib/currency'
 import type { CurrencyCode, Locale, NavPage } from '../lib/types'
@@ -14,6 +14,8 @@ interface TopBarProps {
   onChangeCurrency?: (next: CurrencyCode) => void
   rangeKey: string
   onChangeRange: (rk: string) => void
+  exchangeErrorCount?: number
+  onInspectErrors?: () => void
 }
 
 const pageTitleKeys: Record<NavPage, 'nav_overview' | 'nav_trades' | 'nav_analytics' | 'nav_fees' | 'nav_extensions' | 'nav_settings'> = {
@@ -36,6 +38,8 @@ export function TopBar({
   onChangeCurrency,
   rangeKey,
   onChangeRange,
+  exchangeErrorCount = 0,
+  onInspectErrors,
 }: TopBarProps) {
   const { t } = useI18n()
 
@@ -52,6 +56,21 @@ export function TopBar({
           >
             {t('demo_badge')}
           </span>
+        )}
+        {!demoMode && exchangeErrorCount > 0 && (
+          <button
+            type="button"
+            data-testid="topbar-exchange-error-badge"
+            onClick={onInspectErrors}
+            className="otl-status-err inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11.5px] font-medium cursor-pointer whitespace-nowrap"
+          >
+            <AlertTriangle size={12} />
+            <span>
+              {locale === 'en'
+                ? `${exchangeErrorCount} Exchange API ${exchangeErrorCount > 1 ? 'Errors' : 'Error'} · View`
+                : `${exchangeErrorCount} 个交易所 API 报错 · 查看原因`}
+            </span>
+          </button>
         )}
       </div>
 

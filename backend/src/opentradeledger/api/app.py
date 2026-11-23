@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -20,6 +20,13 @@ from opentradeledger.core.logo_cache import InstrumentLogos
 from opentradeledger.core.notifier import dispatch_notification
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.sync_manager import SyncManager
+from opentradeledger.core.venue_health import VenueHealthTracker
+from opentradeledger.security.local_auth import (
+    AUTH_COOKIE_NAME,
+    AuthRateLimitError,
+    AuthValidationError,
+    LocalAuthManager,
+)
 from opentradeledger.security.vault import CredentialVault, ExchangeCredentialRecord
 
 
@@ -59,6 +66,39 @@ class WatcherTargetsRequest(BaseModel):
     targets: list[str] = Field(default_factory=list)
 
 
+class AuthSetupRequest(BaseModel):
+    password: str
+    remember: bool = True
+
+
+class AuthLoginRequest(BaseModel):
+    password: str
+    remember: bool = True
+
+
+class AuthChangePasswordRequest(BaseModel):
+    current_password: str = ""
+    new_password: str
+    remember: bool = True
+
+
+class AuthDisableRequest(BaseModel):
+    current_password: str = ""
+
+
+def _set_session_cookie(resp: Response, token: str, max_age_sec: int, remember: bool) -> None:
+    kwargs: dict[str, Any] = {
+        "key": AUTH_COOKIE_NAME,
+        "value": token,
+        "httponly": True,
+        "samesite": "lax",
+        "path": "/",
+    }
+    if remember:
+        kwargs["max_age"] = max_age_sec
+    resp.set_cookie(**kwargs)
+
+
 def create_app(
     *,
     data_dir: Path | str = "./data",
@@ -67,6 +107,8 @@ def create_app(
     registry: AdapterRegistry | None = None,
     enable_background_sync: bool = True,
     poll_interval_sec: float = 20.0,
+    require_auth: bool | None = None,
+    auto_prompt_setup: bool = True,
 ) -> FastAPI:
     data_path = Path(data_dir)
     data_path.mkdir(parents=True, exist_ok=True)
@@ -76,6 +118,12 @@ def create_app(
     vault.import_from_dotenv(data_path / ".env", overwrite=False)
 
     store = LedgerStore(data_path)
+    health_tracker = VenueHealthTracker(store)
+    auth_manager = LocalAuthManager(
+        data_path,
+        require_auth=require_auth,
+        auto_prompt_setup=auto_prompt_setup,
+    )
     reg = registry or build_default_registry()
     ledger_service = LedgerService(store, vault, reg, default_demo_mode=demo_mode)
     sync_manager = SyncManager(
@@ -84,6 +132,7 @@ def create_app(
         registry=reg,
         ledger_service=ledger_service,
         poll_interval_sec=poll_interval_sec,
+        health_tracker=health_tracker,
     )
     logo_cache = InstrumentLogos(data_path / "instrument_logos")
     fx_service = FxRateService(store)
@@ -104,6 +153,33 @@ def create_app(
         lifespan=lifespan,
     )
 
+    @app.middleware("http")
+    async def local_auth_gate(request: Request, call_next):
+        path = request.url.path
+        if (
+            not path.startswith("/api/v1/")
+            or path == "/api/v1/health"
+            or path.startswith("/api/v1/auth/")
+        ):
+            return await call_next(request)
+
+        token = request.cookies.get(AUTH_COOKIE_NAME)
+        st = auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        if not st["authenticated"] or st["require_setup"]:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": "Authentication required",
+                    "auth_required": True,
+                    "require_setup": bool(st["require_setup"]),
+                    "can_skip": bool(st["can_skip"]),
+                },
+            )
+        return await call_next(request)
+
+    def _client_key(request: Request) -> str:
+        return request.client.host if request.client and request.client.host else "local"
+
     @app.get("/api/v1/health")
     async def health() -> dict[str, Any]:
         return {
@@ -117,6 +193,106 @@ def create_app(
             "has_live_data": ledger_service.has_live_data(),
             "adaptive_polling": sync_manager.get_schedule_summary(),
         }
+
+    # ── Local NAS Password Authentication Endpoints ──────────────────────────
+
+    @app.get("/api/v1/auth/status")
+    async def auth_status(request: Request) -> dict[str, Any]:
+        token = request.cookies.get(AUTH_COOKIE_NAME)
+        return auth_manager.get_status(token, demo_mode=bool(demo_mode))
+
+    @app.post("/api/v1/auth/setup")
+    async def auth_setup(body: AuthSetupRequest) -> Response:
+        try:
+            auth_manager.setup_password(body.password)
+        except AuthValidationError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+        token, ttl = auth_manager.issue_session_token(remember=body.remember)
+        st = auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        resp = JSONResponse(content={"ok": True, **st})
+        _set_session_cookie(resp, token, ttl, body.remember)
+        return resp
+
+    @app.post("/api/v1/auth/skip")
+    async def auth_skip() -> Response:
+        try:
+            auth_manager.skip_setup()
+        except AuthValidationError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+        st = auth_manager.get_status(None, demo_mode=bool(demo_mode))
+        return JSONResponse(content={"ok": True, **st})
+
+    @app.post("/api/v1/auth/login")
+    async def auth_login(body: AuthLoginRequest, request: Request) -> Response:
+        try:
+            auth_manager.authenticate(body.password, client_key=_client_key(request))
+        except AuthRateLimitError as exc:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": str(exc), "retry_after_sec": exc.retry_after_sec},
+            )
+        except AuthValidationError as exc:
+            return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+        token, ttl = auth_manager.issue_session_token(remember=body.remember)
+        st = auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        resp = JSONResponse(content={"ok": True, **st})
+        _set_session_cookie(resp, token, ttl, body.remember)
+        return resp
+
+    @app.post("/api/v1/auth/logout")
+    async def auth_logout() -> Response:
+        st = auth_manager.get_status(None, demo_mode=bool(demo_mode))
+        resp = JSONResponse(content={"ok": True, **st})
+        resp.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
+        return resp
+
+    @app.post("/api/v1/auth/change-password")
+    async def auth_change_password(body: AuthChangePasswordRequest, request: Request) -> Response:
+        cur_tok = request.cookies.get(AUTH_COOKIE_NAME)
+        if not auth_manager.is_request_allowed(cur_tok, demo_mode=bool(demo_mode)):
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+        try:
+            auth_manager.change_password(
+                body.current_password,
+                body.new_password,
+                client_key=_client_key(request),
+            )
+        except AuthRateLimitError as exc:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": str(exc), "retry_after_sec": exc.retry_after_sec},
+            )
+        except AuthValidationError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+        token, ttl = auth_manager.issue_session_token(remember=body.remember)
+        st = auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        resp = JSONResponse(content={"ok": True, **st})
+        _set_session_cookie(resp, token, ttl, body.remember)
+        return resp
+
+    @app.post("/api/v1/auth/disable")
+    async def auth_disable_password(body: AuthDisableRequest, request: Request) -> Response:
+        cur_tok = request.cookies.get(AUTH_COOKIE_NAME)
+        if not auth_manager.is_request_allowed(cur_tok, demo_mode=bool(demo_mode)):
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+        try:
+            auth_manager.disable_password(body.current_password, client_key=_client_key(request))
+        except AuthRateLimitError as exc:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": str(exc), "retry_after_sec": exc.retry_after_sec},
+            )
+        except AuthValidationError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+        st = auth_manager.get_status(None, demo_mode=bool(demo_mode))
+        resp = JSONResponse(content={"ok": True, **st})
+        resp.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
+        return resp
+
+    # ── Core Ledger Endpoints ─────────────────────────────────────────────────
 
     @app.get("/api/v1/dashboard")
     async def get_dashboard(
@@ -183,13 +359,30 @@ def create_app(
         configured = {item["venue_id"]: item for item in vault.list_masked()}
         sched_venues = sync_manager.get_schedule_summary().get("venues") or {}
         available = []
+        error_count = 0
         for meta in reg.list_all():
+            cred_item = configured.get(meta.venue_id)
+            is_conf = cred_item is not None
+            is_enabled = bool(cred_item.get("enabled", True)) if cred_item else True
+            h_state = health_tracker.resolve_state(
+                meta.venue_id,
+                configured=is_conf,
+                enabled=is_enabled,
+                poll_state=sched_venues.get(meta.venue_id),
+            )
+            if is_conf and is_enabled and h_state.get("status") == "error":
+                error_count += 1
             entry = meta.model_dump()
-            entry["configured"] = meta.venue_id in configured
-            entry["credential"] = configured.get(meta.venue_id)
+            entry["configured"] = is_conf
+            entry["credential"] = cred_item
             entry["poll_state"] = sched_venues.get(meta.venue_id)
+            entry["health"] = h_state
             available.append(entry)
-        return {"adapters": available, "configured": list(configured.values())}
+        return {
+            "adapters": available,
+            "configured": list(configured.values()),
+            "error_count": error_count,
+        }
 
     @app.post("/api/v1/exchanges")
     async def upsert_exchange(body: ExchangeUpsertRequest) -> dict[str, Any]:
@@ -209,26 +402,45 @@ def create_app(
                 enabled=body.enabled,
             )
         )
-        return {"ok": True, "credential": masked}
+        health_state = (
+            health_tracker.mark_unverified(vid)
+            if body.enabled
+            else health_tracker.resolve_state(vid, configured=True, enabled=False)
+        )
+        return {"ok": True, "credential": masked, "health": health_state}
 
     @app.delete("/api/v1/exchanges/{venue_id}")
     async def delete_exchange(venue_id: str) -> dict[str, Any]:
-        deleted = vault.delete(venue_id)
+        vid = venue_id.strip().lower()
+        deleted = vault.delete(vid)
         if not deleted:
             raise HTTPException(status_code=404, detail="Exchange credential not found")
-        return {"ok": True, "venue_id": venue_id.lower()}
+        health_tracker.remove(vid)
+        return {"ok": True, "venue_id": vid}
 
     @app.post("/api/v1/exchanges/{venue_id}/test")
-    async def test_exchange(venue_id: str) -> dict[str, Any]:
+    async def test_exchange(venue_id: str) -> Response:
         vid = venue_id.strip().lower()
         adapter = reg.get(vid)
         cred = vault.get_decrypted(vid)
         if adapter is None or cred is None:
             raise HTTPException(status_code=404, detail="Exchange adapter or credential not found")
         try:
-            return await adapter.test_connection(cred)
+            res = await adapter.test_connection(cred)
+            h_state = health_tracker.record_success(vid)
+            return JSONResponse(content={**res, "health": h_state})
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            h_state = health_tracker.record_error(vid, exc)
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": h_state["error_reason"],
+                    "detail_zh": h_state["error_reason_zh"],
+                    "error_code": h_state["error_code"],
+                    "raw_error": h_state["raw_error"],
+                    "health": h_state,
+                },
+            )
 
     @app.post("/api/v1/demo")
     async def set_demo_mode(body: DemoToggleRequest) -> dict[str, Any]:
@@ -247,8 +459,8 @@ def create_app(
     @app.post("/api/v1/ai-models")
     async def fetch_ai_models(body: AiModelsRequest | None = None) -> dict[str, Any]:
         prefs = ledger_service.get_preferences()
-        base_url = (body.base_url.strip() if body and body.base_url.strip() else prefs.ai_base_url)
-        api_key = (body.api_key.strip() if body and body.api_key.strip() else prefs.ai_api_key)
+        base_url = body.base_url.strip() if body and body.base_url.strip() else prefs.ai_base_url
+        api_key = body.api_key.strip() if body and body.api_key.strip() else prefs.ai_api_key
         if not base_url:
             raise HTTPException(status_code=400, detail="Please enter an AI Base URL first")
         try:
@@ -264,7 +476,9 @@ def create_app(
             "configured_targets": prefs.copy_watcher_targets,
             "channels": {
                 "webhook": bool(prefs.notifications.webhook_url.strip()),
-                "telegram": bool(prefs.notifications.telegram_bot_token.strip() and prefs.notifications.telegram_chat_id.strip()),
+                "telegram": bool(
+                    prefs.notifications.telegram_bot_token.strip() and prefs.notifications.telegram_chat_id.strip()
+                ),
                 "bark": bool(prefs.notifications.bark_push_key.strip()),
             },
         }
@@ -276,16 +490,38 @@ def create_app(
         return {"ok": True, "configured_targets": cleaned}
 
     @app.post("/api/v1/extensions/copy-watcher/test-notify")
-    async def test_copy_watcher_notify() -> dict[str, Any]:
+    async def test_copy_watcher_notify() -> Response:
         prefs = ledger_service.get_preferences()
+        n = prefs.notifications
+        has_any_channel = bool(
+            n.webhook_url.strip()
+            or (n.telegram_bot_token.strip() and n.telegram_chat_id.strip())
+            or n.bark_push_key.strip()
+        )
+        if not has_any_channel:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "No notification channel configured in Settings",
+                    "detail_zh": "尚未配置任何有效推送渠道（如果是 Telegram 需同时填写 Bot Token 与 Chat ID）",
+                },
+            )
         res = await dispatch_notification(
-            prefs.notifications,
+            n,
             title="OpenTradeLedger Test Alert",
             body="Notification channel verified successfully.",
         )
-        if not res["sent"]:
-            return JSONResponse(status_code=400, content={"detail": "No notification channel configured in Settings"})
-        return res
+        if not res["sent"] and res["errors"]:
+            err_summary = "; ".join(f"{ch}: {msg}" for ch, msg in res["errors"].items())
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": f"Notification delivery failed — {err_summary}",
+                    "detail_zh": f"推送测试发送失败 — {err_summary}",
+                    "errors": res["errors"],
+                },
+            )
+        return JSONResponse(content=res)
 
     @app.get("/api/v1/instrument-logos/{venue}/{instrument}.png")
     async def get_instrument_logo(venue: str, instrument: str):

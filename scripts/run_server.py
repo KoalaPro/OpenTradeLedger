@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
 import uvicorn
 
 from opentradeledger.api.app import create_app
+from opentradeledger.security.local_auth import LocalAuthManager
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -42,7 +43,19 @@ def main() -> None:
         default=_env_bool("OTL_NO_BG_SYNC", False),
         help="Disable background polling loop (useful when previewing side-by-side with another instance)",
     )
+    parser.add_argument(
+        "--reset-password",
+        action="store_true",
+        help="Clear local access password (.auth.json) so the next web visit shows the fresh setup prompt",
+    )
     args = parser.parse_args()
+
+    if args.reset_password:
+        mgr = LocalAuthManager(Path(args.data_dir))
+        existed = mgr.reset_password()
+        msg = "Local access password cleared." if existed else "No local password file was set."
+        print(f"[OpenTradeLedger] {msg} Data directory: {args.data_dir}")
+        return
 
     app = create_app(
         data_dir=Path(args.data_dir),

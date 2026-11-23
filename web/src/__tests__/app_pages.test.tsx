@@ -302,4 +302,135 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
     fireEvent.change(screen.getByTestId('currency-selector'), { target: { value: 'GBP' } })
     await waitFor(() => expect(screen.getByTestId('kpi-equity').textContent).toContain('£19,744.40'))
   })
+
+  it('never shows Connected when an exchange API errors, displays the error reason, and supports NAS password setup + Ceremony C', async () => {
+    let setupDone = false
+    const liveDash = { ...mockDashboard, demo_mode: false }
+    const adaptersWithError: ExchangeAdapterInfo[] = [
+      {
+        venue_id: 'binance',
+        display_name: 'Binance',
+        display_name_zh: '币安',
+        color_token: 'binance',
+        requires_passphrase: false,
+        capabilities: {},
+        docs_url: '',
+        api_base_url: 'https://api.binance.com',
+        configured: true,
+        credential: {
+          venue_id: 'binance',
+          label: 'Binance Main',
+          masked_api_key: 'abcd…9876',
+          has_passphrase: false,
+          enabled: true,
+        },
+        health: {
+          status: 'error',
+          last_attempt_ms: 1732291200000,
+          last_ok_ms: 0,
+          error_code: 'AUTH_OR_IP_REJECTED',
+          error_reason: 'Invalid API key or IP not whitelisted',
+          error_reason_zh: 'API Key 无效或当前出口 IP 未加入白名单',
+          raw_error: 'HTTP 401: -2015 Invalid API-key, IP, or permissions',
+        },
+      },
+      {
+        venue_id: 'gate',
+        display_name: 'Gate',
+        display_name_zh: 'Gate',
+        color_token: 'gate',
+        requires_passphrase: false,
+        capabilities: {},
+        docs_url: '',
+        api_base_url: 'https://api.gateio.ws',
+        configured: true,
+        credential: {
+          venue_id: 'gate',
+          label: 'Gate Live',
+          masked_api_key: 'efgh…4321',
+          has_passphrase: false,
+          enabled: true,
+        },
+        health: {
+          status: 'connected',
+          last_attempt_ms: 1732291200000,
+          last_ok_ms: 1732291200000,
+          error_code: '',
+          error_reason: '',
+          error_reason_zh: '',
+          raw_error: '',
+        },
+      },
+    ]
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.startsWith('/api/v1/auth/status')) {
+        return new Response(
+          JSON.stringify(
+            setupDone
+              ? { initialized: true, enabled: true, authenticated: true, require_setup: false, can_skip: true }
+              : { initialized: false, enabled: false, authenticated: false, require_setup: true, can_skip: true },
+          ),
+          { status: 200 },
+        )
+      }
+      if (url.startsWith('/api/v1/auth/setup')) {
+        setupDone = true
+        return new Response(
+          JSON.stringify({ ok: true, initialized: true, enabled: true, authenticated: true, require_setup: false, can_skip: true }),
+          { status: 200 },
+        )
+      }
+      if (url.startsWith('/api/v1/dashboard')) {
+        return new Response(JSON.stringify(liveDash), { status: 200 })
+      }
+      if (url.startsWith('/api/v1/settings')) {
+        return new Response(JSON.stringify(mockSettings), { status: 200 })
+      }
+      if (url.startsWith('/api/v1/exchanges')) {
+        return new Response(JSON.stringify({ adapters: adaptersWithError, error_count: 1 }), { status: 200 })
+      }
+      if (url.startsWith('/api/v1/fx-rates')) {
+        return new Response(
+          JSON.stringify({
+            base: 'USD',
+            source: 'mock-fx',
+            updated_at: '2026-11-23 21:00',
+            rates: { USDT: 1, USD: 1, CNY: 7.0, GBP: 0.8, EUR: 0.9, HKD: 7.8, JPY: 150 },
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    })
+
+    render(<App />)
+
+    // 1. First-time NAS setup card appears before dashboard
+    await waitFor(() => expect(screen.getByTestId('auth-setup-card')).toBeTruthy())
+    fireEvent.change(screen.getByTestId('auth-password-input'), { target: { value: 'naspass123' } })
+    fireEvent.change(screen.getByTestId('auth-confirm-input'), { target: { value: 'naspass123' } })
+    fireEvent.click(screen.getByTestId('auth-submit-btn'))
+
+    // 2. Ceremony C overlay renders and dashboard unlocks underneath
+    await waitFor(() => expect(screen.getByTestId('overview-page')).toBeTruthy())
+    expect(screen.getByTestId('sidebar-lock-btn')).toBeTruthy()
+
+    // 3. TopBar displays clickable API error badge & clicking it navigates to Settings
+    const errPill = screen.getByTestId('topbar-exchange-error-badge')
+    expect(errPill.textContent).toContain('1 个交易所 API 报错')
+    fireEvent.click(errPill)
+
+    await waitFor(() => expect(screen.getByTestId('settings-page')).toBeTruthy())
+    // Binance errored -> shows 连接报错 (NOT 已连接!) + diagnostic reason + raw API error
+    expect(screen.getByTestId('adapter-status-binance').textContent).toContain('连接报错')
+    expect(screen.getByTestId('adapter-status-binance').textContent).not.toContain('已连接')
+    expect(screen.getByTestId('adapter-error-box-binance').textContent).toContain('未加入白名单')
+    expect(screen.getByTestId('adapter-error-box-binance').textContent).toContain('-2015')
+    // Gate succeeded -> shows 已连接
+    expect(screen.getByTestId('adapter-status-gate').textContent).toContain('已连接')
+    // Security password management card is rendered
+    expect(screen.getByTestId('security-password-card')).toBeTruthy()
+  })
 })

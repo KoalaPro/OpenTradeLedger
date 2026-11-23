@@ -574,6 +574,10 @@ class LedgerService:
 
         exchanges: list[dict[str, Any]] = []
 
+        venue_health_map = ls.get_meta("venue_health", {})
+        if not isinstance(venue_health_map, dict):
+            venue_health_map = {}
+
         def _append_legacy_venue(
             vid: str,
             present: bool,
@@ -587,13 +591,18 @@ class LedgerService:
             if not present:
                 return
             meta = self.registry.get(vid).meta if self.registry.get(vid) else None
+            vh = venue_health_map.get(vid) if isinstance(venue_health_map.get(vid), dict) else {}
+            is_err = vh.get("status") == "error"
             exchanges.append(
                 {
                     "venue_id": vid,
                     "display_name": meta.display_name if meta else vid.upper(),
                     "display_name_zh": meta.display_name_zh if meta else vid.upper(),
                     "color_token": meta.color_token if meta else vid,
-                    "connected": True,
+                    "connected": not is_err,
+                    "health_status": "error" if is_err else "connected",
+                    "error_reason": str(vh.get("error_reason") or "") if is_err else "",
+                    "error_reason_zh": str(vh.get("error_reason_zh") or "") if is_err else "",
                     "equity_usd": round(float(eq or 0.0), 2),
                     "net_principal_usd": round(float(prin or 0.0), 2),
                     "net_pnl_usd": round(float(pnl or 0.0), 2),
@@ -715,6 +724,16 @@ class LedgerService:
         for pos in (legacy_report.get("live") or {}).get("futures_positions") or []:
             vid = str(pos.get("exchange") or "GATE").lower()
             meta = self.registry.get(vid).meta if self.registry.get(vid) else None
+            lev = max(1.0, float(pos.get("leverage") or 1.0))
+            notional = round(float(pos.get("notional_usd") or 0.0), 2)
+            upnl = round(float(pos.get("unrealized_pnl_usd") or 0.0), 2)
+            raw_roi = pos.get("unrealized_pnl_pct") or pos.get("roi_pct")
+            if raw_roi is not None and float(raw_roi or 0.0) != 0.0:
+                uroi = round(float(raw_roi), 2)
+            elif notional > 0:
+                uroi = round((upnl / (notional / lev)) * 100.0, 2)
+            else:
+                uroi = 0.0
             open_positions.append(
                 {
                     "venue_id": vid,
@@ -722,14 +741,14 @@ class LedgerService:
                     "color_token": meta.color_token if meta else vid,
                     "symbol": str(pos.get("contract") or ""),
                     "side": "SHORT" if str(pos.get("side") or "").upper() == "SHORT" else "LONG",
-                    "leverage": float(pos.get("leverage") or 1.0),
+                    "leverage": lev,
                     "qty": float(pos.get("qty_base") or 0.0),
-                    "notional_usd": round(float(pos.get("notional_usd") or 0.0), 2),
+                    "notional_usd": notional,
                     "entry_price": float(pos.get("entry_price") or 0.0),
                     "mark_price": float(pos.get("mark_price") or 0.0),
                     "liq_price": float(pos.get("liq_price") or 0.0),
-                    "unrealized_pnl_usd": round(float(pos.get("unrealized_pnl_usd") or 0.0), 2),
-                    "unrealized_roi_pct": 0.0,
+                    "unrealized_pnl_usd": upnl,
+                    "unrealized_roi_pct": uroi,
                     "has_stop_order": bool(pos.get("has_stop_order")),
                 }
             )
@@ -744,6 +763,12 @@ class LedgerService:
         for vid, snap in plugin_snapshots.items():
             contrib = _extract_plugin_venue_contribution(vid, snap, self.registry)
             ex_row = contrib["exchange"]
+            vh = venue_health_map.get(vid) if isinstance(venue_health_map.get(vid), dict) else {}
+            is_err = vh.get("status") == "error"
+            ex_row["connected"] = not is_err
+            ex_row["health_status"] = "error" if is_err else "connected"
+            ex_row["error_reason"] = str(vh.get("error_reason") or "") if is_err else ""
+            ex_row["error_reason_zh"] = str(vh.get("error_reason_zh") or "") if is_err else ""
             exchanges.append(ex_row)
             plugin_extra_equity += ex_row["equity_usd"]
             plugin_extra_principal += ex_row["net_principal_usd"]

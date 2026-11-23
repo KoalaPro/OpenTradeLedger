@@ -12,6 +12,8 @@ data_*/
 *.enc
 *.key
 *.lock
+.auth.json
+.auth.json.tmp
 
 # Python
 __pycache__/

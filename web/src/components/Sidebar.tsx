@@ -3,6 +3,7 @@ import {
   BookOpen,
   LayoutDashboard,
   LayoutGrid,
+  Lock,
   RefreshCw,
   Settings,
   TrendingUp,
@@ -19,6 +20,8 @@ interface SidebarProps {
   lastSyncMs: number
   manualSyncing: boolean
   onSync: () => void
+  authEnabled?: boolean
+  onLock?: () => void
 }
 
 export function Sidebar({
@@ -28,8 +31,10 @@ export function Sidebar({
   lastSyncMs,
   manualSyncing,
   onSync,
+  authEnabled = false,
+  onLock,
 }: SidebarProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
 
   const primaryItems: Array<{ id: NavPage; label: string; icon: typeof LayoutDashboard }> = [
     { id: 'overview', label: t('nav_overview'), icon: LayoutDashboard },
@@ -108,16 +113,30 @@ export function Sidebar({
           <span>{fmtSyncTime(lastSyncMs)}</span>
         </div>
 
-        <button
-          type="button"
-          data-testid="sync-now-btn"
-          disabled={manualSyncing}
-          onClick={onSync}
-          className="flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
-        >
-          <RefreshCw size={13} className={manualSyncing ? 'animate-spin' : ''} />
-          <span>{manualSyncing ? t('syncing') : t('sync_now')}</span>
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            data-testid="sync-now-btn"
+            disabled={manualSyncing}
+            onClick={onSync}
+            className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
+          >
+            <RefreshCw size={13} className={manualSyncing ? 'animate-spin' : ''} />
+            <span>{manualSyncing ? t('syncing') : t('sync_now')}</span>
+          </button>
+          {authEnabled && onLock && (
+            <button
+              type="button"
+              data-testid="sidebar-lock-btn"
+              title={locale === 'en' ? 'Lock Ledger' : '立即锁定账本'}
+              aria-label={locale === 'en' ? 'Lock Ledger' : '立即锁定账本'}
+              onClick={onLock}
+              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer shrink-0"
+            >
+              <Lock size={13} />
+            </button>
+          )}
+        </div>
       </div>
     </aside>
   )

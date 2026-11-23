@@ -22,6 +22,7 @@ from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.legacy_venue_sync import LEGACY_VENUE_SYNCERS
 from opentradeledger.core.store import LedgerStore
+from opentradeledger.core.venue_health import VenueHealthTracker
 from opentradeledger.security.vault import CredentialVault
 
 logger = logging.getLogger("opentradeledger.sync")
@@ -162,11 +163,13 @@ class SyncManager:
         registry: AdapterRegistry,
         ledger_service: LedgerService,
         poll_interval_sec: float = BASE_ACTIVE_INTERVAL_SEC,
+        health_tracker: VenueHealthTracker | None = None,
     ) -> None:
         self.store = store
         self.vault = vault
         self.registry = registry
         self.ledger_service = ledger_service
+        self.health_tracker = health_tracker or VenueHealthTracker(store)
         self.poll_interval_sec = max(1.0, float(poll_interval_sec))
         self._stop_event: asyncio.Event | None = None
         self._bg_task: asyncio.Task[None] | None = None
@@ -349,10 +352,18 @@ class SyncManager:
                                 "interval_sec": sched["interval_sec"],
                                 "stage": sched["stage"],
                             }
+                        self.health_tracker.record_success(vid)
                         any_synced = True
                     except Exception as exc:
                         logger.warning("Sync failed for %s: %s", vid, exc)
-                        results[vid] = {"ok": False, "error": str(exc)}
+                        err_state = self.health_tracker.record_error(vid, exc)
+                        results[vid] = {
+                            "ok": False,
+                            "error": err_state["error_reason"],
+                            "error_zh": err_state["error_reason_zh"],
+                            "error_code": err_state["error_code"],
+                            "raw_error": err_state["raw_error"],
+                        }
                     finally:
                         if client is not None and hasattr(client, "aclose"):
                             try:

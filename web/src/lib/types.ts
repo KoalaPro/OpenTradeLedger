@@ -4,6 +4,25 @@ export type Polarity = 'cn' | 'global'
 export type CurrencyCode = 'USDT' | 'USD' | 'CNY' | 'GBP' | 'EUR' | 'HKD' | 'JPY'
 export type NavPage = 'overview' | 'trades' | 'analytics' | 'fees' | 'extensions' | 'settings'
 
+export interface AuthStatusPayload {
+  demo_bypass?: boolean
+  initialized?: boolean
+  enabled?: boolean
+  authenticated?: boolean
+  require_setup?: boolean
+  can_skip?: boolean
+}
+
+export interface VenueHealthState {
+  status: 'connected' | 'error' | 'unverified' | 'disabled' | 'not_configured'
+  last_attempt_ms: number
+  last_ok_ms: number
+  error_code: string
+  error_reason: string
+  error_reason_zh: string
+  raw_error: string
+}
+
 export interface FxRatesPayload {
   base: string
   source: string
@@ -68,6 +87,9 @@ export interface ExchangeSummary {
   display_name_zh: string
   color_token: string
   connected: boolean
+  health_status?: 'connected' | 'error'
+  error_reason?: string
+  error_reason_zh?: string
   equity_usd: number
   net_principal_usd: number
   net_pnl_usd: number
@@ -223,6 +245,8 @@ export interface DashboardData {
     }>
     markdown_commentary: string
     markdown_commentary_zh?: string
+    ai_error?: string
+    ai_error_zh?: string
     input_summary?: {
       exchanges_count: number
       fee_matrix_count: number
@@ -370,4 +394,6 @@ export interface ExchangeAdapterInfo {
     has_passphrase: boolean
     enabled: boolean
   } | null
+  poll_state?: Record<string, unknown> | null
+  health?: VenueHealthState
 }

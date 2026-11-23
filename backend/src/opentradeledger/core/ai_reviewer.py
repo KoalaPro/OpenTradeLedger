@@ -301,6 +301,8 @@ async def generate_ai_review(
 
     commentary = ""
     model_used = "local-actuarial"
+    ai_error = ""
+    ai_error_zh = ""
 
     base = _normalize_ai_base(prefs.ai_base_url or "")
     api_key = (prefs.ai_api_key or "").strip()
@@ -324,6 +326,7 @@ async def generate_ai_review(
             headers["Authorization"] = f"Bearer {api_key}"
 
         async def _call_gateway(http_c: httpx.AsyncClient) -> str:
+            nonlocal ai_error, ai_error_zh
             # 1. Standard OpenAI Chat Completions API
             chat_resp = await http_c.post(
                 f"{base}/chat/completions",
@@ -352,6 +355,13 @@ async def generate_ai_review(
                     txt = _extract_responses_text(resp_api.json())
                     if txt:
                         return txt
+                snippet = resp_api.text[:180].strip()
+                ai_error = f"AI endpoint returned HTTP {resp_api.status_code}: {snippet} (fell back to local actuarial review)"
+                ai_error_zh = f"AI 模型接口返回异常（HTTP {resp_api.status_code}：{snippet}），本次已自动回退为本地精算诊断"
+                return ""
+            snippet = chat_resp.text[:180].strip()
+            ai_error = f"AI endpoint returned HTTP {chat_resp.status_code}: {snippet} (fell back to local actuarial review)"
+            ai_error_zh = f"AI 模型接口返回异常（HTTP {chat_resp.status_code}：{snippet}），本次已自动回退为本地精算诊断"
             return ""
 
         try:
@@ -362,8 +372,16 @@ async def generate_ai_review(
                     commentary = await _call_gateway(c)
             if commentary:
                 model_used = model
-        except Exception:
+                ai_error = ""
+                ai_error_zh = ""
+        except Exception as exc:
             commentary = ""
+            err_txt = str(exc)[:180]
+            ai_error = f"AI request failed ({err_txt}) — fell back to local actuarial review"
+            ai_error_zh = f"AI 模型连接失败（{err_txt}），本次已自动回退为本地精算诊断"
+    elif base and not api_key:
+        ai_error = "AI Base URL is configured without an API Key — fell back to local actuarial review"
+        ai_error_zh = "已填写 AI 接口地址但尚未配置 API Key，本次已自动使用本地精算诊断"
 
     if not commentary:
         commentary_zh = (
@@ -401,6 +419,8 @@ async def generate_ai_review(
         "highlights": highlights,
         "markdown_commentary": commentary,
         "markdown_commentary_zh": commentary_zh,
+        "ai_error": ai_error,
+        "ai_error_zh": ai_error_zh,
         "input_summary": input_summary,
         "context_preview": ctx,
     }

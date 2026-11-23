@@ -1,15 +1,37 @@
 import { useEffect, useState } from 'react'
-import { Check, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
+import {
+  AlertTriangle,
+  Bell,
+  Check,
+  KeyRound,
+  Lock,
+  Pencil,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { api } from '../lib/api'
 import { CURRENCY_OPTIONS, useCurrency } from '../lib/currency'
-import type { CurrencyCode, ExchangeAdapterInfo, Locale, Polarity, Theme, UserSettings } from '../lib/types'
+import type {
+  AuthStatusPayload,
+  CurrencyCode,
+  ExchangeAdapterInfo,
+  Locale,
+  Polarity,
+  Theme,
+  UserSettings,
+} from '../lib/types'
 
 interface SettingsPageProps {
   settings: UserSettings
   adapters: ExchangeAdapterInfo[]
   demoMode: boolean
+  authStatus?: AuthStatusPayload
+  onAuthChanged?: (next: AuthStatusPayload) => void
+  onLockNow?: () => Promise<void>
   onUpdateSettings: (patch: Record<string, unknown>) => Promise<void>
   onUpsertExchange: (body: {
     venue_id: string
@@ -23,10 +45,24 @@ interface SettingsPageProps {
   onToggleDemo: (enabled: boolean) => Promise<void>
 }
 
+function getAdapterVisualStatus(
+  ad: ExchangeAdapterInfo,
+): 'not_configured' | 'disabled' | 'connected' | 'error' | 'unverified' {
+  if (!ad.configured) return 'not_configured'
+  if (ad.credential && ad.credential.enabled === false) return 'disabled'
+  const st = ad.health?.status
+  if (st === 'error') return 'error'
+  if (st === 'connected') return 'connected'
+  return 'unverified'
+}
+
 export function SettingsPage({
   settings,
   adapters,
   demoMode,
+  authStatus,
+  onAuthChanged,
+  onLockNow,
   onUpdateSettings,
   onUpsertExchange,
   onDeleteExchange,
@@ -35,12 +71,15 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
+  const isZh = locale === 'zh-CN'
+
   const [addingVenue, setAddingVenue] = useState<string>('')
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
   const [passphrase, setPassphrase] = useState('')
   const [label, setLabel] = useState('')
   const [busyVenue, setBusyVenue] = useState('')
+
   const [goalLabel, setGoalLabel] = useState(settings.goal_label || '')
   const [goalInput, setGoalInput] = useState(String(settings.goal_target_usd ?? ''))
   const [aiUrl, setAiUrl] = useState(settings.ai_base_url || '')
@@ -48,10 +87,19 @@ export function SettingsPage({
   const [aiKey, setAiKey] = useState('')
   const [aiModels, setAiModels] = useState<string[]>([])
   const [fetchingModels, setFetchingModels] = useState(false)
+
   const [webhookUrl, setWebhookUrl] = useState(settings.notifications?.webhook_url || '')
-  const [tgToken, setTgToken] = useState(settings.notifications?.telegram_bot_token || '')
+  const [tgToken, setTgToken] = useState('')
   const [tgChat, setTgChat] = useState(settings.notifications?.telegram_chat_id || '')
-  const [barkKey, setBarkKey] = useState(settings.notifications?.bark_push_key || '')
+  const [barkKey, setBarkKey] = useState('')
+  const [testingNotify, setTestingNotify] = useState(false)
+
+  // Local NAS password management state
+  const [curPwd, setCurPwd] = useState('')
+  const [newPwd, setNewPwd] = useState('')
+  const [confirmNewPwd, setConfirmNewPwd] = useState('')
+  const [pwdBusy, setPwdBusy] = useState(false)
+
   const [statusMsg, setStatusMsg] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
 
@@ -72,6 +120,13 @@ export function SettingsPage({
   ])
 
   const selectedAdapter = adapters.find(a => a.venue_id === addingVenue)
+  const authEnabled = Boolean(authStatus?.enabled)
+
+  const flashOk = (msg: string, ms = 3200) => {
+    setErrorMsg('')
+    setStatusMsg(msg)
+    window.setTimeout(() => setStatusMsg(''), ms)
+  }
 
   const handleAddSubmit = async () => {
     if (!addingVenue || !apiKey.trim() || !apiSecret.trim()) return
@@ -90,12 +145,7 @@ export function SettingsPage({
       setApiSecret('')
       setPassphrase('')
       setLabel('')
-      setStatusMsg(
-        locale === 'en'
-          ? 'Connected & synced latest data'
-          : '已加密保存并完成只读数据拉取',
-      )
-      setTimeout(() => setStatusMsg(''), 4000)
+      flashOk(isZh ? 'API 验证通过，已完成加密保存与数据同步' : 'API verified, encrypted & synced successfully', 4000)
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Connection failed')
     } finally {
@@ -108,8 +158,7 @@ export function SettingsPage({
     setErrorMsg('')
     try {
       await onTestExchange(vid)
-      setStatusMsg(locale === 'en' ? `${vid.toUpperCase()} read-only connection OK` : `${vid.toUpperCase()} 只读 API 连接正常`)
-      setTimeout(() => setStatusMsg(''), 3500)
+      flashOk(isZh ? `${vid.toUpperCase()} 只读 API 连接验证正常` : `${vid.toUpperCase()} read-only API verified`)
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Connection test failed')
     } finally {
@@ -117,12 +166,69 @@ export function SettingsPage({
     }
   }
 
+  const handleSavePassword = async () => {
+    if (pwdBusy) return
+    const np = newPwd.trim()
+    if (np.length < 4) {
+      setErrorMsg(isZh ? '新密码长度至少需要 4 位字符' : 'New password must be at least 4 characters')
+      return
+    }
+    if (!authEnabled && np !== confirmNewPwd.trim()) {
+      setErrorMsg(isZh ? '两次输入的密码不一致' : 'New passwords do not match')
+      return
+    }
+    setPwdBusy(true)
+    setErrorMsg('')
+    try {
+      const res = await api.authChangePassword(curPwd, np, true)
+      onAuthChanged?.(res)
+      setCurPwd('')
+      setNewPwd('')
+      setConfirmNewPwd('')
+      flashOk(
+        authEnabled
+          ? isZh
+            ? '访问密码已修改（其他旧会话已自动失效）'
+            : 'Password updated (older sessions invalidated)'
+          : isZh
+            ? '已开启本地访问密码保护'
+            : 'Local access password enabled',
+      )
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to update password')
+    } finally {
+      setPwdBusy(false)
+    }
+  }
+
+  const handleDisablePassword = async () => {
+    if (pwdBusy) return
+    if (!curPwd.trim()) {
+      setErrorMsg(isZh ? '关闭密码锁前请先输入当前访问密码' : 'Enter current password to disable lock')
+      return
+    }
+    setPwdBusy(true)
+    setErrorMsg('')
+    try {
+      const res = await api.authDisablePassword(curPwd)
+      onAuthChanged?.(res)
+      setCurPwd('')
+      setNewPwd('')
+      setConfirmNewPwd('')
+      flashOk(isZh ? '已关闭本地访问密码，当前为本机免密模式' : 'Password lock disabled')
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to disable password')
+    } finally {
+      setPwdBusy(false)
+    }
+  }
+
   return (
     <div data-testid="settings-page" className="space-y-4">
       {statusMsg && (
         <div
-          className="px-4 py-2.5 rounded-lg text-[12.5px] font-medium flex items-center gap-2"
-          style={{ background: 'var(--pos-soft)', border: '1px solid var(--pos-bd)', color: 'var(--pos)' }}
+          data-testid="settings-ok-banner"
+          className="otl-status-ok px-4 py-2.5 rounded-lg text-[12.5px] font-medium flex items-center gap-2"
         >
           <Check size={14} />
           <span>{statusMsg}</span>
@@ -130,10 +236,11 @@ export function SettingsPage({
       )}
       {errorMsg && (
         <div
-          className="px-4 py-2.5 rounded-lg text-[12.5px] font-medium"
-          style={{ background: 'var(--warn-soft)', border: '1px solid var(--warn-bd)', color: 'var(--warn)' }}
+          data-testid="settings-error-banner"
+          className="otl-status-err px-4 py-2.5 rounded-lg text-[12.5px] font-medium flex items-center gap-2"
         >
-          {errorMsg}
+          <AlertTriangle size={14} className="shrink-0" />
+          <span>{errorMsg}</span>
         </div>
       )}
 
@@ -143,7 +250,7 @@ export function SettingsPage({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="m-0 text-[15px] font-semibold text-[var(--fg)] flex items-center gap-2">
-                <ShieldCheck size={16} className="txt-pos" />
+                <ShieldCheck size={16} className="text-emerald-500" />
                 {t('set_ex_title')}
               </h2>
               <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('set_ex_sub')}</p>
@@ -151,126 +258,340 @@ export function SettingsPage({
           </div>
 
           <div className="space-y-2.5">
-            {adapters.map(ad => (
-              <div
-                key={ad.venue_id}
-                data-testid={`adapter-card-${ad.venue_id}`}
-                className="otl-surface-2 rounded-xl p-3.5 space-y-3"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <VenueBadge
-                      venueId={ad.venue_id}
-                      name={locale === 'en' ? ad.display_name : ad.display_name_zh || ad.display_name}
-                    />
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-medium text-[var(--fg)]">
-                        {ad.configured && ad.credential
-                          ? `${ad.credential.label} · ${ad.credential.masked_api_key}`
-                          : ad.api_base_url}
+            {adapters.map(ad => {
+              const vStatus = getAdapterVisualStatus(ad)
+              const isEditing = addingVenue === ad.venue_id
+              const errReason = isZh
+                ? ad.health?.error_reason_zh || ad.health?.error_reason || ''
+                : ad.health?.error_reason || ad.health?.error_reason_zh || ''
+              const rawErr = ad.health?.raw_error || ''
+
+              return (
+                <div
+                  key={ad.venue_id}
+                  data-testid={`adapter-card-${ad.venue_id}`}
+                  className="otl-surface-2 rounded-xl p-3.5 space-y-3"
+                  style={
+                    vStatus === 'error'
+                      ? { borderColor: 'rgba(239, 68, 68, 0.38)' }
+                      : undefined
+                  }
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <VenueBadge
+                        venueId={ad.venue_id}
+                        name={locale === 'en' ? ad.display_name : ad.display_name_zh || ad.display_name}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-medium text-[var(--fg)] truncate">
+                          {ad.configured && ad.credential
+                            ? `${ad.credential.label} · ${ad.credential.masked_api_key}`
+                            : ad.api_base_url}
+                        </div>
+                        <div className="text-[11px] text-[var(--fg-3)]">
+                          {ad.requires_passphrase ? t('set_passphrase_req') : 'GET-Only Signed API'}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-[var(--fg-3)]">
-                        {ad.requires_passphrase ? t('set_passphrase_req') : 'GET-Only Signed API'}
-                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {ad.configured ? (
+                        <>
+                          {vStatus === 'connected' && (
+                            <span
+                              data-testid={`adapter-status-${ad.venue_id}`}
+                              className="otl-status-ok px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                            >
+                              {t('set_connected')}
+                            </span>
+                          )}
+                          {vStatus === 'error' && (
+                            <span
+                              data-testid={`adapter-status-${ad.venue_id}`}
+                              className="otl-status-err inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                            >
+                              <AlertTriangle size={11} />
+                              <span>{isZh ? '连接报错' : 'API Error'}</span>
+                            </span>
+                          )}
+                          {vStatus === 'unverified' && (
+                            <span
+                              data-testid={`adapter-status-${ad.venue_id}`}
+                              className="otl-status-warn px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                            >
+                              {isZh ? '待验证' : 'Unverified'}
+                            </span>
+                          )}
+                          {vStatus === 'disabled' && (
+                            <span
+                              data-testid={`adapter-status-${ad.venue_id}`}
+                              className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border)] text-[var(--fg-3)]"
+                            >
+                              {isZh ? '已停用' : 'Disabled'}
+                            </span>
+                          )}
+
+                          <button
+                            type="button"
+                            data-testid={`test-adapter-${ad.venue_id}`}
+                            disabled={busyVenue === ad.venue_id}
+                            onClick={() => void handleTest(ad.venue_id)}
+                            className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer disabled:opacity-50"
+                          >
+                            {busyVenue === ad.venue_id
+                              ? isZh
+                                ? '检测中…'
+                                : 'Testing…'
+                              : vStatus === 'error'
+                                ? isZh
+                                  ? '重试连接'
+                                  : 'Retry'
+                                : t('set_test')}
+                          </button>
+
+                          <button
+                            type="button"
+                            data-testid={`edit-adapter-${ad.venue_id}`}
+                            onClick={() => {
+                              if (isEditing) {
+                                setAddingVenue('')
+                              } else {
+                                setAddingVenue(ad.venue_id)
+                                setLabel(ad.credential?.label || ad.display_name)
+                                setApiKey('')
+                                setApiSecret('')
+                                setPassphrase('')
+                              }
+                            }}
+                            title={isZh ? '修改或更新 API 密钥' : 'Update API credentials'}
+                            className="inline-flex items-center gap-1 h-7 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[11.5px] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
+                          >
+                            <Pencil size={12} />
+                            <span>{isZh ? '改密钥' : 'Edit'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void onDeleteExchange(ad.venue_id)}
+                            className="h-7 px-2 rounded-lg border border-[var(--border)] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+                            aria-label={t('set_remove')}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          data-testid={`configure-adapter-${ad.venue_id}`}
+                          onClick={() => {
+                            setAddingVenue(isEditing ? '' : ad.venue_id)
+                            setLabel(ad.display_name)
+                            setApiKey('')
+                            setApiSecret('')
+                            setPassphrase('')
+                          }}
+                          className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                        >
+                          <Plus size={13} />
+                          <span>{t('set_add_btn')}</span>
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    {ad.configured ? (
-                      <>
-                        <span
-                          className="px-2 py-0.5 rounded-md text-[11px] font-semibold"
-                          style={{ background: 'var(--pos-soft)', color: 'var(--pos)' }}
-                        >
-                          {t('set_connected')}
-                        </span>
-                        <button
-                          type="button"
-                          disabled={busyVenue === ad.venue_id}
-                          onClick={() => void handleTest(ad.venue_id)}
-                          className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] text-[var(--fg)] cursor-pointer disabled:opacity-50"
-                        >
-                          {t('set_test')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void onDeleteExchange(ad.venue_id)}
-                          className="h-7 px-2 rounded-lg border border-[var(--border)] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
-                          aria-label={t('set_remove')}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        data-testid={`configure-adapter-${ad.venue_id}`}
-                        onClick={() => {
-                          setAddingVenue(addingVenue === ad.venue_id ? '' : ad.venue_id)
-                          setLabel(ad.display_name)
-                        }}
-                        className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
-                      >
-                        <Plus size={13} />
-                        <span>{t('set_add_btn')}</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
+                  {/* Persistent API Error Diagnostic Box — NEVER hides why an exchange failed */}
+                  {vStatus === 'error' && errReason && (
+                    <div
+                      data-testid={`adapter-error-box-${ad.venue_id}`}
+                      className="otl-status-err rounded-lg px-3 py-2.5 text-[12px] space-y-1"
+                    >
+                      <div className="font-semibold flex items-start gap-1.5">
+                        <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                        <span>{errReason}</span>
+                      </div>
+                      {rawErr && !errReason.includes(rawErr) && (
+                        <div className="text-[11px] opacity-85 font-mono break-all pl-5">
+                          {rawErr}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-                {addingVenue === ad.venue_id && selectedAdapter && (
-                  <div className="otl-drawer-expand pt-3 border-t border-[var(--border)] grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <input
-                      type="text"
-                      value={apiKey}
-                      onChange={e => setApiKey(e.target.value)}
-                      placeholder="Read-Only API Key"
-                      className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
-                    />
-                    <input
-                      type="password"
-                      value={apiSecret}
-                      onChange={e => setApiSecret(e.target.value)}
-                      placeholder="API Secret"
-                      className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
-                    />
-                    {selectedAdapter.requires_passphrase && (
+                  {isEditing && selectedAdapter && (
+                    <div className="otl-drawer-expand pt-3 border-t border-[var(--border)] grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <input
+                        type="text"
+                        value={apiKey}
+                        onChange={e => setApiKey(e.target.value)}
+                        placeholder={ad.configured ? 'New Read-Only API Key' : 'Read-Only API Key'}
+                        className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
+                      />
                       <input
                         type="password"
-                        value={passphrase}
-                        onChange={e => setPassphrase(e.target.value)}
-                        placeholder="API Passphrase"
-                        className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)] sm:col-span-2"
+                        value={apiSecret}
+                        onChange={e => setApiSecret(e.target.value)}
+                        placeholder={ad.configured ? 'New API Secret' : 'API Secret'}
+                        className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
                       />
-                    )}
-                    <div className="sm:col-span-2 flex justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setAddingVenue('')}
-                        className="h-7 px-3 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] cursor-pointer"
-                      >
-                        {t('cancel')}
-                      </button>
-                      <button
-                        type="button"
-                        data-testid="save-exchange-btn"
-                        disabled={busyVenue === ad.venue_id}
-                        onClick={() => void handleAddSubmit()}
-                        className="h-7 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
-                        style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-                      >
-                        {t('confirm_save')}
-                      </button>
+                      {selectedAdapter.requires_passphrase && (
+                        <input
+                          type="password"
+                          value={passphrase}
+                          onChange={e => setPassphrase(e.target.value)}
+                          placeholder="API Passphrase"
+                          className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)] sm:col-span-2"
+                        />
+                      )}
+                      <div className="sm:col-span-2 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setAddingVenue('')}
+                          className="h-7 px-3 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] cursor-pointer"
+                        >
+                          {t('cancel')}
+                        </button>
+                        <button
+                          type="button"
+                          data-testid="save-exchange-btn"
+                          disabled={busyVenue === ad.venue_id || !apiKey.trim() || !apiSecret.trim()}
+                          onClick={() => void handleAddSubmit()}
+                          className="h-7 px-3 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
+                          style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+                        >
+                          {busyVenue === ad.venue_id
+                            ? isZh
+                              ? '验证并同步中…'
+                              : 'Verifying…'
+                            : t('confirm_save')}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            ))}
+                  )}
+                </div>
+              )
+            })}
           </div>
         </section>
 
-        {/* Right: Preferences, Polarity, Theme, Goal, Optional Modules, AI & Demo */}
+        {/* Right: Security, Preferences, AI & Notifications */}
         <section className="xl:col-span-5 space-y-4">
+          {/* NAS / Local Access Password Card */}
+          {!demoMode && (
+            <div data-testid="security-password-card" className="otl-card p-5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)] flex items-center gap-1.5">
+                    <KeyRound size={15} className="text-[var(--accent)]" />
+                    <span>{isZh ? '安全与本地访问密码' : 'Security & Local Access Password'}</span>
+                  </h3>
+                  <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">
+                    {isZh
+                      ? '部署到 NAS 或局域网时建议开启，密码仅以 scrypt 加盐哈希保存在本地'
+                      : 'Recommended on NAS / LAN — salted scrypt hash stored exclusively on disk'}
+                  </p>
+                </div>
+                <span
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0 ${
+                    authEnabled
+                      ? 'otl-status-ok'
+                      : 'border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-3)]'
+                  }`}
+                >
+                  {authEnabled
+                    ? isZh
+                      ? '密码已开启'
+                      : 'Protected'
+                    : isZh
+                      ? '免密模式'
+                      : 'Password Off'}
+                </span>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                {authEnabled && (
+                  <input
+                    type="password"
+                    data-testid="sec-current-pwd"
+                    value={curPwd}
+                    onChange={e => setCurPwd(e.target.value)}
+                    placeholder={isZh ? '当前访问密码' : 'Current password'}
+                    className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                  />
+                )}
+                <input
+                  type="password"
+                  data-testid="sec-new-pwd"
+                  value={newPwd}
+                  onChange={e => setNewPwd(e.target.value)}
+                  placeholder={
+                    authEnabled
+                      ? isZh
+                        ? '新密码（至少 4 位）'
+                        : 'New password (min 4 chars)'
+                      : isZh
+                        ? '设置访问密码（至少 4 位）'
+                        : 'Set access password (min 4 chars)'
+                  }
+                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                />
+                {!authEnabled && (
+                  <input
+                    type="password"
+                    data-testid="sec-confirm-pwd"
+                    value={confirmNewPwd}
+                    onChange={e => setConfirmNewPwd(e.target.value)}
+                    placeholder={isZh ? '再次确认访问密码' : 'Confirm access password'}
+                    className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                  />
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-2">
+                  {authEnabled && onLockNow && (
+                    <button
+                      type="button"
+                      data-testid="sec-lock-now-btn"
+                      onClick={() => void onLockNow()}
+                      className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                    >
+                      <Lock size={12} />
+                      <span>{isZh ? '立即锁定' : 'Lock Now'}</span>
+                    </button>
+                  )}
+                  {authEnabled && authStatus?.can_skip !== false && (
+                    <button
+                      type="button"
+                      data-testid="sec-disable-pwd-btn"
+                      disabled={pwdBusy}
+                      onClick={() => void handleDisablePassword()}
+                      className="h-8 px-2.5 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer disabled:opacity-50"
+                    >
+                      {isZh ? '关闭密码锁' : 'Disable Lock'}
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  data-testid="sec-save-pwd-btn"
+                  disabled={pwdBusy || !newPwd.trim()}
+                  onClick={() => void handleSavePassword()}
+                  className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
+                  style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+                >
+                  {authEnabled
+                    ? isZh
+                      ? '修改密码'
+                      : 'Update Password'
+                    : isZh
+                      ? '开启密码保护'
+                      : 'Enable Password'}
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="otl-card p-5 space-y-4">
             <h2 className="m-0 text-[15px] font-semibold text-[var(--fg)]">{t('set_pref_title')}</h2>
 
@@ -434,8 +755,7 @@ export function SettingsPage({
                           goal_label: goalLabel.trim(),
                           goal_target_usd: Number(goalInput) > 0 ? Number(goalInput) : null,
                         })
-                        setStatusMsg(t('set_save_ok'))
-                        setTimeout(() => setStatusMsg(''), 2500)
+                        flashOk(t('set_save_ok'), 2500)
                       }}
                       className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
                       style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
@@ -496,12 +816,12 @@ export function SettingsPage({
                     if (res.models.length > 0 && !aiModel.trim()) {
                       setAiModel(res.models[0])
                     }
-                    setStatusMsg(
+                    flashOk(
                       locale === 'en'
                         ? `Loaded ${res.count} available models`
                         : `已获取 ${res.count} 个可用模型`,
+                      3000,
                     )
-                    setTimeout(() => setStatusMsg(''), 3000)
                   } catch (err) {
                     setErrorMsg(err instanceof Error ? err.message : 'Failed to fetch models')
                   } finally {
@@ -559,8 +879,7 @@ export function SettingsPage({
                 onClick={async () => {
                   await onUpdateSettings({ ai_base_url: aiUrl, ai_model: aiModel, ai_api_key: aiKey })
                   setAiKey('')
-                  setStatusMsg(t('set_save_ok'))
-                  setTimeout(() => setStatusMsg(''), 2500)
+                  flashOk(t('set_save_ok'), 2500)
                 }}
                 className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
                 style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
@@ -588,7 +907,13 @@ export function SettingsPage({
                 type="password"
                 value={tgToken}
                 onChange={e => setTgToken(e.target.value)}
-                placeholder="Telegram Bot Token"
+                placeholder={
+                  settings.notifications?.telegram_bot_token_set
+                    ? isZh
+                      ? 'Telegram Token（已保存）'
+                      : 'Bot Token (configured)'
+                    : 'Telegram Bot Token'
+                }
                 className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
               />
               <input
@@ -603,10 +928,42 @@ export function SettingsPage({
               type="password"
               value={barkKey}
               onChange={e => setBarkKey(e.target.value)}
-              placeholder="Bark Push Key"
+              placeholder={
+                settings.notifications?.bark_push_key_set
+                  ? isZh
+                    ? 'Bark Push Key（已保存）'
+                    : 'Bark Key (configured)'
+                  : 'Bark Push Key'
+              }
               className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
             />
-            <div className="flex justify-end">
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                data-testid="test-notify-btn"
+                disabled={testingNotify}
+                onClick={async () => {
+                  setTestingNotify(true)
+                  setErrorMsg('')
+                  try {
+                    const res = await api.testNotify()
+                    const sentList = (res.sent || []).join(', ')
+                    flashOk(
+                      isZh
+                        ? `测试通知已成功发送（${sentList}）`
+                        : `Test alert delivered (${sentList})`,
+                    )
+                  } catch (err) {
+                    setErrorMsg(err instanceof Error ? err.message : 'Test notification failed')
+                  } finally {
+                    setTestingNotify(false)
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
+              >
+                <Bell size={12} />
+                <span>{testingNotify ? (isZh ? '发送中…' : 'Sending…') : isZh ? '测试推送' : 'Test Push'}</span>
+              </button>
               <button
                 type="button"
                 onClick={async () => {
@@ -618,8 +975,9 @@ export function SettingsPage({
                       bark_push_key: barkKey,
                     },
                   })
-                  setStatusMsg(t('set_save_ok'))
-                  setTimeout(() => setStatusMsg(''), 2500)
+                  setTgToken('')
+                  setBarkKey('')
+                  flashOk(t('set_save_ok'), 2500)
                 }}
                 className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
                 style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}

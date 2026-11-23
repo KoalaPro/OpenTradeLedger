@@ -11,6 +11,7 @@ services:
       # Set to "true" to explore the UI immediately with built-in sanitized demo data.
       # Switch to "false" once you configure read-only API keys in Settings or ./data/.env.
       OTL_DEMO_MODE: "${OTL_DEMO_MODE:-true}"
+      OTL_REQUIRE_AUTH: "${OTL_REQUIRE_AUTH:-false}"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

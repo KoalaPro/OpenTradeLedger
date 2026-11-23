@@ -302,12 +302,120 @@ body {
   animation: otlSlideInRight 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+/* Operational Connection Status Colors (Strictly independent of PnL polarity!) */
+.otl-status-ok {
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  color: #10b981;
+}
+:root[data-theme="light"] .otl-status-ok {
+  background: rgba(5, 150, 105, 0.1);
+  border-color: rgba(5, 150, 105, 0.26);
+  color: #047857;
+}
+
+.otl-status-err {
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.32);
+  color: #f87171;
+}
+:root[data-theme="light"] .otl-status-err {
+  background: rgba(220, 38, 38, 0.09);
+  border-color: rgba(220, 38, 38, 0.26);
+  color: #b91c1c;
+}
+
+.otl-status-warn {
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+}
+:root[data-theme="light"] .otl-status-warn {
+  background: rgba(217, 119, 6, 0.1);
+  border-color: rgba(217, 119, 6, 0.26);
+  color: #b45309;
+}
+
+/* NAS Local Login & Ceremony C Brand Unlock Entrance (~1.5s) */
+@keyframes otlShakeX {
+  0%, 100% { transform: translateX(0); }
+  20%      { transform: translateX(-7px); }
+  40%      { transform: translateX(7px); }
+  60%      { transform: translateX(-5px); }
+  80%      { transform: translateX(4px); }
+}
+
+.otl-shake {
+  animation: otlShakeX 360ms ease;
+}
+
+@keyframes otlShimmerSweep {
+  0%   { background-position: 120% 0; opacity: 0.35; transform: translateY(6px); }
+  35%  { opacity: 1; transform: translateY(0); }
+  100% { background-position: -40% 0; opacity: 1; transform: translateY(0); }
+}
+
+@keyframes otlCeremonyBarFill {
+  from { width: 0%; }
+  to   { width: 100%; }
+}
+
+@keyframes otlLogoFloat {
+  0%   { opacity: 0; transform: scale(0.88) translateY(8px); }
+  40%  { opacity: 1; transform: scale(1.04) translateY(-2px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.otl-ceremony-logo {
+  animation: otlLogoFloat 620ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.otl-ceremony-shimmer {
+  background: linear-gradient(100deg, #94a3b8 18%, #fde68a 46%, #f8fafc 53%, #94a3b8 82%);
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: otlShimmerSweep 1120ms ease-in-out forwards;
+}
+:root[data-theme="light"] .otl-ceremony-shimmer {
+  background: linear-gradient(100deg, #475569 18%, #b45309 46%, #0f172a 53%, #475569 82%);
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.otl-ceremony-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #f59e0b, #38bdf8, #10b981);
+  animation: otlCeremonyBarFill 1050ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.otl-ceremony-curtain {
+  transition: opacity 420ms ease, transform 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.otl-ceremony-curtain.lifting {
+  opacity: 0;
+  transform: translateY(-20px) scale(1.025);
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .otl-page-enter,
   .otl-drawer-expand,
   .otl-panel-swap,
   .otl-backdrop-in,
-  .otl-slide-in-right {
+  .otl-slide-in-right,
+  .otl-shake,
+  .otl-ceremony-logo,
+  .otl-ceremony-shimmer,
+  .otl-ceremony-bar-fill {
     animation: none !important;
+  }
+  .otl-ceremony-curtain {
+    transition: none !important;
   }
 }

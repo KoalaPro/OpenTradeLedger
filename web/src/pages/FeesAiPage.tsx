@@ -131,6 +131,15 @@ export function FeesAiPage({
           </div>
         )}
 
+        {(ai?.ai_error || ai?.ai_error_zh) && (
+          <div
+            data-testid="ai-error-banner"
+            className="otl-status-warn px-3.5 py-2.5 rounded-lg text-[12px] font-medium"
+          >
+            {locale === 'en' ? ai.ai_error || ai.ai_error_zh : ai.ai_error_zh || ai.ai_error}
+          </div>
+        )}
+
         {!ai ? (
           <div className="py-10 text-center text-[13px] text-[var(--fg-3)]">{t('ai_empty')}</div>
         ) : (
