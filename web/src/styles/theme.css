@@ -188,11 +188,16 @@ body {
 
   .otl-table tbody tr.clickable {
     cursor: pointer;
-    transition: background-color 120ms ease;
+    position: relative;
+    transition: background-color 180ms ease, box-shadow 200ms ease;
   }
 
   .otl-table tbody tr.clickable:hover {
-    background-color: var(--surface-hover);
+    background: linear-gradient(90deg, rgba(56, 189, 248, 0.08), var(--surface-hover) 72%);
+  }
+
+  :root[data-theme="light"] .otl-table tbody tr.clickable:hover {
+    background: linear-gradient(90deg, rgba(15, 23, 42, 0.045), var(--surface-hover) 72%);
   }
 
   .otl-table tbody tr.selected {
@@ -403,6 +408,150 @@ body {
   pointer-events: none;
 }
 
+/* ── Style 2: Frosted Velvet Shimmer Floating Window & Spotlight Micro-Interactions ── */
+@keyframes otlVelvetRipple {
+  0%   { opacity: 0.85; transform: translate(-50%, -50%) scale(0.14); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(2.45); }
+}
+
+.otl-velvet-ripple {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  z-index: 2;
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.28) 0%, rgba(56, 189, 248, 0.14) 50%, transparent 72%);
+  animation: otlVelvetRipple 520ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+:root[data-theme="light"] .otl-velvet-ripple {
+  background: radial-gradient(circle, rgba(15, 23, 42, 0.12) 0%, rgba(59, 130, 246, 0.10) 52%, transparent 72%);
+}
+
+.otl-card-interactive {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 240ms ease,
+    box-shadow 260ms ease,
+    background-color 200ms ease;
+}
+
+.otl-card-interactive:hover {
+  border-color: rgba(251, 191, 36, 0.32);
+  box-shadow: var(--shadow), 0 0 22px rgba(251, 191, 36, 0.07);
+}
+
+:root[data-theme="light"] .otl-card-interactive:hover {
+  border-color: #94a3b8;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
+}
+
+.otl-card-interactive:active {
+  transform: scale(0.988);
+}
+
+.otl-glider {
+  transition:
+    transform 250ms cubic-bezier(0.16, 1, 0.3, 1),
+    width 250ms cubic-bezier(0.16, 1, 0.3, 1),
+    height 250ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 180ms ease;
+}
+
+@keyframes otlVelvetFloatIn {
+  0%   { opacity: 0; filter: blur(6px); transform: translateY(15px) scale(0.95); }
+  100% { opacity: 1; filter: blur(0px); transform: translateY(0) scale(1); }
+}
+
+@keyframes otlVelvetFloatOut {
+  0%   { opacity: 1; filter: blur(0px); transform: translateY(0) scale(1); }
+  100% { opacity: 0; filter: blur(4px); transform: translateY(-9px) scale(0.965); }
+}
+
+.otl-modal-backdrop {
+  background: rgba(5, 8, 14, 0.58);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: otlBackdropIn 210ms ease-out both;
+  transition: opacity 185ms ease;
+}
+
+:root[data-theme="light"] .otl-modal-backdrop {
+  background: rgba(15, 23, 42, 0.32);
+}
+
+.otl-modal-backdrop.closing {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.otl-velvet-window {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: 16px;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.68), 0 0 32px rgba(251, 191, 36, 0.08);
+  animation: otlVelvetFloatIn 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+:root[data-theme="light"] .otl-velvet-window {
+  border-color: var(--border-strong);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+}
+
+.otl-velvet-window::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 14%;
+  right: 14%;
+  height: 1.5px;
+  background: linear-gradient(90deg, transparent, #fbbf24, #38bdf8, transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.otl-modal-backdrop.closing .otl-velvet-window {
+  animation: otlVelvetFloatOut 185ms ease-in both;
+}
+
+.otl-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 9999px;
+  background: var(--track);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 220ms ease, border-color 220ms ease, box-shadow 240ms ease;
+}
+
+.otl-switch[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-soft);
+}
+
+.otl-switch-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+  transform: translateX(0);
+  transition: transform 250ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.otl-switch[aria-checked="true"] .otl-switch-knob {
+  transform: translateX(16px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .otl-page-enter,
   .otl-drawer-expand,
@@ -412,10 +561,15 @@ body {
   .otl-shake,
   .otl-ceremony-logo,
   .otl-ceremony-shimmer,
-  .otl-ceremony-bar-fill {
+  .otl-ceremony-bar-fill,
+  .otl-velvet-window,
+  .otl-velvet-ripple {
     animation: none !important;
   }
-  .otl-ceremony-curtain {
+  .otl-ceremony-curtain,
+  .otl-glider,
+  .otl-switch-knob,
+  .otl-card-interactive {
     transition: none !important;
   }
 }

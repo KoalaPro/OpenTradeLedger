@@ -2,6 +2,7 @@ import { AlertTriangle, Eye, EyeOff, Languages } from 'lucide-react'
 import { useI18n } from '../i18n'
 import { CURRENCY_OPTIONS } from '../lib/currency'
 import type { CurrencyCode, Locale, NavPage } from '../lib/types'
+import { SegmentedPills } from './SegmentedPills'
 
 interface TopBarProps {
   page: NavPage
@@ -113,31 +114,15 @@ export function TopBar({
         </button>
 
         {page !== 'settings' && (
-          <div className="inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]">
-            {(
-              [
-                ['all', t('range_all')],
-                ['30d', t('range_30d')],
-                ['7d', t('range_7d')],
-              ] as const
-            ).map(([rk, label]) => {
-              const active = rangeKey === rk
-              return (
-                <button
-                  key={rk}
-                  type="button"
-                  onClick={() => onChangeRange(rk)}
-                  className="px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer whitespace-nowrap"
-                  style={{
-                    background: active ? 'var(--surface)' : 'transparent',
-                    color: active ? 'var(--fg)' : 'var(--fg-2)',
-                  }}
-                >
-                  {label}
-                </button>
-              )
-            })}
-          </div>
+          <SegmentedPills
+            value={rangeKey as 'all' | '30d' | '7d'}
+            onChange={rk => onChangeRange(rk)}
+            options={[
+              { value: 'all', label: t('range_all') },
+              { value: '30d', label: t('range_30d') },
+              { value: '7d', label: t('range_7d') },
+            ]}
+          />
         )}
       </div>
     </header>

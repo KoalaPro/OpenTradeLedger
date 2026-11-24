@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { ChevronRight } from 'lucide-react'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
+import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
@@ -52,36 +52,14 @@ export function ExtensionsPage({
   return (
     <div data-testid="extensions-page" className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]">
-          {enableCopy && (
-            <button
-              type="button"
-              data-testid="ext-tab-copy"
-              onClick={() => setSubTab('copy')}
-              className="px-3 py-1 rounded-md text-[12px] font-medium cursor-pointer"
-              style={{
-                background: activeTab === 'copy' ? 'var(--surface)' : 'transparent',
-                color: activeTab === 'copy' ? 'var(--fg)' : 'var(--fg-2)',
-              }}
-            >
-              {t('ext_copy_tab')}
-            </button>
-          )}
-          {enableStocks && (
-            <button
-              type="button"
-              data-testid="ext-tab-stock"
-              onClick={() => setSubTab('stock')}
-              className="px-3 py-1 rounded-md text-[12px] font-medium cursor-pointer"
-              style={{
-                background: activeTab === 'stock' ? 'var(--surface)' : 'transparent',
-                color: activeTab === 'stock' ? 'var(--fg)' : 'var(--fg-2)',
-              }}
-            >
-              {t('ext_stock_tab')}
-            </button>
-          )}
-        </div>
+        <SegmentedPills
+          value={activeTab}
+          onChange={setSubTab}
+          options={[
+            ...(enableCopy ? [{ value: 'copy' as const, label: t('ext_copy_tab'), testId: 'ext-tab-copy' }] : []),
+            ...(enableStocks ? [{ value: 'stock' as const, label: t('ext_stock_tab'), testId: 'ext-tab-stock' }] : []),
+          ]}
+        />
         <span className="text-[12px] text-[var(--fg-3)]">{t('ext_toggle_hint')}</span>
       </div>
 
@@ -383,10 +361,7 @@ export function ExtensionsPage({
                         <span className="txt-pos">+{cur.plainMoney(row.rebate_usd, 4)}</span>
                       </td>
                       <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_usd)}`}>
-                        <span className="inline-flex items-center justify-end gap-1">
-                          <span>{cur.signedMoney(row.net_pnl_usd)}</span>
-                          {onInspectSymbol && <ChevronRight size={13} className="text-[var(--fg-3)]" />}
-                        </span>
+                        {cur.signedMoney(row.net_pnl_usd)}
                       </td>
                     </tr>
                   ))}

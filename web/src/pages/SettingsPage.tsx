@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
+import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { api } from '../lib/api'
@@ -598,22 +599,14 @@ export function SettingsPage({
             {/* Language */}
             <div className="flex items-center justify-between gap-2 text-[12.5px]">
               <span className="text-[var(--fg-2)]">{t('set_lang')}</span>
-              <div className="inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]">
-                {(['zh-CN', 'en'] as Locale[]).map(l => (
-                  <button
-                    key={l}
-                    type="button"
-                    onClick={() => void onUpdateSettings({ locale: l })}
-                    className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer"
-                    style={{
-                      background: settings.locale === l ? 'var(--surface)' : 'transparent',
-                      color: settings.locale === l ? 'var(--fg)' : 'var(--fg-2)',
-                    }}
-                  >
-                    {l === 'zh-CN' ? '简体中文' : 'English'}
-                  </button>
-                ))}
-              </div>
+              <SegmentedPills
+                value={settings.locale}
+                onChange={(l: Locale) => void onUpdateSettings({ locale: l })}
+                options={[
+                  { value: 'zh-CN', label: '简体中文' },
+                  { value: 'en', label: 'English' },
+                ]}
+              />
             </div>
 
             {/* Theme */}
@@ -634,28 +627,14 @@ export function SettingsPage({
             {/* Polarity */}
             <div className="flex items-center justify-between gap-2 text-[12.5px] pt-3 border-t border-[var(--border)]">
               <span className="text-[var(--fg-2)]">{t('set_polarity')}</span>
-              <div className="inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]">
-                {(
-                  [
-                    ['cn', t('polarity_cn')],
-                    ['global', t('polarity_global')],
-                  ] as Array<[Polarity, string]>
-                ).map(([p, lbl]) => (
-                  <button
-                    key={p}
-                    type="button"
-                    data-testid={`polarity-${p}`}
-                    onClick={() => void onUpdateSettings({ polarity: p })}
-                    className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer whitespace-nowrap"
-                    style={{
-                      background: settings.polarity === p ? 'var(--surface)' : 'transparent',
-                      color: settings.polarity === p ? 'var(--fg)' : 'var(--fg-2)',
-                    }}
-                  >
-                    {lbl}
-                  </button>
-                ))}
-              </div>
+              <SegmentedPills
+                value={settings.polarity}
+                onChange={(p: Polarity) => void onUpdateSettings({ polarity: p })}
+                options={[
+                  { value: 'cn', label: t('polarity_cn'), testId: 'polarity-cn' },
+                  { value: 'global', label: t('polarity_global'), testId: 'polarity-global' },
+                ]}
+              />
             </div>
 
             {/* Display Currency with Live FX */}
@@ -687,49 +666,71 @@ export function SettingsPage({
               )}
             </div>
 
-            {/* Optional Modules & Privacy Default */}
-            <div className="space-y-2.5 pt-3 border-t border-[var(--border)] text-[12.5px]">
-              <label className="flex items-center justify-between gap-2 cursor-pointer">
+            {/* Optional Modules & Privacy Default — Velvet Tactile Switches */}
+            <div className="space-y-3 pt-3 border-t border-[var(--border)] text-[12.5px]">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-[var(--fg-2)]">{t('set_privacy_default')}</span>
-                <input
-                  type="checkbox"
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label={t('set_privacy_default')}
+                  aria-checked={Boolean(settings.privacy_mode)}
                   data-testid="privacy-default-switch"
-                  checked={Boolean(settings.privacy_mode)}
-                  onChange={e => void onUpdateSettings({ privacy_mode: e.target.checked })}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 cursor-pointer">
+                  onClick={() => void onUpdateSettings({ privacy_mode: !settings.privacy_mode })}
+                  className="otl-switch"
+                >
+                  <span className="otl-switch-knob" />
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-[var(--fg-2)]">{t('set_mod_copy')}</span>
-                <input
-                  type="checkbox"
-                  checked={settings.modules.copy_trading}
-                  onChange={e =>
-                    void onUpdateSettings({ modules: { copy_trading: e.target.checked } })
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label={t('set_mod_copy')}
+                  aria-checked={Boolean(settings.modules.copy_trading)}
+                  onClick={() =>
+                    void onUpdateSettings({ modules: { copy_trading: !settings.modules.copy_trading } })
                   }
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2 cursor-pointer">
+                  className="otl-switch"
+                >
+                  <span className="otl-switch-knob" />
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-[var(--fg-2)]">{t('set_mod_stock')}</span>
-                <input
-                  type="checkbox"
-                  checked={settings.modules.stocks}
-                  onChange={e => void onUpdateSettings({ modules: { stocks: e.target.checked } })}
-                />
-              </label>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label={t('set_mod_stock')}
+                  aria-checked={Boolean(settings.modules.stocks)}
+                  onClick={() =>
+                    void onUpdateSettings({ modules: { stocks: !settings.modules.stocks } })
+                  }
+                  className="otl-switch"
+                >
+                  <span className="otl-switch-knob" />
+                </button>
+              </div>
               <p className="m-0 text-[11px] text-[var(--fg-3)]">{t('set_mod_note')}</p>
-              <label className="flex items-center justify-between gap-2 cursor-pointer">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-[var(--fg-2)]">{t('set_goal_title')}</span>
-                <input
-                  type="checkbox"
-                  checked={settings.goal_enabled}
-                  onChange={e =>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label={t('set_goal_title')}
+                  aria-checked={Boolean(settings.goal_enabled)}
+                  onClick={() =>
                     void onUpdateSettings({
-                      goal_enabled: e.target.checked,
+                      goal_enabled: !settings.goal_enabled,
                       goal_target_usd: Number(goalInput) > 0 ? Number(goalInput) : 10000,
                     })
                   }
-                />
-              </label>
+                  className="otl-switch"
+                >
+                  <span className="otl-switch-knob" />
+                </button>
+              </div>
               {settings.goal_enabled && (
                 <div className="otl-drawer-expand space-y-2 pt-1">
                   <input
@@ -773,12 +774,17 @@ export function SettingsPage({
                 <div className="text-[12.5px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
                 <div className="text-[11.5px] text-[var(--fg-3)]">{t('set_demo_sub')}</div>
               </div>
-              <input
-                type="checkbox"
+              <button
+                type="button"
+                role="switch"
+                aria-label={t('set_demo_title')}
+                aria-checked={demoMode}
                 data-testid="demo-mode-switch"
-                checked={demoMode}
-                onChange={e => void onToggleDemo(e.target.checked)}
-              />
+                onClick={() => void onToggleDemo(!demoMode)}
+                className="otl-switch"
+              >
+                <span className="otl-switch-knob" />
+              </button>
             </div>
           </div>
 

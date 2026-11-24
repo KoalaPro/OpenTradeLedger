@@ -256,8 +256,8 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
     await waitFor(() => expect(screen.getByTestId('overview-page')).toBeTruthy())
     expect(screen.getByTestId('brand-title').textContent).toBe('交易账本')
 
-    // Reconcile drawer expands cleanly
-    fireEvent.click(screen.getByTestId('toggle-reconcile-btn'))
+    // Clicking KPI card opens standalone Velvet floating modal cleanly (zero helper button clutter)
+    fireEvent.click(screen.getByTestId('kpi-whole-pnl'))
     expect(screen.getByTestId('reconcile-drawer').textContent).toContain('合约实收净盈亏')
 
     // Trades page displays explicit Entry Fee and Exit Fee cards

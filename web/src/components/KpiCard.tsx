@@ -26,13 +26,25 @@ export function KpiCard({
   return (
     <div
       data-testid={testId}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
       onClick={onClick}
-      className={`otl-card p-4 grid gap-2 min-w-0 transition-colors ${
-        onClick ? 'cursor-pointer hover:bg-[var(--surface-hover)]' : ''
+      onKeyDown={
+        onClick
+          ? e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onClick()
+              }
+            }
+          : undefined
+      }
+      className={`otl-card p-4 grid gap-2 min-w-0 ${
+        onClick ? 'otl-card-interactive hover:bg-[var(--surface-hover)]' : ''
       }`}
       style={{
         gridTemplateRows: '20px 32px 1fr',
-        ...(active ? { borderColor: 'var(--accent)' } : {}),
+        ...(active ? { borderColor: 'rgba(251, 191, 36, 0.45)' } : {}),
       }}
     >
       <div className="flex items-center justify-between gap-2 text-[12px] text-[var(--fg-2)] whitespace-nowrap">

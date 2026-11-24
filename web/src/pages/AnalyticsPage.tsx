@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { ChevronRight, Target } from 'lucide-react'
+import { Target } from 'lucide-react'
 import { EquityChart } from '../components/EquityChart'
 import { KpiCard } from '../components/KpiCard'
 import { MonthlyCalendar } from '../components/MonthlyCalendar'
+import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
@@ -269,30 +270,14 @@ export function AnalyticsPage({
       <section className="otl-card overflow-hidden">
         <div className="px-5 py-3.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
           <h2 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('an_attr_title')}</h2>
-          <div className="inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]">
-            <button
-              type="button"
-              onClick={() => setAttrMode('symbol')}
-              className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer"
-              style={{
-                background: attrMode === 'symbol' ? 'var(--surface)' : 'transparent',
-                color: attrMode === 'symbol' ? 'var(--fg)' : 'var(--fg-2)',
-              }}
-            >
-              {t('an_attr_symbol')}
-            </button>
-            <button
-              type="button"
-              onClick={() => setAttrMode('business')}
-              className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer"
-              style={{
-                background: attrMode === 'business' ? 'var(--surface)' : 'transparent',
-                color: attrMode === 'business' ? 'var(--fg)' : 'var(--fg-2)',
-              }}
-            >
-              {t('an_attr_business')}
-            </button>
-          </div>
+          <SegmentedPills
+            value={attrMode}
+            onChange={setAttrMode}
+            options={[
+              { value: 'symbol', label: t('an_attr_symbol') },
+              { value: 'business', label: t('an_attr_business') },
+            ]}
+          />
         </div>
         <div className="overflow-x-auto">
           {attrMode === 'symbol' ? (
@@ -324,10 +309,7 @@ export function AnalyticsPage({
                       -{cur.plainMoney(row.gross_fee_usd)} / <span className="txt-pos">+{cur.plainMoney(row.rebate_usd)}</span>
                     </td>
                     <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_usd)}`}>
-                      <span className="inline-flex items-center justify-end gap-1">
-                        <span>{cur.signedMoney(row.net_pnl_usd)}</span>
-                        {onInspectSymbol && <ChevronRight size={13} className="text-[var(--fg-3)]" />}
-                      </span>
+                      {cur.signedMoney(row.net_pnl_usd)}
                     </td>
                   </tr>
                 ))}

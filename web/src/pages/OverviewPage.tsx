@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
 import { EquityChart } from '../components/EquityChart'
+import { FloatingModal } from '../components/FloatingModal'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
+import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
@@ -22,16 +23,18 @@ const BAR_COLORS: Record<string, string> = {
 export function OverviewPage({
   data,
   onNavigate,
+  onInspectSymbol,
 }: {
   data: DashboardData
   onNavigate: (page: NavPage) => void
+  onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
-  const [openDrawer, setOpenDrawer] = useState<null | 'equity' | 'reconcile'>(null)
+  const [openModal, setOpenModal] = useState<null | 'equity' | 'reconcile'>(null)
   const [holdingTab, setHoldingTab] = useState<'all' | 'futures' | 'stocks' | 'spot'>('all')
-  const showEquity = openDrawer === 'equity'
-  const showReconcile = openDrawer === 'reconcile'
+  const showEquity = openModal === 'equity'
+  const showReconcile = openModal === 'reconcile'
   const s = data.summary
   const futuresList = data.open_positions || []
   const stockList = data.extensions?.stocks?.holdings || []
@@ -56,29 +59,26 @@ export function OverviewPage({
       ? data.equity_curve[data.equity_curve.length - 1].cum_net_usd
       : s.whole_net_pnl_usd
 
+  const holdingFilterOptions = (
+    [
+      ['all', locale === 'en' ? 'All' : '全部', true],
+      ['futures', locale === 'en' ? 'Futures' : '合约', futuresList.length > 0],
+      ['stocks', locale === 'en' ? 'Equities' : '美股', stockList.length > 0],
+      ['spot', locale === 'en' ? 'Spot' : '现货', spotList.length > 0],
+    ] as const
+  )
+    .filter(([, , visible]) => visible)
+    .map(([value, label]) => ({ value, label }))
+
   return (
     <div data-testid="overview-page" className="space-y-4">
-      {/* 4 aligned KPI cards */}
+      {/* 4 pure, uncluttered KPI cards (zero 'click to open' helper badges) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <KpiCard
           testId="kpi-equity"
           label={t('kpi_total_equity')}
           active={showEquity}
-          onClick={() => setOpenDrawer(d => (d === 'equity' ? null : 'equity'))}
-          badge={
-            <button
-              type="button"
-              data-testid="toggle-equity-btn"
-              onClick={e => {
-                e.stopPropagation()
-                setOpenDrawer(d => (d === 'equity' ? null : 'equity'))
-              }}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
-            >
-              <span>{locale === 'en' ? `${cur.code}` : `明细`}</span>
-              {showEquity ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            </button>
-          }
+          onClick={() => setOpenModal(d => (d === 'equity' ? null : 'equity'))}
           value={cur.plainMoney(s.total_equity_usd)}
           sub={
             <span>
@@ -91,21 +91,7 @@ export function OverviewPage({
           testId="kpi-whole-pnl"
           label={t('kpi_whole_pnl')}
           active={showReconcile}
-          onClick={() => setOpenDrawer(d => (d === 'reconcile' ? null : 'reconcile'))}
-          badge={
-            <button
-              type="button"
-              data-testid="toggle-reconcile-btn"
-              onClick={e => {
-                e.stopPropagation()
-                setOpenDrawer(d => (d === 'reconcile' ? null : 'reconcile'))
-              }}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
-            >
-              <span>{t('kpi_reconcile_btn')}</span>
-              {showReconcile ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            </button>
-          }
+          onClick={() => setOpenModal(d => (d === 'reconcile' ? null : 'reconcile'))}
           value={cur.signedPlainMoney(s.whole_net_pnl_usd)}
           valueClass={pnlTone(s.whole_net_pnl_usd)}
           sub={
@@ -158,193 +144,187 @@ export function OverviewPage({
         />
       </div>
 
-      {/* Expandable Full-Width Total Equity Breakdown Drawer */}
-      {showEquity && (
-        <section data-testid="equity-drawer" className="otl-card otl-drawer-expand overflow-hidden">
-          <div className="px-5 py-3.5 bg-[var(--surface-2)] border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="m-0 text-[14px] font-semibold text-[var(--fg)]">
-                {locale === 'en' ? 'Total Equity Breakdown' : '总净资产构成明细'}
-              </h2>
-              <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">
-                {locale === 'en'
-                  ? 'Live real-time valuation across all connected exchanges, margin, equities & spot'
-                  : '汇总全部已连接交易所的实时账户资产、可用保证金、跟单净值与美股/现货市值'}
-              </p>
+      {/* Standalone Floating Window: Total Equity Breakdown */}
+      <FloatingModal
+        open={showEquity}
+        onClose={() => setOpenModal(null)}
+        testId="equity-drawer"
+        maxWidthClass="max-w-[780px]"
+        title={locale === 'en' ? 'Total Equity Breakdown' : '总净资产构成明细'}
+        subtitle={
+          <span className="inline-flex items-center gap-3 flex-wrap">
+            <span>
+              {t('kpi_total_equity')}:{' '}
+              <b className="text-[var(--fg)] sensitive">{cur.money(s.total_equity_usd)}</b>
+            </span>
+            <span>
+              {t('kpi_net_principal')}:{' '}
+              <b className="text-[var(--fg)] sensitive">{cur.money(s.net_principal_usd)}</b>
+            </span>
+          </span>
+        }
+      >
+        {/* 4-tile Structure Strip */}
+        <div className="px-5 py-3.5 border-b border-[var(--border)] grid grid-cols-2 lg:grid-cols-4 gap-3 text-[12px]">
+          <div className="otl-surface-2 rounded-lg p-3">
+            <div className="text-[11px] text-[var(--fg-3)]">
+              {locale === 'en' ? 'Futures Avail. Margin' : '合约可用保证金'}
             </div>
-            <div className="flex items-center gap-4 text-[12px] text-[var(--fg-2)] flex-wrap">
-              <span>
-                {t('kpi_total_equity')}:{' '}
-                <b className="text-[var(--fg)] sensitive">{cur.money(s.total_equity_usd)}</b>
-              </span>
-              <span>
-                {t('kpi_net_principal')}:{' '}
-                <b className="text-[var(--fg)] sensitive">{cur.money(s.net_principal_usd)}</b>
-              </span>
+            <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
+              {cur.money(totalAvailableMargin)}
+            </div>
+            <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
+              {s.total_equity_usd > 0 ? `${((totalAvailableMargin / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
             </div>
           </div>
+          <div className="otl-surface-2 rounded-lg p-3">
+            <div className="text-[11px] text-[var(--fg-3)]">
+              {locale === 'en' ? 'Active Copy Pool' : '跟单池在途净值'}
+            </div>
+            <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
+              {cur.money(copyActiveEq)}
+            </div>
+            <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
+              {s.total_equity_usd > 0 ? `${((copyActiveEq / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
+            </div>
+          </div>
+          <div className="otl-surface-2 rounded-lg p-3">
+            <div className="text-[11px] text-[var(--fg-3)]">
+              {locale === 'en' ? 'Equities & Tokens' : '美股与股票代币'}
+            </div>
+            <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
+              {cur.money(stockEq)}
+            </div>
+            <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
+              {s.total_equity_usd > 0 ? `${((stockEq / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
+            </div>
+          </div>
+          <div className="otl-surface-2 rounded-lg p-3">
+            <div className="text-[11px] text-[var(--fg-3)]">
+              {locale === 'en' ? 'Crypto Spot' : '加密现货市值'}
+            </div>
+            <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
+              {cur.money(spotTotalVal)}
+            </div>
+            <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
+              {s.total_equity_usd > 0 ? `${((spotTotalVal / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
+            </div>
+          </div>
+        </div>
 
-          {/* 4-tile Structure Strip */}
-          <div className="px-5 py-3.5 border-b border-[var(--border)] grid grid-cols-2 lg:grid-cols-4 gap-3 text-[12px]">
-            <div className="otl-surface-2 rounded-lg p-3">
-              <div className="text-[11px] text-[var(--fg-3)]">
-                {locale === 'en' ? 'Futures Avail. Margin' : '合约可用保证金'}
-              </div>
-              <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
-                {cur.money(totalAvailableMargin)}
-              </div>
-              <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
-                {s.total_equity_usd > 0 ? `${((totalAvailableMargin / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
-              </div>
-            </div>
-            <div className="otl-surface-2 rounded-lg p-3">
-              <div className="text-[11px] text-[var(--fg-3)]">
-                {locale === 'en' ? 'Active Copy Pool' : '跟单池在途净值'}
-              </div>
-              <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
-                {cur.money(copyActiveEq)}
-              </div>
-              <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
-                {s.total_equity_usd > 0 ? `${((copyActiveEq / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
-              </div>
-            </div>
-            <div className="otl-surface-2 rounded-lg p-3">
-              <div className="text-[11px] text-[var(--fg-3)]">
-                {locale === 'en' ? 'Equities & Tokens' : '美股与股票代币'}
-              </div>
-              <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
-                {cur.money(stockEq)}
-              </div>
-              <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
-                {s.total_equity_usd > 0 ? `${((stockEq / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
-              </div>
-            </div>
-            <div className="otl-surface-2 rounded-lg p-3">
-              <div className="text-[11px] text-[var(--fg-3)]">
-                {locale === 'en' ? 'Crypto Spot' : '加密现货市值'}
-              </div>
-              <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
-                {cur.money(spotTotalVal)}
-              </div>
-              <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
-                {s.total_equity_usd > 0 ? `${((spotTotalVal / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
-              </div>
-            </div>
-          </div>
-
-          {/* Per-Venue Asset Table */}
-          <div className="overflow-x-auto">
-            <table className="otl-table">
-              <thead>
-                <tr>
-                  <th>{t('th_venue')}</th>
-                  <th className="text-right">{locale === 'en' ? `Live Equity (${cur.code})` : `实时总资产 (${cur.code})`}</th>
-                  <th className="text-right">{locale === 'en' ? 'Share' : '资产占比'}</th>
-                  <th className="text-right">{locale === 'en' ? 'Available Margin' : '可用保证金'}</th>
-                  <th className="text-right">{t('kpi_net_principal')}</th>
-                  <th className="text-right">{t('kpi_whole_pnl')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedExchanges.map(ex => {
-                  const pct = (Math.max(0, ex.equity_usd) / totalExEquity) * 100
-                  return (
-                    <tr key={ex.venue_id}>
-                      <td>
-                        <VenueBadge
-                          venueId={ex.venue_id}
-                          name={locale === 'en' ? ex.display_name : ex.display_name_zh || ex.display_name}
-                        />
-                      </td>
-                      <td className="text-right font-semibold whitespace-nowrap sensitive">
-                        {cur.plainMoney(ex.equity_usd)}
-                      </td>
-                      <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
-                        {pct.toFixed(1)}%
-                      </td>
-                      <td className="text-right whitespace-nowrap text-[var(--fg-2)] sensitive">
-                        {cur.plainMoney(ex.available_margin_usd)}
-                      </td>
-                      <td className="text-right whitespace-nowrap text-[var(--fg-2)] sensitive">
-                        {cur.plainMoney(ex.net_principal_usd)}
-                      </td>
-                      <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(ex.net_pnl_usd)}`}>
-                        {cur.signedPlainMoney(ex.net_pnl_usd)}
-                      </td>
-                    </tr>
-                  )
-                })}
-                <tr className="bg-[var(--surface-2)] font-semibold">
-                  <td>{locale === 'en' ? 'Total' : '全账户合计'}</td>
-                  <td className="text-right whitespace-nowrap sensitive">{cur.plainMoney(s.total_equity_usd)}</td>
-                  <td className="text-right whitespace-nowrap">100.0%</td>
-                  <td className="text-right whitespace-nowrap sensitive">{cur.plainMoney(totalAvailableMargin)}</td>
-                  <td className="text-right whitespace-nowrap sensitive">{cur.plainMoney(s.net_principal_usd)}</td>
-                  <td className={`text-right whitespace-nowrap sensitive ${pnlTone(s.whole_net_pnl_usd)}`}>
-                    {cur.signedPlainMoney(s.whole_net_pnl_usd)}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {/* Expandable Full-Width Closed-Loop Reconciliation Drawer (fully dark-mode native) */}
-      {showReconcile && (
-        <section data-testid="reconcile-drawer" className="otl-card otl-drawer-expand overflow-hidden">
-          <div className="px-5 py-3.5 bg-[var(--surface-2)] border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('ov_reconcile_title')}</h2>
-              <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('ov_reconcile_sub')}</p>
-            </div>
-            <div className="flex items-center gap-4 text-[12px] text-[var(--fg-2)] flex-wrap">
-              <span>
-                {t('kpi_net_principal')}:{' '}
-                <b className="text-[var(--fg)] sensitive">{cur.money(data.reconciliation.net_principal_usd)}</b>
-              </span>
-              <span>
-                {t('kpi_total_equity')}:{' '}
-                <b className="text-[var(--fg)] sensitive">{cur.money(data.reconciliation.total_equity_usd)}</b>
-              </span>
-              <span>
-                {t('kpi_whole_pnl')}:{' '}
-                <b className={`sensitive ${pnlTone(data.reconciliation.net_pnl_usd)}`}>
-                  {cur.signedMoney(data.reconciliation.net_pnl_usd)}
-                </b>
-              </span>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="otl-table">
-              <thead>
-                <tr>
-                  <th>{t('th_item')}</th>
-                  <th>{t('th_detail')}</th>
-                  <th className="text-right">
-                    {locale === 'en' ? `Net Contribution (${cur.code})` : `净贡献 (${cur.code})`}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.reconciliation.items.map(item => (
-                  <tr key={item.key}>
-                    <td className="font-medium whitespace-nowrap">
-                      {locale === 'en' ? item.label : item.label_zh || item.label}
+        {/* Per-Venue Asset Table */}
+        <div className="overflow-x-auto">
+          <table className="otl-table">
+            <thead>
+              <tr>
+                <th>{t('th_venue')}</th>
+                <th className="text-right">
+                  {locale === 'en' ? `Live Equity (${cur.code})` : `实时总资产 (${cur.code})`}
+                </th>
+                <th className="text-right">{locale === 'en' ? 'Share' : '资产占比'}</th>
+                <th className="text-right">{locale === 'en' ? 'Available Margin' : '可用保证金'}</th>
+                <th className="text-right">{t('kpi_net_principal')}</th>
+                <th className="text-right">{t('kpi_whole_pnl')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedExchanges.map(ex => {
+                const pct = (Math.max(0, ex.equity_usd) / totalExEquity) * 100
+                return (
+                  <tr key={ex.venue_id}>
+                    <td>
+                      <VenueBadge
+                        venueId={ex.venue_id}
+                        name={locale === 'en' ? ex.display_name : ex.display_name_zh || ex.display_name}
+                      />
                     </td>
-                    <td className="text-[var(--fg-2)]">
-                      {locale === 'en' ? item.detail : item.detail_zh || item.detail}
+                    <td className="text-right font-semibold whitespace-nowrap sensitive">
+                      {cur.plainMoney(ex.equity_usd)}
                     </td>
-                    <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(item.amount_usd)}`}>
-                      {cur.signedPlainMoney(item.amount_usd)}
+                    <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
+                      {pct.toFixed(1)}%
+                    </td>
+                    <td className="text-right whitespace-nowrap text-[var(--fg-2)] sensitive">
+                      {cur.plainMoney(ex.available_margin_usd)}
+                    </td>
+                    <td className="text-right whitespace-nowrap text-[var(--fg-2)] sensitive">
+                      {cur.plainMoney(ex.net_principal_usd)}
+                    </td>
+                    <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(ex.net_pnl_usd)}`}>
+                      {cur.signedPlainMoney(ex.net_pnl_usd)}
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+                )
+              })}
+              <tr className="bg-[var(--surface-2)] font-semibold">
+                <td>{locale === 'en' ? 'Total' : '全账户合计'}</td>
+                <td className="text-right whitespace-nowrap sensitive">{cur.plainMoney(s.total_equity_usd)}</td>
+                <td className="text-right whitespace-nowrap">100.0%</td>
+                <td className="text-right whitespace-nowrap sensitive">{cur.plainMoney(totalAvailableMargin)}</td>
+                <td className="text-right whitespace-nowrap sensitive">{cur.plainMoney(s.net_principal_usd)}</td>
+                <td className={`text-right whitespace-nowrap sensitive ${pnlTone(s.whole_net_pnl_usd)}`}>
+                  {cur.signedPlainMoney(s.whole_net_pnl_usd)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </FloatingModal>
+
+      {/* Standalone Floating Window: Closed-Loop Reconciliation */}
+      <FloatingModal
+        open={showReconcile}
+        onClose={() => setOpenModal(null)}
+        testId="reconcile-drawer"
+        maxWidthClass="max-w-[740px]"
+        title={t('ov_reconcile_title')}
+        subtitle={t('ov_reconcile_sub')}
+      >
+        <div className="px-5 py-3 bg-[var(--surface)] border-b border-[var(--border)] flex items-center gap-4 text-[12px] text-[var(--fg-2)] flex-wrap">
+          <span>
+            {t('kpi_net_principal')}:{' '}
+            <b className="text-[var(--fg)] sensitive">{cur.money(data.reconciliation.net_principal_usd)}</b>
+          </span>
+          <span>
+            {t('kpi_total_equity')}:{' '}
+            <b className="text-[var(--fg)] sensitive">{cur.money(data.reconciliation.total_equity_usd)}</b>
+          </span>
+          <span>
+            {t('kpi_whole_pnl')}:{' '}
+            <b className={`sensitive ${pnlTone(data.reconciliation.net_pnl_usd)}`}>
+              {cur.signedMoney(data.reconciliation.net_pnl_usd)}
+            </b>
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="otl-table">
+            <thead>
+              <tr>
+                <th>{t('th_item')}</th>
+                <th>{t('th_detail')}</th>
+                <th className="text-right">
+                  {locale === 'en' ? `Net Contribution (${cur.code})` : `净贡献 (${cur.code})`}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.reconciliation.items.map(item => (
+                <tr key={item.key}>
+                  <td className="font-medium whitespace-nowrap">
+                    {locale === 'en' ? item.label : item.label_zh || item.label}
+                  </td>
+                  <td className="text-[var(--fg-2)]">
+                    {locale === 'en' ? item.detail : item.detail_zh || item.detail}
+                  </td>
+                  <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(item.amount_usd)}`}>
+                    {cur.signedPlainMoney(item.amount_usd)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </FloatingModal>
 
       {/* Equity Curve + Dynamic Venue Allocation */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
@@ -433,31 +413,12 @@ export function OverviewPage({
           </div>
 
           {activeCategoriesCount > 1 && (
-            <div className="inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[11.5px]">
-              {(
-                [
-                  ['all', locale === 'en' ? 'All' : '全部', true],
-                  ['futures', locale === 'en' ? 'Futures' : '合约', futuresList.length > 0],
-                  ['stocks', locale === 'en' ? 'Equities' : '美股', stockList.length > 0],
-                  ['spot', locale === 'en' ? 'Spot' : '现货', spotList.length > 0],
-                ] as const
-              )
-                .filter(([, , visible]) => visible)
-                .map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setHoldingTab(key)}
-                    className="px-2.5 py-0.5 rounded-md font-medium cursor-pointer transition-colors"
-                    style={{
-                      background: holdingTab === key ? 'var(--surface)' : 'transparent',
-                      color: holdingTab === key ? 'var(--fg)' : 'var(--fg-2)',
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
-            </div>
+            <SegmentedPills
+              size="sm"
+              value={holdingTab}
+              onChange={setHoldingTab}
+              options={holdingFilterOptions}
+            />
           )}
         </div>
 
@@ -479,7 +440,11 @@ export function OverviewPage({
               <tbody>
                 {showFutures &&
                   futuresList.map(pos => (
-                    <tr key={`fut-${pos.venue_id}-${pos.symbol}-${pos.side}`}>
+                    <tr
+                      key={`fut-${pos.venue_id}-${pos.symbol}-${pos.side}`}
+                      className={onInspectSymbol ? 'clickable' : undefined}
+                      onClick={() => onInspectSymbol?.(pos.venue_id, pos.symbol, pos.venue_name)}
+                    >
                       <td className="whitespace-nowrap">
                         <span className="inline-flex items-center gap-2 font-semibold">
                           <InstrumentMark instrument={pos.symbol} exchange={pos.venue_id.toUpperCase()} />

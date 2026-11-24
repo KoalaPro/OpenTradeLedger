@@ -6,6 +6,7 @@ import { TradeDrilldownDrawer } from './components/TradeDrilldownDrawer'
 import { I18nProvider } from './i18n'
 import { api, ApiError } from './lib/api'
 import { CurrencyProvider, DEFAULT_FX } from './lib/currency'
+import { attachVelvetRippleListener } from './lib/velvetRipple'
 import type {
   AuthStatusPayload,
   CurrencyCode,
@@ -61,6 +62,7 @@ export default function App() {
   const [generatingAi, setGeneratingAi] = useState(false)
   const [error, setError] = useState('')
   const [drilldown, setDrilldown] = useState<{ venueId: string; venueName?: string; symbol: string } | null>(null)
+  const [drilldownOpen, setDrilldownOpen] = useState(false)
 
   const [authStatus, setAuthStatus] = useState<AuthStatusPayload>({ authenticated: true, require_setup: false })
   const [authChecked, setAuthChecked] = useState(false)
@@ -74,6 +76,10 @@ export default function App() {
   }, [settings.theme, settings.polarity, settings.locale, privacyMode])
 
   const isAuthLocked = Boolean(authStatus.require_setup || authStatus.authenticated === false)
+
+  useEffect(() => {
+    return attachVelvetRippleListener()
+  }, [])
 
   useEffect(() => {
     api
@@ -216,10 +222,11 @@ export default function App() {
 
   const handleInspectSymbol = (venueId: string, symbol: string, venueName?: string) => {
     setDrilldown({ venueId: venueId.toLowerCase(), venueName, symbol })
+    setDrilldownOpen(true)
   }
 
   const handleOpenInTrades = (venueId: string, symbol: string) => {
-    setDrilldown(null)
+    setDrilldownOpen(false)
     setVenueFilter(venueId.toLowerCase())
     setSymbolFilter(symbol)
     setPage('trades')
@@ -296,7 +303,13 @@ export default function App() {
                   <div className="py-20 text-center text-[13px] text-[var(--fg-3)]">Loading…</div>
                 ) : (
                   <div key={page} className="otl-page-enter">
-                    {page === 'overview' && <OverviewPage data={data} onNavigate={setPage} />}
+                    {page === 'overview' && (
+                      <OverviewPage
+                        data={data}
+                        onNavigate={setPage}
+                        onInspectSymbol={handleInspectSymbol}
+                      />
+                    )}
                     {page === 'trades' && (
                       <TradesPage
                         data={data}
@@ -392,7 +405,8 @@ export default function App() {
             venueName={drilldown.venueName}
             symbol={drilldown.symbol}
             rangeKey={rangeKey}
-            onClose={() => setDrilldown(null)}
+            open={drilldownOpen}
+            onClose={() => setDrilldownOpen(false)}
             onOpenInTrades={handleOpenInTrades}
           />
         )}

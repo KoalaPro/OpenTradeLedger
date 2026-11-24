@@ -1,6 +1,8 @@
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Activity,
   BookOpen,
+  Check,
   LayoutDashboard,
   LayoutGrid,
   Lock,
@@ -35,6 +37,25 @@ export function Sidebar({
   onLock,
 }: SidebarProps) {
   const { locale, t } = useI18n()
+  const navRef = useRef<HTMLElement | null>(null)
+  const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const [glider, setGlider] = useState<{ top: number; height: number; visible: boolean }>({
+    top: 0,
+    height: 36,
+    visible: false,
+  })
+  const prevSyncingRef = useRef(manualSyncing)
+  const [justSynced, setJustSynced] = useState(false)
+
+  useEffect(() => {
+    if (prevSyncingRef.current && !manualSyncing) {
+      setJustSynced(true)
+      const timer = window.setTimeout(() => setJustSynced(false), 1100)
+      prevSyncingRef.current = manualSyncing
+      return () => window.clearTimeout(timer)
+    }
+    prevSyncingRef.current = manualSyncing
+  }, [manualSyncing])
 
   const primaryItems: Array<{ id: NavPage; label: string; icon: typeof LayoutDashboard }> = [
     { id: 'overview', label: t('nav_overview'), icon: LayoutDashboard },
@@ -45,6 +66,19 @@ export function Sidebar({
   if (showExtensions) {
     primaryItems.push({ id: 'extensions', label: t('nav_extensions'), icon: LayoutGrid })
   }
+
+  useLayoutEffect(() => {
+    const btn = itemRefs.current[page]
+    if (!btn) {
+      setGlider(g => ({ ...g, visible: false }))
+      return
+    }
+    const h = btn.offsetHeight
+    const top = btn.offsetTop
+    if (h > 0) {
+      setGlider({ top, height: h, visible: true })
+    }
+  }, [page, showExtensions, locale])
 
   return (
     <aside
@@ -65,20 +99,40 @@ export function Sidebar({
         </span>
       </div>
 
-      {/* Primary navigation — strictly single-line icon + label, zero count sublabels */}
-      <nav aria-label={t('brand')} className="flex flex-row md:flex-col gap-1 overflow-x-auto md:overflow-visible">
+      {/* Primary navigation with smooth Velvet glider */}
+      <nav
+        ref={navRef}
+        aria-label={t('brand')}
+        className="relative flex flex-row md:flex-col gap-1 overflow-x-auto md:overflow-visible"
+      >
+        {glider.visible && (
+          <div
+            aria-hidden="true"
+            className="otl-glider hidden md:block absolute left-0 right-0 rounded-lg pointer-events-none"
+            style={{
+              height: `${glider.height}px`,
+              transform: `translateY(${glider.top}px)`,
+              background: 'var(--accent-soft)',
+              boxShadow: '0 0 14px var(--accent-soft)',
+            }}
+          />
+        )}
+
         {primaryItems.map(item => {
           const Icon = item.icon
           const active = page === item.id
           return (
             <button
               key={item.id}
+              ref={el => {
+                itemRefs.current[item.id] = el
+              }}
               type="button"
               data-testid={`nav-${item.id}`}
               onClick={() => onNavigate(item.id)}
-              className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-colors whitespace-nowrap cursor-pointer"
+              className="relative z-10 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-colors whitespace-nowrap cursor-pointer"
               style={{
-                background: active ? 'var(--accent-soft)' : 'transparent',
+                background: active && !glider.visible ? 'var(--accent-soft)' : 'transparent',
                 color: active ? 'var(--accent)' : 'var(--fg-2)',
               }}
             >
@@ -89,7 +143,7 @@ export function Sidebar({
         })}
       </nav>
 
-      {/* Footer: Settings + Read-Only Indicator + Manual Sync */}
+      {/* Footer: Settings + Read-Only Indicator + Manual Sync + Lock */}
       <div className="mt-4 md:mt-auto pt-3 border-t border-[var(--border)] flex flex-col gap-2">
         <button
           type="button"
@@ -119,10 +173,21 @@ export function Sidebar({
             data-testid="sync-now-btn"
             disabled={manualSyncing}
             onClick={onSync}
-            className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
+            className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer transition-colors"
           >
-            <RefreshCw size={13} className={manualSyncing ? 'animate-spin' : ''} />
-            <span>{manualSyncing ? t('syncing') : t('sync_now')}</span>
+            {justSynced && !manualSyncing ? (
+              <>
+                <Check size={13} className="text-emerald-500" />
+                <span className="text-emerald-500">
+                  {locale === 'en' ? 'Synced' : '已同步'}
+                </span>
+              </>
+            ) : (
+              <>
+                <RefreshCw size={13} className={manualSyncing ? 'animate-spin' : ''} />
+                <span>{manualSyncing ? t('syncing') : t('sync_now')}</span>
+              </>
+            )}
           </button>
           {authEnabled && onLock && (
             <button
@@ -131,7 +196,7 @@ export function Sidebar({
               title={locale === 'en' ? 'Lock Ledger' : '立即锁定账本'}
               aria-label={locale === 'en' ? 'Lock Ledger' : '立即锁定账本'}
               onClick={onLock}
-              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer shrink-0"
+              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer shrink-0 transition-colors"
             >
               <Lock size={13} />
             </button>
