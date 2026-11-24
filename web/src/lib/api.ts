@@ -5,6 +5,7 @@ import type {
   FxRatesPayload,
   UserSettings,
   VenueHealthState,
+  VersionCheckPayload,
 } from './types'
 
 export class ApiError extends Error {
@@ -112,6 +113,9 @@ export const api = {
   },
   getFxRates(refresh = false): Promise<FxRatesPayload> {
     return req(`/api/v1/fx-rates${refresh ? '?refresh=true' : ''}`)
+  },
+  getVersionCheck(refresh = false): Promise<VersionCheckPayload> {
+    return req(`/api/v1/version-check${refresh ? '?refresh=true' : ''}`)
   },
   getSettings(): Promise<UserSettings> {
     return req('/api/v1/settings')

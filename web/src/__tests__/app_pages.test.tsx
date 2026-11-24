@@ -248,6 +248,27 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
           { status: 200 },
         )
       }
+      if (url.startsWith('/api/v1/version-check')) {
+        return new Response(
+          JSON.stringify({
+            current_version: '1.2.0',
+            latest_version: '1.3.0',
+            update_available: true,
+            check_enabled: true,
+            github_repo: 'KoalaPro/OpenTradeLedger',
+            release_url: 'https://github.com/KoalaPro/OpenTradeLedger/releases/tag/v1.3.0',
+            release_name: 'v1.3.0 — NAS Auto Update',
+            release_notes: '- GHCR multi-arch images\n- In-app version alert',
+            published_at: '2026-11-24 12:00',
+            checked_sec: 1795492800,
+            checked_at: '2026-11-24 12:05',
+            stale: false,
+            error: '',
+            error_zh: '',
+          }),
+          { status: 200 },
+        )
+      }
       return new Response(JSON.stringify({ ok: true }), { status: 200 })
     })
 
@@ -402,6 +423,27 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
           { status: 200 },
         )
       }
+      if (url.startsWith('/api/v1/version-check')) {
+        return new Response(
+          JSON.stringify({
+            current_version: '1.2.0',
+            latest_version: '1.3.0',
+            update_available: true,
+            check_enabled: true,
+            github_repo: 'KoalaPro/OpenTradeLedger',
+            release_url: 'https://github.com/KoalaPro/OpenTradeLedger/releases/tag/v1.3.0',
+            release_name: 'v1.3.0 — NAS Auto Update',
+            release_notes: '- GHCR multi-arch images\n- In-app version alert',
+            published_at: '2026-11-24 12:00',
+            checked_sec: 1795492800,
+            checked_at: '2026-11-24 12:05',
+            stale: false,
+            error: '',
+            error_zh: '',
+          }),
+          { status: 200 },
+        )
+      }
       return new Response(JSON.stringify({ ok: true }), { status: 200 })
     })
 
@@ -416,6 +458,7 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
     // 2. Ceremony C overlay renders and dashboard unlocks underneath
     await waitFor(() => expect(screen.getByTestId('overview-page')).toBeTruthy())
     expect(screen.getByTestId('sidebar-lock-btn')).toBeTruthy()
+    await waitFor(() => expect(screen.getByTestId('sidebar-update-badge').textContent).toContain('v1.3.0'))
 
     // 3. TopBar displays clickable API error badge & clicking it navigates to Settings
     const errPill = screen.getByTestId('topbar-exchange-error-badge')
@@ -430,7 +473,11 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
     expect(screen.getByTestId('adapter-error-box-binance').textContent).toContain('-2015')
     // Gate succeeded -> shows 已连接
     expect(screen.getByTestId('adapter-status-gate').textContent).toContain('已连接')
-    // Security password management card is rendered
+    // Security password management card & Version Update card are rendered
     expect(screen.getByTestId('security-password-card')).toBeTruthy()
+    expect(screen.getByTestId('version-update-card')).toBeTruthy()
+    expect(screen.getByTestId('version-status-badge').textContent).toContain('v1.3.0')
+    expect(screen.getByTestId('version-release-box').textContent).toContain('GHCR multi-arch images')
+    expect(screen.getByTestId('copy-nas-upgrade-cmd')).toBeTruthy()
   })
 })

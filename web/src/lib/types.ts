@@ -32,6 +32,23 @@ export interface FxRatesPayload {
   stale?: boolean
 }
 
+export interface VersionCheckPayload {
+  current_version: string
+  latest_version: string
+  update_available: boolean
+  check_enabled: boolean
+  github_repo: string
+  release_url: string
+  release_name: string
+  release_notes: string
+  published_at: string
+  checked_sec: number
+  checked_at: string
+  stale: boolean
+  error: string
+  error_zh: string
+}
+
 export interface TradeLegFee {
   role: 'MAKER' | 'TAKER'
   mode_code: string
@@ -354,6 +371,7 @@ export interface UserSettings {
   polarity: Polarity
   display_currency?: CurrencyCode
   privacy_mode: boolean
+  update_check_enabled?: boolean
   goal_enabled: boolean
   goal_target_usd: number | null
   goal_label: string

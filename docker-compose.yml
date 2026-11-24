@@ -1,6 +1,8 @@
 services:
   opentradeledger:
-    build: .
+    image: ghcr.io/koalapro/opentradeledger:latest
+    # Uncomment `build: .` below if you cloned the source repo and want to compile local edits:
+    # build: .
     container_name: opentradeledger
     ports:
       - "8012:8012"
@@ -8,8 +10,8 @@ services:
       OTL_HOST: "0.0.0.0"
       OTL_PORT: "8012"
       OTL_DATA_DIR: "/app/data"
-      # Set to "true" to explore the UI immediately with built-in sanitized demo data.
-      # Switch to "false" once you configure read-only API keys in Settings or ./data/.env.
+      # Set to "true" to explore sanitized Demo Mode immediately.
+      # Set to "false" (or add OTL_DEMO_MODE=false to ./.env) for live NAS accounts.
       OTL_DEMO_MODE: "${OTL_DEMO_MODE:-true}"
       OTL_REQUIRE_AUTH: "${OTL_REQUIRE_AUTH:-false}"
     volumes:

@@ -13,7 +13,7 @@ import {
 import ledgerLogo from '../assets/ledger-logo.png'
 import { useI18n } from '../i18n'
 import { fmtSyncTime } from '../lib/format'
-import type { NavPage } from '../lib/types'
+import type { NavPage, VersionCheckPayload } from '../lib/types'
 
 interface SidebarProps {
   page: NavPage
@@ -24,6 +24,7 @@ interface SidebarProps {
   onSync: () => void
   authEnabled?: boolean
   onLock?: () => void
+  versionStatus?: VersionCheckPayload | null
 }
 
 export function Sidebar({
@@ -35,6 +36,7 @@ export function Sidebar({
   onSync,
   authEnabled = false,
   onLock,
+  versionStatus,
 }: SidebarProps) {
   const { locale, t } = useI18n()
   const navRef = useRef<HTMLElement | null>(null)
@@ -149,14 +151,26 @@ export function Sidebar({
           type="button"
           data-testid="nav-settings"
           onClick={() => onNavigate('settings')}
-          className="flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-colors cursor-pointer"
+          className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-colors cursor-pointer"
           style={{
             background: page === 'settings' ? 'var(--accent-soft)' : 'transparent',
             color: page === 'settings' ? 'var(--accent)' : 'var(--fg-2)',
           }}
         >
-          <Settings size={16} strokeWidth={1.75} aria-hidden="true" />
-          <span>{t('nav_settings')}</span>
+          <span className="inline-flex items-center gap-2.5">
+            <Settings size={16} strokeWidth={1.75} aria-hidden="true" />
+            <span>{t('nav_settings')}</span>
+          </span>
+          {versionStatus?.update_available && (
+            <span
+              data-testid="sidebar-update-badge"
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10.5px] font-semibold tabular-nums"
+              style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
+              v{versionStatus.latest_version}
+            </span>
+          )}
         </button>
 
         <div className="flex items-center justify-between px-2.5 pt-1 text-[11.5px] text-[var(--fg-3)]">

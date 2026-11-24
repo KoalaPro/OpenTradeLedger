@@ -7,6 +7,7 @@
 **本地优先、严格只读的多交易所实盘交易账本与精算级核账引擎**
 
 [![CI](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/ci.yml)
+[![Docker GHCR](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/KoalaPro/OpenTradeLedger/pkgs/container/opentradeledger)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](pyproject.toml)
 [![React 19 + Vite](https://img.shields.io/badge/前端-React%2019%20%2B%20Tailwind%20v4-38BDF8.svg)](web/package.json)
@@ -78,19 +79,25 @@
 
 ## 快速开始
 
-### 方式一：Docker Compose 一键体验（内置脱敏演示模式）
+### 方式一：Docker / NAS 官方预构建镜像一键部署（支持 `amd64` 与 `arm64`）
+
+仓库自动发布双架构镜像 `ghcr.io/koalapro/opentradeledger:latest`，NAS 无需安装 `git` 或本地编译即可秒级拉起：
 
 ```bash
-git clone https://github.com/KoalaPro/OpenTradeLedger.git
-cd OpenTradeLedger
-docker compose up --build
+curl -fsSLO https://raw.githubusercontent.com/KoalaPro/OpenTradeLedger/main/docker-compose.yml
+docker compose up -d
 ```
 
-启动后访问 **http://127.0.0.1:8012**，即可在内置的脱敏演示数据中体验完整 6 个页面。
+启动后访问 **http://127.0.0.1:8012**（或 NAS 局域网 IP `:8012`），即可体验内置的脱敏演示模式。
 
-接入个人实盘账户时：
-1. 将 `docker-compose.yml` 中的 `OTL_DEMO_MODE` 改为 `false`（或执行 `OTL_DEMO_MODE=false docker compose up`）。
-2. 进入网页左侧 **「设置」→「已连接交易所」**，填入交易所 **只读 API Key**，点击「测试」与「同步」。
+**NAS 实盘接入与后续无缝升级**：
+1. 在 `docker-compose.yml` 同目录新建 `.env` 写入 `OTL_DEMO_MODE=false`，执行 `docker compose up -d`。
+2. 首次打开设置本地访问密码，进入 **「设置」→「已连接交易所」** 录入交易所 **只读 API Key**。
+3. **内置新版本提醒与一键升级**：看板默认每 6 小时低频只读检测 GitHub 最新 Release（零隐私上报，可在设置页关闭）；有新版本时侧边栏「设置」自动亮起新版本徽标。由于 `./data` 独立挂载在宿主机，**升级不会丢失密码、API Key 或任何历史账单**：
+   ```bash
+   docker compose pull && docker compose up -d
+   ```
+   *（也可直接在群晖 Container Manager、飞牛 fnOS、绿联 Docker 面板点击「更新镜像」，或配合 Watchtower 自动更新。）*
 
 ### 方式二：本机直接运行（Python 3.11+ & Node.js 20+）
 

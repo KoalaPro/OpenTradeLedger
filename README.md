@@ -7,6 +7,7 @@
 **Local-First, Strictly Read-Only Multi-Exchange Trade Ledger & Actuarial Accounting Engine**
 
 [![CI](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/ci.yml)
+[![Docker GHCR](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/KoalaPro/OpenTradeLedger/pkgs/container/opentradeledger)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](pyproject.toml)
 [![React 19 + Vite](https://img.shields.io/badge/Frontend-React%2019%20%2B%20Tailwind%20v4-38BDF8.svg)](web/package.json)
@@ -79,19 +80,25 @@ Want to add Hyperliquid, Kraken, KuCoin, or another venue? See [CONTRIBUTING.md]
 
 ## Quick Start
 
-### Option 1: Docker Compose (Fastest — Built-in Demo Mode)
+### Option 1: Docker / NAS Pre-Built Image (Fastest — `amd64` & `arm64`)
+
+Pre-built multi-arch images (`linux/amd64` and `linux/arm64`) are published automatically to GitHub Container Registry (`ghcr.io/koalapro/opentradeledger:latest`) — no `git` or local compilation required on your NAS:
 
 ```bash
-git clone https://github.com/KoalaPro/OpenTradeLedger.git
-cd OpenTradeLedger
-docker compose up --build
+curl -fsSLO https://raw.githubusercontent.com/KoalaPro/OpenTradeLedger/main/docker-compose.yml
+docker compose up -d
 ```
 
 Open **http://127.0.0.1:8012** to explore the full 6-page multi-exchange ledger immediately in sanitized Demo Mode.
 
-To switch to your own live accounts:
-1. Set `OTL_DEMO_MODE=false` in `docker-compose.yml` (or launch with `OTL_DEMO_MODE=false docker compose up`).
-2. Open **Settings → Connected Exchanges**, add your **read-only** API keys, and click **Test** and **Sync**.
+**Switching to Live NAS Deployment & Upgrading Later**:
+1. Create a `.env` file next to `docker-compose.yml` containing `OTL_DEMO_MODE=false` and run `docker compose up -d`.
+2. Set your local NAS access password on first open, then add **read-only** API keys in **Settings → Connected Exchanges**.
+3. **New Version Detection & One-Click Upgrade**: Deployed instances automatically check GitHub Releases (read-only, zero telemetry, 6h cache, toggleable in Settings) and display a version badge when an update is out. Because `./data` is mounted outside the container, upgrading preserves all passwords, encrypted keys, and historical trades:
+   ```bash
+   docker compose pull && docker compose up -d
+   ```
+   *(Or click **Update Image** directly in Synology Container Manager, fnOS Docker, Portainer, or Watchtower.)*
 
 ### Option 2: Local Development (Python + Node.js)
 

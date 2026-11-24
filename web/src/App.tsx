@@ -15,6 +15,7 @@ import type {
   FxRatesPayload,
   NavPage,
   UserSettings,
+  VersionCheckPayload,
 } from './lib/types'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { ExtensionsPage } from './pages/ExtensionsPage'
@@ -29,6 +30,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   polarity: 'cn',
   display_currency: 'USDT',
   privacy_mode: false,
+  update_check_enabled: true,
   goal_enabled: false,
   goal_target_usd: null,
   goal_label: '',
@@ -58,6 +60,7 @@ export default function App() {
   const [adapters, setAdapters] = useState<ExchangeAdapterInfo[]>([])
   const [exchangeErrorCount, setExchangeErrorCount] = useState(0)
   const [fx, setFx] = useState<FxRatesPayload>(DEFAULT_FX)
+  const [versionStatus, setVersionStatus] = useState<VersionCheckPayload | null>(null)
   const [manualSyncing, setManualSyncing] = useState(false)
   const [generatingAi, setGeneratingAi] = useState(false)
   const [error, setError] = useState('')
@@ -147,7 +150,25 @@ export default function App() {
       .getFxRates()
       .then(res => setFx(res))
       .catch(() => {})
+    api
+      .getVersionCheck(false)
+      .then(res => setVersionStatus(res))
+      .catch(() => {})
   }, [authChecked, isAuthLocked])
+
+  const handleCheckVersion = useCallback(
+    async (force = true): Promise<VersionCheckPayload | null> => {
+      try {
+        const res = await api.getVersionCheck(force)
+        setVersionStatus(res)
+        return res
+      } catch (e) {
+        handlePossibleAuthError(e)
+        return null
+      }
+    },
+    [handlePossibleAuthError],
+  )
 
   const handleUpdateSettings = async (patch: Record<string, unknown>) => {
     try {
@@ -269,6 +290,7 @@ export default function App() {
               onSync={() => void handleSync()}
               authEnabled={Boolean(authStatus.enabled)}
               onLock={() => void handleLockLedger()}
+              versionStatus={versionStatus}
             />
 
             <div className="flex-1 flex flex-col min-w-0">
@@ -349,7 +371,14 @@ export default function App() {
                         authStatus={authStatus}
                         onAuthChanged={setAuthStatus}
                         onLockNow={handleLockLedger}
-                        onUpdateSettings={handleUpdateSettings}
+                        versionStatus={versionStatus}
+                        onCheckVersion={handleCheckVersion}
+                        onUpdateSettings={async patch => {
+                          await handleUpdateSettings(patch)
+                          if (typeof patch.update_check_enabled === 'boolean') {
+                            void handleCheckVersion(false)
+                          }
+                        }}
                         onUpsertExchange={async body => {
                           await api.upsertExchange(body)
                           let verifyErr: Error | null = null

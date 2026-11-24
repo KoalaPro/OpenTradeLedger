@@ -21,6 +21,7 @@ from opentradeledger.core.notifier import dispatch_notification
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.sync_manager import SyncManager
 from opentradeledger.core.venue_health import VenueHealthTracker
+from opentradeledger.core.version_checker import VersionCheckService
 from opentradeledger.security.local_auth import (
     AUTH_COOKIE_NAME,
     AuthRateLimitError,
@@ -136,6 +137,7 @@ def create_app(
     )
     logo_cache = InstrumentLogos(data_path / "instrument_logos")
     fx_service = FxRateService(store)
+    version_service = VersionCheckService(store, current_version=__version__)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -152,6 +154,7 @@ def create_app(
         description="Local-first, strictly read-only multi-exchange trade ledger.",
         lifespan=lifespan,
     )
+    app.state.version_service = version_service
 
     @app.middleware("http")
     async def local_auth_gate(request: Request, call_next):
@@ -309,6 +312,14 @@ def create_app(
     @app.get("/api/v1/fx-rates")
     async def get_fx_rates(refresh: bool = Query(default=False)) -> dict[str, Any]:
         return await fx_service.get_rates(force_refresh=refresh)
+
+    @app.get("/api/v1/version-check")
+    async def get_version_check(refresh: bool = Query(default=False)) -> dict[str, Any]:
+        prefs = ledger_service.get_preferences()
+        return await app.state.version_service.check(
+            force_refresh=refresh,
+            check_enabled=bool(prefs.update_check_enabled),
+        )
 
     @app.post("/api/v1/sync")
     async def trigger_sync(body: SyncRequest | None = None) -> dict[str, Any]:

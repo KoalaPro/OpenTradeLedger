@@ -1,5 +1,5 @@
-# Stage 1: Build static SPA bundle
-FROM node:22-alpine AS web-builder
+# Stage 1: Build static SPA bundle on native build host (fast multi-arch)
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-builder
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci --no-audit --no-fund
@@ -9,6 +9,11 @@ RUN npm run build
 # Stage 2: Minimal Python runtime serving FastAPI + SPA
 FROM python:3.12-slim AS runtime
 WORKDIR /app
+
+LABEL org.opencontainers.image.source="https://github.com/KoalaPro/OpenTradeLedger" \
+      org.opencontainers.image.title="OpenTradeLedger" \
+      org.opencontainers.image.description="Local-first, strictly read-only multi-exchange trade ledger" \
+      org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -28,6 +28,7 @@ class UserPreferences(BaseModel):
     polarity: Literal["cn", "global"] = "cn"
     display_currency: Literal["USDT", "USD", "CNY", "GBP", "EUR", "HKD", "JPY"] = "USDT"
     privacy_mode: bool = False
+    update_check_enabled: bool = True
     goal_enabled: bool = False
     goal_target_usd: float | None = None
     goal_label: str = ""
