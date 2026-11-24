@@ -164,7 +164,7 @@ def create_app(
             return await call_next(request)
 
         token = request.cookies.get(AUTH_COOKIE_NAME)
-        st = auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        st = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
         if not st["authenticated"] or st["require_setup"]:
             return JSONResponse(
                 status_code=401,
@@ -199,7 +199,7 @@ def create_app(
     @app.get("/api/v1/auth/status")
     async def auth_status(request: Request) -> dict[str, Any]:
         token = request.cookies.get(AUTH_COOKIE_NAME)
-        return auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        return auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
 
     @app.post("/api/v1/auth/setup")
     async def auth_setup(body: AuthSetupRequest) -> Response:
@@ -208,7 +208,7 @@ def create_app(
         except AuthValidationError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
-        st = auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        st = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
         resp = JSONResponse(content={"ok": True, **st})
         _set_session_cookie(resp, token, ttl, body.remember)
         return resp
@@ -219,7 +219,7 @@ def create_app(
             auth_manager.skip_setup()
         except AuthValidationError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
-        st = auth_manager.get_status(None, demo_mode=bool(demo_mode))
+        st = auth_manager.get_status(None, demo_mode=bool(ledger_service.demo_mode))
         return JSONResponse(content={"ok": True, **st})
 
     @app.post("/api/v1/auth/login")
@@ -235,14 +235,14 @@ def create_app(
             return JSONResponse(status_code=401, content={"detail": str(exc)})
 
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
-        st = auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        st = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
         resp = JSONResponse(content={"ok": True, **st})
         _set_session_cookie(resp, token, ttl, body.remember)
         return resp
 
     @app.post("/api/v1/auth/logout")
     async def auth_logout() -> Response:
-        st = auth_manager.get_status(None, demo_mode=bool(demo_mode))
+        st = auth_manager.get_status(None, demo_mode=bool(ledger_service.demo_mode))
         resp = JSONResponse(content={"ok": True, **st})
         resp.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
         return resp
@@ -250,7 +250,7 @@ def create_app(
     @app.post("/api/v1/auth/change-password")
     async def auth_change_password(body: AuthChangePasswordRequest, request: Request) -> Response:
         cur_tok = request.cookies.get(AUTH_COOKIE_NAME)
-        if not auth_manager.is_request_allowed(cur_tok, demo_mode=bool(demo_mode)):
+        if not auth_manager.is_request_allowed(cur_tok, demo_mode=bool(ledger_service.demo_mode)):
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
         try:
             auth_manager.change_password(
@@ -267,7 +267,7 @@ def create_app(
             return JSONResponse(status_code=400, content={"detail": str(exc)})
 
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
-        st = auth_manager.get_status(token, demo_mode=bool(demo_mode))
+        st = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
         resp = JSONResponse(content={"ok": True, **st})
         _set_session_cookie(resp, token, ttl, body.remember)
         return resp
@@ -275,7 +275,7 @@ def create_app(
     @app.post("/api/v1/auth/disable")
     async def auth_disable_password(body: AuthDisableRequest, request: Request) -> Response:
         cur_tok = request.cookies.get(AUTH_COOKIE_NAME)
-        if not auth_manager.is_request_allowed(cur_tok, demo_mode=bool(demo_mode)):
+        if not auth_manager.is_request_allowed(cur_tok, demo_mode=bool(ledger_service.demo_mode)):
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
         try:
             auth_manager.disable_password(body.current_password, client_key=_client_key(request))
@@ -287,7 +287,7 @@ def create_app(
         except AuthValidationError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-        st = auth_manager.get_status(None, demo_mode=bool(demo_mode))
+        st = auth_manager.get_status(None, demo_mode=bool(ledger_service.demo_mode))
         resp = JSONResponse(content={"ok": True, **st})
         resp.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
         return resp

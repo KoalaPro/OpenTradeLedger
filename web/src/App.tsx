@@ -388,7 +388,11 @@ export default function App() {
                         }}
                         onToggleDemo={async enabled => {
                           await api.setDemoMode(enabled)
-                          await loadAll()
+                          const st = await api.authStatus().catch(() => authStatus)
+                          setAuthStatus(st)
+                          if (!st.require_setup && st.authenticated !== false) {
+                            await loadAll()
+                          }
                         }}
                       />
                     )}

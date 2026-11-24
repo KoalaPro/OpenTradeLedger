@@ -115,12 +115,13 @@ export function TopBar({
 
         {page !== 'settings' && (
           <SegmentedPills
-            value={rangeKey as 'all' | '30d' | '7d'}
+            value={rangeKey}
             onChange={rk => onChangeRange(rk)}
             options={[
               { value: 'all', label: t('range_all') },
               { value: '30d', label: t('range_30d') },
               { value: '7d', label: t('range_7d') },
+              ...(/^\d{4}-\d{2}$/.test(rangeKey) ? [{ value: rangeKey, label: rangeKey }] : []),
             ]}
           />
         )}

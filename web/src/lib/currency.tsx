@@ -55,8 +55,11 @@ function buildHelpers(code: CurrencyCode, fx: FxRatesPayload): CurrencyContextVa
   const isUsdt = code === 'USDT'
 
   const resolveDecimals = (decimals?: number) => {
+    if (code === 'JPY') {
+      return typeof decimals === 'number' && decimals > 2 ? 1 : 0
+    }
     if (typeof decimals === 'number') {
-      return code === 'JPY' && decimals === 2 ? 0 : decimals
+      return decimals
     }
     return opt.defaultDecimals
   }

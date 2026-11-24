@@ -30,7 +30,10 @@ export function SegmentedPills<T extends string>({
   useLayoutEffect(() => {
     const sync = () => {
       const btn = btnRefs.current[value]
-      if (!btn) return
+      if (!btn) {
+        setGlider(g => (g.ready ? { ...g, ready: false } : g))
+        return
+      }
       const w = btn.offsetWidth
       const l = btn.offsetLeft
       if (w > 0) {

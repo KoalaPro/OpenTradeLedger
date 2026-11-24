@@ -941,12 +941,28 @@ class LedgerService:
         whole_net = round(float(wa.get("gate_net_pnl_usd") or 0.0) + plugin_extra_pnl, 2)
         summary = legacy_report.get("summary") or {}
 
+        _en_reconcile_map = {
+            "futures_net": "Futures Realized Net PnL (incl. Rebates & Funding)",
+            "copy_trading": "Copy Trading Combined Net PnL",
+            "stock": "Equities & Tokenized Stocks Net PnL",
+            "spot_cashflow": "Spot / Earn / Bonus & Dust Adjustments",
+            "unrealized": "Open Positions Unrealized PnL",
+            "easicoin": "EasiCoin Account Net PnL",
+            "binance": "Binance Account Net PnL",
+            "bitget": "Bitget Account Net PnL",
+            "mexc": "MEXC Account Net PnL",
+        }
         reconcile_items = [
             {
                 "key": str(it.get("key") or idx),
-                "label": str(it.get("label_zh") or ""),
+                "label": str(
+                    it.get("label")
+                    or _en_reconcile_map.get(str(it.get("key") or ""))
+                    or it.get("label_zh")
+                    or ""
+                ),
                 "label_zh": str(it.get("label_zh") or ""),
-                "detail": str(it.get("detail_zh") or ""),
+                "detail": str(it.get("detail") or it.get("detail_zh") or ""),
                 "detail_zh": str(it.get("detail_zh") or ""),
                 "amount_usd": round(float(it.get("amount_usd") or 0.0), 2),
             }

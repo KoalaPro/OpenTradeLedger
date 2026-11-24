@@ -43,14 +43,18 @@ class ExampleAdapter(BaseExchangeAdapter):
         ...
 
     async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
-        ...
+        client = self.create_client(cred)
+        try:
+            ...
+        finally:
+            await client.aclose()
 ```
 
-Register the adapter in `AdapterRegistry.default()`.
+Register the adapter in `build_default_registry()`.
 
 ### 3. Optional: Add Env Var Mapping & Brand Color
 - Add `EXAMPLE_API_KEY` / `EXAMPLE_API_SECRET` placeholders to `.env.example` and `vault.py`'s `import_from_dotenv()`.
-- Optionally add a brand accent CSS variable `--venue-example` in `web/src/styles/theme.css` (unconfigured venues automatically fall back to a clean neutral badge).
+- Optionally add brand accent CSS variables `--v-example-bg` and `--v-example-fg` in `web/src/styles/theme.css` (unconfigured venues automatically fall back to a clean neutral badge).
 
 ### 4. Write Tests & Run the Quality Gate
 Add unit tests in `backend/tests/test_adapters_registry.py` covering:
