@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to publish a GitHub Release for (e.g. v1.3.0)"
+        description: "Existing tag to publish or update a GitHub Release for (e.g. v1.3.0)"
         required: true
         type: string
 
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   release:
-    name: Create GitHub Release
+    name: Create or Update GitHub Release from CHANGELOG.md
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -24,10 +24,43 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Extract version title & release notes from CHANGELOG.md
+        id: notes
+        env:
+          TARGET_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re
+
+          tag = os.environ["TARGET_TAG"].strip()
+          if not tag.startswith("v"):
+              tag = f"v{tag}"
+
+          changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8") if pathlib.Path("CHANGELOG.md").exists() else ""
+          pattern = re.compile(
+              rf"^## \[{re.escape(tag)}\]\s*(?:—|-)\s*(.+?)\n(.*?)(?=^## \[v|\Z)",
+              flags=re.MULTILINE | re.DOTALL,
+          )
+          m = pattern.search(changelog)
+          if m:
+              subtitle = m.group(1).strip()
+              title = f"{tag} — {subtitle}"
+              body = m.group(2).strip().rstrip("-").strip()
+          else:
+              title = f"OpenTradeLedger {tag}"
+              body = ""
+
+          pathlib.Path("/tmp/release_body.md").write_text(body, encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"title={title}\n")
+              fh.write(f"has_body={'true' if body else 'false'}\n")
+          PY
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: "OpenTradeLedger ${{ github.event.inputs.tag || github.ref_name }}"
-          generate_release_notes: true
+          name: ${{ steps.notes.outputs.title }}
+          body_path: ${{ steps.notes.outputs.has_body == 'true' && '/tmp/release_body.md' || '' }}
+          generate_release_notes: ${{ steps.notes.outputs.has_body != 'true' }}
           make_latest: "true"
