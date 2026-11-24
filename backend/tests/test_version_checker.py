@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
 import httpx
-import pytest
 
 from opentradeledger.api.app import create_app
 from opentradeledger.core.store import LedgerStore
@@ -33,8 +33,7 @@ def test_semver_comparison_rules() -> None:
     assert is_newer_version("not-a-version", "1.2.0") is False
 
 
-@pytest.mark.asyncio
-async def test_version_checker_caching_and_zero_telemetry(tmp_path: Path) -> None:
+def test_version_checker_caching_and_zero_telemetry(tmp_path: Path) -> None:
     store = LedgerStore(tmp_path)
     calls: list[httpx.Request] = []
 
@@ -62,7 +61,7 @@ async def test_version_checker_caching_and_zero_telemetry(tmp_path: Path) -> Non
         transport=httpx.MockTransport(handler),
     )
 
-    first = await svc.check(force_refresh=False, check_enabled=True)
+    first = asyncio.run(svc.check(force_refresh=False, check_enabled=True))
     assert first["current_version"] == "1.2.0"
     assert first["latest_version"] == "1.5.0"
     assert first["update_available"] is True
@@ -71,19 +70,18 @@ async def test_version_checker_caching_and_zero_telemetry(tmp_path: Path) -> Non
     assert len(calls) == 1
 
     # Second call within 6h TTL must hit cache without another HTTP request
-    second = await svc.check(force_refresh=False, check_enabled=True)
+    second = asyncio.run(svc.check(force_refresh=False, check_enabled=True))
     assert second["update_available"] is True
     assert second["latest_version"] == "1.5.0"
     assert len(calls) == 1
 
     # Explicit force_refresh bypasses TTL
-    third = await svc.check(force_refresh=True, check_enabled=True)
+    third = asyncio.run(svc.check(force_refresh=True, check_enabled=True))
     assert third["update_available"] is True
     assert len(calls) == 2
 
 
-@pytest.mark.asyncio
-async def test_version_checker_honors_opt_out_and_surfaces_errors(tmp_path: Path) -> None:
+def test_version_checker_honors_opt_out_and_surfaces_errors(tmp_path: Path) -> None:
     store = LedgerStore(tmp_path)
     calls = 0
 
@@ -99,13 +97,13 @@ async def test_version_checker_honors_opt_out_and_surfaces_errors(tmp_path: Path
     )
 
     # Background check disabled -> 0 HTTP requests
-    disabled = await svc.check(force_refresh=False, check_enabled=False)
+    disabled = asyncio.run(svc.check(force_refresh=False, check_enabled=False))
     assert calls == 0
     assert disabled["check_enabled"] is False
     assert disabled["update_available"] is False
 
     # Manual check when rate-limited -> surfaces honest error, never fakes success
-    manual_err = await svc.check(force_refresh=True, check_enabled=False)
+    manual_err = asyncio.run(svc.check(force_refresh=True, check_enabled=False))
     assert calls == 1
     assert manual_err["stale"] is True
     assert "rate limit" in manual_err["error"].lower()
