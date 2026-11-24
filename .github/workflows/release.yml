@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   release:
-    name: Create or Update GitHub Release from CHANGELOG.md
+    name: Sync GitHub Release from CHANGELOG.md
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -24,43 +24,75 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Extract version title & release notes from CHANGELOG.md
-        id: notes
+      - name: Create or update GitHub Release from CHANGELOG.md
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
           TARGET_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           python3 - <<'PY'
-          import os, pathlib, re
+          import json, os, pathlib, re, urllib.error, urllib.request
 
+          repo = os.environ["REPO"]
+          token = os.environ["GITHUB_TOKEN"]
           tag = os.environ["TARGET_TAG"].strip()
           if not tag.startswith("v"):
               tag = f"v{tag}"
 
           changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8") if pathlib.Path("CHANGELOG.md").exists() else ""
-          pattern = re.compile(
+          m = re.search(
               rf"^## \[{re.escape(tag)}\]\s*(?:—|-)\s*(.+?)\n(.*?)(?=^## \[v|\Z)",
+              changelog,
               flags=re.MULTILINE | re.DOTALL,
           )
-          m = pattern.search(changelog)
           if m:
-              subtitle = m.group(1).strip()
-              title = f"{tag} — {subtitle}"
+              title = f"{tag} — {m.group(1).strip()}"
               body = m.group(2).strip().rstrip("-").strip()
           else:
               title = f"OpenTradeLedger {tag}"
-              body = ""
+              body = f"Release {tag}"
 
-          pathlib.Path("/tmp/release_body.md").write_text(body, encoding="utf-8")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"title={title}\n")
-              fh.write(f"has_body={'true' if body else 'false'}\n")
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "Content-Type": "application/json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "OpenTradeLedger-Release-Sync",
+          }
+
+          payload = json.dumps(
+              {
+                  "tag_name": tag,
+                  "name": title,
+                  "body": body,
+                  "draft": False,
+                  "prerelease": "-" in tag,
+                  "make_latest": "false" if "-" in tag else "true",
+              }
+          ).encode("utf-8")
+
+          existing_id = None
+          try:
+              req_get = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
+                  headers=headers,
+                  method="GET",
+              )
+              with urllib.request.urlopen(req_get, timeout=20) as resp:
+                  existing_id = json.loads(resp.read().decode("utf-8")).get("id")
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  raise
+
+          if existing_id:
+              url = f"https://api.github.com/repos/{repo}/releases/{existing_id}"
+              method = "PATCH"
+          else:
+              url = f"https://api.github.com/repos/{repo}/releases"
+              method = "POST"
+
+          req_out = urllib.request.Request(url, data=payload, headers=headers, method=method)
+          with urllib.request.urlopen(req_out, timeout=20) as resp:
+              out = json.loads(resp.read().decode("utf-8"))
+              print("Synced release:", out.get("name"), out.get("html_url"))
           PY
-
-      - name: Publish Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: ${{ steps.notes.outputs.title }}
-          body_path: ${{ steps.notes.outputs.has_body == 'true' && '/tmp/release_body.md' || '' }}
-          generate_release_notes: ${{ steps.notes.outputs.has_body != 'true' }}
-          make_latest: "true"
