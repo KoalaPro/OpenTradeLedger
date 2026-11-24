@@ -13,14 +13,20 @@ from pydantic import BaseModel, Field
 
 from opentradeledger import __app_name__, __app_name_zh__, __version__
 from opentradeledger.adapters.registry import AdapterRegistry, build_default_registry
-from opentradeledger.core.ai_reviewer import generate_ai_review, list_ai_models
+from opentradeledger.core.ai_reviewer import (
+    _normalize_ai_base,
+    generate_ai_review,
+    is_local_ai_host,
+    list_ai_models,
+    validate_ai_base_url,
+)
 from opentradeledger.core.fx_rates import FxRateService
 from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.logo_cache import InstrumentLogos
 from opentradeledger.core.notifier import dispatch_notification
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.sync_manager import SyncManager
-from opentradeledger.core.venue_health import VenueHealthTracker
+from opentradeledger.core.venue_health import VenueHealthTracker, humanize_exchange_error
 from opentradeledger.core.version_checker import VersionCheckService
 from opentradeledger.security.local_auth import (
     AUTH_COOKIE_NAME,
@@ -52,10 +58,12 @@ class DemoToggleRequest(BaseModel):
 class SyncRequest(BaseModel):
     force_all: bool = True
     venue_id: str | None = None
+    candidate_credential: ExchangeUpsertRequest | None = None
 
 
 class AiReviewRequest(BaseModel):
     range_key: str = "all"
+    mode: str = "auto"
 
 
 class AiModelsRequest(BaseModel):
@@ -322,14 +330,49 @@ def create_app(
         )
 
     @app.post("/api/v1/sync")
-    async def trigger_sync(body: SyncRequest | None = None) -> dict[str, Any]:
+    async def trigger_sync(body: SyncRequest | None = None) -> Response:
+        if body and body.candidate_credential is not None:
+            cand = body.candidate_credential
+            vid = cand.venue_id.strip().lower()
+            adapter = reg.get(vid)
+            if adapter is None:
+                raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
+            if adapter.meta.requires_passphrase and not cand.passphrase.strip():
+                raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
+            if not cand.api_key.strip() or not cand.api_secret.strip():
+                raise HTTPException(status_code=400, detail="API Key and API Secret are required")
+            temp_cred = ExchangeCredentialRecord(
+                venue_id=vid,
+                label=cand.label.strip() or adapter.meta.display_name,
+                api_key=cand.api_key.strip(),
+                api_secret=cand.api_secret.strip(),
+                passphrase=cand.passphrase.strip(),
+                enabled=cand.enabled,
+            )
+            try:
+                res = await sync_manager.sync_candidate_and_commit(temp_cred)
+                return JSONResponse(content=res)
+            except Exception as exc:
+                diag = humanize_exchange_error(vid, exc)
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "detail": diag["reason"],
+                        "detail_zh": diag["reason_zh"],
+                        "error_code": diag["code"],
+                        "raw_error": diag["raw"],
+                        "committed": False,
+                    },
+                )
+
         req_venue = body.venue_id if body else None
         if ledger_service.is_demo_active() and not req_venue:
-            return {"ok": True, "demo_mode": True, "venues": {}}
-        return await sync_manager.sync_all(
+            return JSONResponse(content={"ok": True, "demo_mode": True, "venues": {}})
+        res = await sync_manager.sync_all(
             force_all=body.force_all if body else True,
             venue_id=req_venue,
         )
+        return JSONResponse(content=res)
 
     @app.put("/api/v1/journal/{trade_id}")
     async def save_journal(trade_id: str, body: JournalUpdateRequest) -> dict[str, Any]:
@@ -375,16 +418,21 @@ def create_app(
             cred_item = configured.get(meta.venue_id)
             is_conf = cred_item is not None
             is_enabled = bool(cred_item.get("enabled", True)) if cred_item else True
+            ad_obj = reg.get(meta.venue_id)
+            has_data = bool(ad_obj and ad_obj.has_venue_data(store))
             h_state = health_tracker.resolve_state(
                 meta.venue_id,
                 configured=is_conf,
                 enabled=is_enabled,
                 poll_state=sched_venues.get(meta.venue_id),
             )
+            if not is_conf and has_data:
+                h_state = {**h_state, "status": "archived"}
             if is_conf and is_enabled and h_state.get("status") == "error":
                 error_count += 1
             entry = meta.model_dump()
             entry["configured"] = is_conf
+            entry["has_archived_data"] = has_data
             entry["credential"] = cred_item
             entry["poll_state"] = sched_venues.get(meta.venue_id)
             entry["health"] = h_state
@@ -394,6 +442,39 @@ def create_app(
             "configured": list(configured.values()),
             "error_count": error_count,
         }
+
+    @app.post("/api/v1/exchanges/verify")
+    async def verify_exchange_before_save(body: ExchangeUpsertRequest) -> Response:
+        vid = body.venue_id.strip().lower()
+        adapter = reg.get(vid)
+        if adapter is None:
+            raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
+        if adapter.meta.requires_passphrase and not body.passphrase.strip():
+            raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
+        if not body.api_key.strip() or not body.api_secret.strip():
+            raise HTTPException(status_code=400, detail="API Key and API Secret are required")
+        temp_cred = ExchangeCredentialRecord(
+            venue_id=vid,
+            label=body.label.strip() or adapter.meta.display_name,
+            api_key=body.api_key.strip(),
+            api_secret=body.api_secret.strip(),
+            passphrase=body.passphrase.strip(),
+            enabled=body.enabled,
+        )
+        try:
+            res = await adapter.test_connection(temp_cred)
+            return JSONResponse(content={**res, "verified": True})
+        except Exception as exc:
+            diag = humanize_exchange_error(vid, exc)
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": diag["reason"],
+                    "detail_zh": diag["reason_zh"],
+                    "error_code": diag["code"],
+                    "raw_error": diag["raw"],
+                },
+            )
 
     @app.post("/api/v1/exchanges")
     async def upsert_exchange(body: ExchangeUpsertRequest) -> dict[str, Any]:
@@ -421,13 +502,30 @@ def create_app(
         return {"ok": True, "credential": masked, "health": health_state}
 
     @app.delete("/api/v1/exchanges/{venue_id}")
-    async def delete_exchange(venue_id: str) -> dict[str, Any]:
+    async def delete_exchange(
+        venue_id: str,
+        keep_data: bool = Query(default=False),
+    ) -> dict[str, Any]:
         vid = venue_id.strip().lower()
-        deleted = vault.delete(vid)
-        if not deleted:
+        adapter = reg.get(vid)
+        had_cred = vault.delete(vid)
+        had_data = bool(adapter and adapter.has_venue_data(store))
+        if not had_cred and not had_data:
             raise HTTPException(status_code=404, detail="Exchange credential not found")
         health_tracker.remove(vid)
-        return {"ok": True, "venue_id": vid}
+        sched = store.get_meta("sync_schedule", {})
+        if isinstance(sched, dict) and vid in sched:
+            sched.pop(vid, None)
+            store.set_meta("sync_schedule", sched)
+        if not keep_data:
+            store.purge_venue_data(vid)
+        still_has_data = bool(adapter and adapter.has_venue_data(store))
+        return {
+            "ok": True,
+            "venue_id": vid,
+            "kept_data": bool(keep_data and still_has_data),
+            "has_archived_data": still_has_data,
+        }
 
     @app.post("/api/v1/exchanges/{venue_id}/test")
     async def test_exchange(venue_id: str) -> Response:
@@ -455,27 +553,51 @@ def create_app(
 
     @app.post("/api/v1/demo")
     async def set_demo_mode(body: DemoToggleRequest) -> dict[str, Any]:
-        ledger_service.demo_mode = body.enabled
+        ledger_service.set_demo_mode(body.enabled)
         return {"ok": True, "demo_mode": ledger_service.is_demo_active()}
 
     @app.post("/api/v1/ai-review")
     async def run_ai_review(body: AiReviewRequest | None = None) -> dict[str, Any]:
         rk = body.range_key if body else "all"
+        mode = (body.mode if body else "auto").strip().lower()
         prefs = ledger_service.get_preferences()
         dash = ledger_service.get_dashboard(range_key=rk)
-        review = await generate_ai_review(dash, prefs)
+        review = await generate_ai_review(dash, prefs, force_local=(mode == "local_rules"))
         store.save_ai_review(review, float((dash.get("summary") or {}).get("total_equity_usd") or 0.0))
         return review
 
     @app.post("/api/v1/ai-models")
     async def fetch_ai_models(body: AiModelsRequest | None = None) -> dict[str, Any]:
         prefs = ledger_service.get_preferences()
-        base_url = body.base_url.strip() if body and body.base_url.strip() else prefs.ai_base_url
-        api_key = body.api_key.strip() if body and body.api_key.strip() else prefs.ai_api_key
-        if not base_url:
+        req_base_raw = body.base_url.strip() if body and body.base_url.strip() else ""
+        req_key_raw = body.api_key.strip() if body and body.api_key.strip() else ""
+        saved_base_norm = _normalize_ai_base(prefs.ai_base_url)
+
+        raw_target_url = req_base_raw or prefs.ai_base_url
+        if not raw_target_url.strip():
             raise HTTPException(status_code=400, detail="Please enter an AI Base URL first")
         try:
+            base_url = validate_ai_base_url(raw_target_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Never forward a stored API key to an unverified new host
+        if req_key_raw:
+            api_key = req_key_raw
+        elif base_url == saved_base_norm:
+            api_key = prefs.ai_api_key
+        elif is_local_ai_host(base_url):
+            api_key = ""
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Please enter an API Key when testing a different AI Base URL",
+            )
+
+        try:
             models = await list_ai_models(base_url, api_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return {"ok": True, "models": models, "count": len(models)}
@@ -563,9 +685,11 @@ def create_app(
         async def spa_fallback(full_path: str):
             if full_path.startswith("api/"):
                 raise HTTPException(status_code=404, detail="Not found")
-            candidate = dist / full_path
-            if full_path and candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(dist / "index.html")
+            dist_root = dist.resolve()
+            if full_path:
+                candidate = (dist_root / full_path).resolve()
+                if candidate.is_relative_to(dist_root) and candidate.is_file():
+                    return FileResponse(candidate)
+            return FileResponse(dist_root / "index.html")
 
     return app

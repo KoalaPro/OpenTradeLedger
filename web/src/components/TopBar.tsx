@@ -19,7 +19,10 @@ interface TopBarProps {
   onInspectErrors?: () => void
 }
 
-const pageTitleKeys: Record<NavPage, 'nav_overview' | 'nav_trades' | 'nav_analytics' | 'nav_fees' | 'nav_extensions' | 'nav_settings'> = {
+const pageTitleKeys: Record<
+  NavPage,
+  'nav_overview' | 'nav_trades' | 'nav_analytics' | 'nav_fees' | 'nav_extensions' | 'nav_settings'
+> = {
   overview: 'nav_overview',
   trades: 'nav_trades',
   analytics: 'nav_analytics',
@@ -43,11 +46,15 @@ export function TopBar({
   onInspectErrors,
 }: TopBarProps) {
   const { t } = useI18n()
+  const showRange = page !== 'settings' && page !== 'extensions'
 
   return (
-    <header className="h-14 px-6 border-b border-[var(--border)] bg-[var(--bg)] flex items-center justify-between gap-3 shrink-0">
-      <div className="flex items-center gap-2.5 min-w-0">
-        <h1 className="m-0 text-[17px] font-semibold tracking-tight text-[var(--fg)] truncate">
+    <header className="min-h-14 py-2 px-4 sm:px-6 border-b border-[var(--border)] bg-[var(--bg)] flex flex-wrap items-center justify-between gap-2.5 shrink-0 transition-colors duration-200">
+      <div className="flex items-center gap-2.5 shrink-0">
+        <h1
+          key={page}
+          className="otl-title-swap m-0 text-[16px] sm:text-[17px] font-semibold tracking-tight text-[var(--fg)] whitespace-nowrap"
+        >
           {t(pageTitleKeys[page])}
         </h1>
         {demoMode && (
@@ -75,7 +82,27 @@ export function TopBar({
         )}
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* Range slot sits LEFT of utility controls so Currency / Privacy / Locale NEVER shift horizontally! */}
+      <div className="flex items-center gap-2 flex-wrap justify-end">
+        <div
+          data-testid="topbar-range-slot"
+          aria-hidden={!showRange}
+          className={`otl-range-slot ${showRange ? '' : 'is-hidden'}`}
+        >
+          <SegmentedPills
+            value={rangeKey}
+            onChange={rk => {
+              if (showRange) onChangeRange(rk)
+            }}
+            options={[
+              { value: 'all', label: t('range_all') },
+              { value: '30d', label: t('range_30d') },
+              { value: '7d', label: t('range_7d') },
+              ...(/^\d{4}-\d{2}$/.test(rangeKey) ? [{ value: rangeKey, label: rangeKey }] : []),
+            ]}
+          />
+        </div>
+
         {onChangeCurrency && (
           <select
             aria-label={t('set_currency')}
@@ -112,19 +139,6 @@ export function TopBar({
           <Languages size={14} />
           <span>{locale === 'zh-CN' ? 'EN' : '中文'}</span>
         </button>
-
-        {page !== 'settings' && (
-          <SegmentedPills
-            value={rangeKey}
-            onChange={rk => onChangeRange(rk)}
-            options={[
-              { value: 'all', label: t('range_all') },
-              { value: '30d', label: t('range_30d') },
-              { value: '7d', label: t('range_7d') },
-              ...(/^\d{4}-\d{2}$/.test(rangeKey) ? [{ value: rangeKey, label: rangeKey }] : []),
-            ]}
-          />
-        )}
       </div>
     </header>
   )

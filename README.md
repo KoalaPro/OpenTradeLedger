@@ -67,8 +67,8 @@ Most open-source portfolio trackers focus on spot holdings without futures fee a
 | Exchange | Futures | Real-Time Rebates | Token Fee Discount | Copy Trading | Spot / Tokenized Stocks | Auth |
 |---|:---:|:---:|:---:|:---:|:---:|---|
 | **Binance** | ✓ | ✓ | ✓ (BNB) | ✓ | ✓ | API Key + Secret |
-| **OKX (v5)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret + Passphrase |
-| **Bybit (v5)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret |
+| **OKX (v5)** | ✓ | ✓ | ✓ (OKB) | ✓ | ✓ | API Key + Secret + Passphrase |
+| **Bybit (v5)** | ✓ | ✓ | ✓ (MNT) | ✓ | ✓ | API Key + Secret |
 | **Gate** | ✓ | ✓ | ✓ (GT/Points) | ✓ | ✓ | API Key + Secret |
 | **Bitget (UTA)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret + Passphrase |
 | **MEXC** | ✓ | ✓ | ✓ (MX) | — | ✓ | API Key + Secret |
@@ -136,8 +136,8 @@ OpenTradeLedger/
 ├── backend/
 │   ├── src/opentradeledger/
 │   │   ├── security/          # Strict GET-only guard & Fernet credential vault
-│   │   ├── adapters/          # Pluggable exchange registry + 7 read-only clients
-│   │   ├── core/              # SQLite WAL store, accounting engine, live & demo providers,
+│   │   ├── adapters/          # 7 independent exchange modules (client.py + sync.py + accounting.py)
+│   │   ├── core/              # Venue-partitioned SQLite WAL store, venue-agnostic ledger aggregator,
 │   │   │                      # adaptive sync manager, live FX rates, 4-tier logo cache,
 │   │   │                      # AI reviewer, multi-channel notifier
 │   │   └── api/               # FastAPI v1 REST API + SPA static server

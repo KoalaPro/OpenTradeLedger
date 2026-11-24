@@ -13,15 +13,12 @@ import httpx
 
 from opentradeledger.adapters.compat_creds import GateManualCredentials
 from opentradeledger.adapters.stock_channels import classify_spot_stock_token
+from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 
 logger = logging.getLogger("gate_manual.client")
 
 _EMPTY_BODY_SHA512 = hashlib.sha512(b"").hexdigest()
 WINDOW_DAYS_SEC = 29 * 86400
-
-
-class ReadOnlyGuardError(PermissionError):
-    """Raised if any code attempts a non-GET HTTP request against Gate.io."""
 
 
 class GateApiHttpError(RuntimeError):

@@ -1,0 +1,147 @@
+"""Independent read-only sync module for Gate (`venue_id = 'gate'`)."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+from opentradeledger.adapters.base import VenueSyncOutcome
+
+if TYPE_CHECKING:
+    from opentradeledger.core.store import LedgerStore
+
+FULL_BACKFILL_LOOKBACK_SEC = 365 * 86400
+INCREMENTAL_LOOKBACK_SEC = 7 * 86400
+
+
+def _dedup_partner_rebates(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    per_ts_occ: dict[str, int] = {}
+    out: list[dict[str, Any]] = []
+    for r in sorted(rows, key=lambda x: (int(x.get("commission_time") or 0), str(x.get("commission_amount") or ""))):
+        uid = str(r.get("_rebate_uid") or "").strip()
+        if not uid:
+            base_k = f"{r.get('commission_time')}_{r.get('commission_amount')}_{r.get('commission_asset')}_{r.get('source')}"
+            occ = per_ts_occ.get(base_k, 0) + 1
+            per_ts_occ[base_k] = occ
+            uid = f"{base_k}#{occ}"
+        out.append({**dict(r), "_rebate_uid": uid})
+    return out
+
+
+async def sync_gate_venue(
+    client: Any,
+    store: "LedgerStore",
+    *,
+    now_s: int,
+    force_full: bool = False,
+) -> VenueSyncOutcome:
+    scope = store.venue_scope("gate")
+    backfill_done = bool(scope.get_kv("backfill_completed", False))
+    do_full = force_full or (not backfill_done)
+    since_sec = now_s - (FULL_BACKFILL_LOOKBACK_SEC if do_full else INCREMENTAL_LOOKBACK_SEC)
+
+    fp_before = (
+        scope.count_records("futures_closes"),
+        scope.count_records("futures_trades"),
+        scope.count_records("partner_rebates"),
+        scope.count_records("spot_account_book"),
+    )
+
+    live_bundle = await client.fetch_live_overview_bundle()
+    specs = scope.get_kv("contract_specs", {})
+    fetched_specs = None
+    if not specs or do_full:
+        fetched_specs = await client.fetch_contract_specs()
+
+    closes = await client.fetch_futures_closes(since_sec=since_sec)
+    trades = await client.fetch_futures_trades(since_sec=since_sec)
+    orders = await client.fetch_futures_finished_orders(since_sec=since_sec)
+    rebates = _dedup_partner_rebates(await client.fetch_partner_rebates(since_sec=since_sec))
+    spot_book = await client.fetch_spot_account_book(since_sec=since_sec, max_pages=20 if do_full else 4)
+    stk_orders, stk_deals = await client.fetch_stock_orders_and_deals(max_pages=10 if do_full else 2)
+    stk_txs = await client.fetch_stock_transactions(max_pages=10 if do_full else 2)
+
+    scope.upsert_records(
+        "futures_closes",
+        closes,
+        key_fn=lambda r: f"{r.get('contract')}_{int(float(r.get('first_open_time') or 0))}_{int(float(r.get('time') or 0))}_{r.get('side')}",
+        ts_fn=lambda r: float(r.get("time") or 0),
+    )
+    scope.upsert_records(
+        "futures_trades",
+        trades,
+        key_fn=lambda r, i: str(r.get("id") or f"{r.get('order_id')}_{r.get('create_time')}_{i}"),
+        ts_fn=lambda r: float(r.get("create_time") or 0),
+    )
+    scope.upsert_records(
+        "futures_orders",
+        [o for o in orders if o.get("id")],
+        key_fn=lambda r: str(r.get("id") or ""),
+        ts_fn=lambda r: float(r.get("create_time") or 0),
+    )
+    scope.upsert_records(
+        "partner_rebates",
+        rebates,
+        key_fn=lambda r: str(r.get("_rebate_uid") or ""),
+        ts_fn=lambda r: float(r.get("commission_time") or 0),
+    )
+    scope.upsert_records(
+        "spot_account_book",
+        spot_book,
+        key_fn=lambda r, i: str(r.get("id") or f"{r.get('time')}_{r.get('type')}_{i}"),
+        ts_fn=lambda r: float(r.get("time") or 0),
+    )
+    scope.upsert_records(
+        "stock_orders",
+        [o for o in stk_orders if o.get("id")],
+        key_fn=lambda r: str(r.get("id") or ""),
+        ts_fn=lambda r: float(r.get("create_time") or 0),
+    )
+    scope.upsert_records(
+        "stock_deals",
+        stk_deals,
+        key_fn=lambda r, i: str(r.get("id") or f"{r.get('order_id')}_{i}"),
+        ts_fn=lambda r: float(r.get("time") or r.get("create_time") or 0),
+    )
+    scope.upsert_records(
+        "stock_transactions",
+        stk_txs,
+        key_fn=lambda r, i: str(r.get("ref_id") or f"{r.get('time')}_{r.get('type')}_{i}"),
+        ts_fn=lambda r: float(r.get("time") or 0),
+    )
+
+    if fetched_specs:
+        scope.set_kv("contract_specs", fetched_specs)
+    scope.set_kv("live_bundle", live_bundle)
+    scope.set_kv("backfill_completed", True)
+    scope.set_kv("spot_window_backfill_v2", True)
+    scope.set_kv("gate_decimal_trades_v2", True)
+
+    wt_g = live_bundle.get("wallet_total") or {}
+    det_g = wt_g.get("details") or {}
+    eq_now = float((wt_g.get("total") or {}).get("amount") or 0.0)
+    q_now = float((det_g.get("quant") or {}).get("amount") or 0.0)
+    has_open = bool(
+        live_bundle.get("positions")
+        or live_bundle.get("futures_positions")
+        or live_bundle.get("open_orders")
+        or live_bundle.get("futures_open_orders")
+        or live_bundle.get("price_orders")
+        or live_bundle.get("stock_positions")
+        or live_bundle.get("stock_open_orders")
+        or q_now >= 1.0
+    )
+    fp_after = (
+        scope.count_records("futures_closes"),
+        scope.count_records("futures_trades"),
+        scope.count_records("partner_rebates"),
+        scope.count_records("spot_account_book"),
+    )
+    new_closed = max(0, int(fp_after[0]) - int(fp_before[0])) if sum(fp_before) > 0 else 0
+    return VenueSyncOutcome(
+        equity_usd=eq_now,
+        has_open_activity=has_open,
+        fp_before=fp_before,
+        fp_after=fp_after,
+        new_closed_delta=new_closed,
+        mode="venue_sync",
+    )

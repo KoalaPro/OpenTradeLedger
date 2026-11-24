@@ -72,6 +72,25 @@ class CredentialVault:
             _chmod_600(self.key_path)
         return Fernet(key)
 
+    def encrypt_secret_str(self, value: str) -> str:
+        raw = value or ""
+        if not raw:
+            return ""
+        if raw.startswith("enc:v1:"):
+            return raw
+        token = self._load_or_create_fernet().encrypt(raw.encode("utf-8")).decode("ascii")
+        return f"enc:v1:{token}"
+
+    def decrypt_secret_str(self, value: str) -> str:
+        raw = value or ""
+        if not raw or not raw.startswith("enc:v1:"):
+            return raw
+        token = raw[len("enc:v1:") :].encode("ascii")
+        try:
+            return self._load_or_create_fernet().decrypt(token).decode("utf-8")
+        except Exception:
+            return ""
+
     def _read_all(self) -> dict[str, dict[str, Any]]:
         if not self.vault_path.exists():
             return {}

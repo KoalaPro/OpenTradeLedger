@@ -22,16 +22,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OTL_DATA_DIR=/app/data \
     OTL_DEMO_MODE=false
 
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115.0" \
+    "uvicorn>=0.30.0" \
+    "httpx>=0.27.0" \
+    "cryptography>=42.0.0" \
+    "pydantic>=2.7.0" && mkdir -p /app/data
+
 COPY pyproject.toml README.md ./
 COPY backend/ ./backend/
 COPY scripts/ ./scripts/
 COPY --from=web-builder /build/web/dist ./web/dist
 
-RUN pip install --no-cache-dir . && mkdir -p /app/data
+RUN pip install --no-cache-dir --no-deps .
 
 EXPOSE 8012
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8012/api/v1/health', timeout=3)" || exit 1
+  CMD python -c "import os, urllib.request; p = os.environ.get('OTL_PORT', '8012'); urllib.request.urlopen(f'http://127.0.0.1:{p}/api/v1/health', timeout=3)" || exit 1
 
 CMD ["python", "scripts/run_server.py"]

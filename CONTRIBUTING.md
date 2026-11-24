@@ -12,16 +12,16 @@ This project is designed around two core principles:
 
 You can add support for a new exchange (for example, Hyperliquid, Kraken, or KuCoin) in **4 steps**:
 
-### 1. Create the Read-Only API Client
-Create `backend/src/opentradeledger/adapters/<venue_id>/client.py`:
-- Define an explicit `ALLOWED_READONLY_PATHS` allowlist of read-only endpoints for that exchange.
-- Before sending any HTTP request, **always** call:
+### 1. Create the Independent Exchange Package (`client.py` + `sync.py` + `accounting.py`)
+Every exchange owns a self-contained directory under `backend/src/opentradeledger/adapters/<venue_id>/` with zero cross-venue imports:
+- `client.py`: Define an explicit `ALLOWED_READONLY_PATHS` allowlist and call:
   ```python
   from opentradeledger.security.readonly_guard import assert_readonly_request
 
   assert_readonly_request("GET", path, allowed_paths=ALLOWED_READONLY_PATHS)
   ```
-- Implement a normalizer function that produces per-leg fee disclosure (`entry_leg` and `exit_leg`) whenever the venue returns open/close fills separately.
+- `sync.py`: Pull balances, fills, rebates, deposits/withdrawals, and optional copy/stock streams into `store.venue_scope("<venue_id>")` (`otl_venue_kv` & `otl_venue_records`), returning a `VenueSyncOutcome`.
+- `accounting.py`: Build a self-contained `VenueLedgerBundle` (`0.00` closed-loop residual, per-leg entry/exit fees, daily PnL, and fee matrix row).
 
 ### 2. Implement `BaseExchangeAdapter`
 In `backend/src/opentradeledger/adapters/registry.py`, subclass `BaseExchangeAdapter` and declare its `AdapterMeta`:

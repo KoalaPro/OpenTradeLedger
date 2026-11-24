@@ -3,6 +3,7 @@ import { KeyRound, Languages, Lock, ShieldCheck } from 'lucide-react'
 import ledgerLogo from '../assets/ledger-logo.png'
 import { api, ApiError } from '../lib/api'
 import type { AuthStatusPayload, Locale } from '../lib/types'
+import { AnimatedCollapse } from './AnimatedCollapse'
 
 interface AuthGateProps {
   auth: AuthStatusPayload
@@ -289,8 +290,8 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
               )}
             </div>
 
-            {showResetHelp && !isSetup && (
-              <div className="otl-drawer-expand otl-surface-2 rounded-lg p-3 text-[11.5px] text-[var(--fg-2)] space-y-1">
+            <AnimatedCollapse open={showResetHelp && !isSetup}>
+              <div className="otl-surface-2 rounded-lg p-3 text-[11.5px] text-[var(--fg-2)] space-y-1">
                 <div className="font-medium text-[var(--fg)]">
                   {isZh ? '本地安全重置方式（不伤交易数据与 API 密钥）：' : 'Safe local reset (keeps all DB & API keys intact):'}
                 </div>
@@ -298,7 +299,7 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
                   python scripts/run_server.py --reset-password --data-dir ./data
                 </code>
               </div>
-            )}
+            </AnimatedCollapse>
 
             {/* Error or Cooldown message */}
             {(errorText || cooldownSec > 0) && (

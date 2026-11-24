@@ -48,17 +48,20 @@ export function MonthlyCalendar({
   let winDays = 0
   let lossDays = 0
   let monthSum = 0
-  const cells: Array<{ day: number | null; pnl?: number }> = []
+  const cells: Array<{ day: number | null; pnl?: number; tradeCount?: number }> = []
   for (let i = 0; i < firstOffset; i++) cells.push({ day: null })
   for (let d = 1; d <= daysInMonth; d++) {
     const key = `${activeMonth}-${String(d).padStart(2, '0')}`
     const item = map.get(key)
     if (item) {
       monthSum += item.net_pnl_usd
-      if (item.net_pnl_usd > 0) winDays++
-      else if (item.net_pnl_usd < 0) lossDays++
+      const isPassiveSubDollar = (item.trade_count ?? 0) === 0 && Math.abs(item.net_pnl_usd) < 0.5
+      if (!isPassiveSubDollar) {
+        if (item.net_pnl_usd >= 0.005) winDays++
+        else if (item.net_pnl_usd <= -0.005) lossDays++
+      }
     }
-    cells.push({ day: d, pnl: item?.net_pnl_usd })
+    cells.push({ day: d, pnl: item?.net_pnl_usd, tradeCount: item?.trade_count })
   }
 
   const weekdays = locale === 'en' ? ['M', 'T', 'W', 'T', 'F', 'S', 'S'] : ['一', '二', '三', '四', '五', '六', '日']
@@ -67,7 +70,12 @@ export function MonthlyCalendar({
     <div className="flex flex-col gap-3 h-full">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[14px] font-semibold text-[var(--fg)] whitespace-nowrap">{activeMonth}</div>
+          <div className="flex items-center gap-2">
+            <span className="text-[14px] font-semibold text-[var(--fg)] whitespace-nowrap">{activeMonth}</span>
+            <span className="text-[11px] text-[var(--fg-3)] whitespace-nowrap">
+              {locale === 'en' ? '· Portfolio Daily Net' : '· 全账户日净值'}
+            </span>
+          </div>
           <div className="text-[12px] text-[var(--fg-3)] whitespace-nowrap mt-0.5">
             {winDays} {t('an_cal_win_days')} · {lossDays} {t('an_cal_loss_days')} · {t('an_cal_month_sum')}{' '}
             <b className={`sensitive ${pnlTone(monthSum)}`}>{cur.signedMoney(monthSum, 2)}</b>
@@ -75,11 +83,10 @@ export function MonthlyCalendar({
         </div>
         <select
           aria-label={t('an_cal_title')}
-          value={/^\d{4}-\d{2}$/.test(selectedMonth) ? selectedMonth : 'all'}
+          value={/^\d{4}-\d{2}$/.test(selectedMonth) ? selectedMonth : months[0]}
           onChange={e => onSelectMonth(e.target.value)}
           className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)] cursor-pointer"
         >
-          <option value="all">{t('range_all')} ({months[0]})</option>
           {months.map(m => (
             <option key={m} value={m}>
               {m}
@@ -88,7 +95,7 @@ export function MonthlyCalendar({
         </select>
       </div>
 
-      <div className="grid grid-cols-7 gap-1.5">
+      <div key={activeMonth} className="otl-panel-swap grid grid-cols-7 gap-1.5">
         {weekdays.map((w, i) => (
           <div key={i} className="text-center text-[11px] text-[var(--fg-3)] pb-0.5">
             {w}
@@ -97,20 +104,29 @@ export function MonthlyCalendar({
         {cells.map((c, idx) => {
           if (c.day === null) return <div key={`e-${idx}`} className="min-h-[48px]" />
           const has = typeof c.pnl === 'number'
-          const isPos = has && c.pnl! >= 0
+          const rawPnl = c.pnl ?? 0
+          const isZeroNoise = has && Math.abs(rawPnl) < 0.005
+          const isPassiveDust = has && !isZeroNoise && (c.tradeCount ?? 0) === 0 && Math.abs(rawPnl) < 0.5
+          const isSignificant = has && !isZeroNoise && !isPassiveDust
+          const isPos = rawPnl > 0
+          const cellDecimals = Math.abs(rawPnl * cur.rate) > 0 && Math.abs(rawPnl * cur.rate) < 1 ? 2 : 0
           return (
             <div
               key={c.day}
-              className="min-h-[48px] rounded-lg border p-1.5 flex flex-col justify-between text-[11px]"
+              className="min-h-[48px] rounded-lg border p-1.5 flex flex-col justify-between text-[11px] transition-transform duration-150 hover:-translate-y-0.5"
               style={{
-                background: has ? (isPos ? 'var(--pos-soft)' : 'var(--neg-soft)') : 'var(--surface-2)',
-                borderColor: has ? (isPos ? 'var(--pos-bd)' : 'var(--neg-bd)') : 'var(--border)',
+                background: isSignificant ? (isPos ? 'var(--pos-soft)' : 'var(--neg-soft)') : 'var(--surface-2)',
+                borderColor: isSignificant ? (isPos ? 'var(--pos-bd)' : 'var(--neg-bd)') : 'var(--border)',
               }}
             >
               <span className="text-[var(--fg-3)] leading-none">{c.day}</span>
-              {has ? (
-                <strong className={`sensitive text-[11px] leading-none whitespace-nowrap ${pnlTone(c.pnl!)}`}>
-                  {cur.signedPlainMoney(c.pnl!, 0)}
+              {has && !isZeroNoise ? (
+                <strong
+                  className={`sensitive text-[11px] leading-none whitespace-nowrap ${
+                    isSignificant ? pnlTone(rawPnl) : 'text-[var(--fg-3)] font-medium'
+                  }`}
+                >
+                  {cur.signedPlainMoney(rawPnl, cellDecimals)}
                 </strong>
               ) : (
                 <span className="text-[var(--fg-3)] opacity-40 leading-none">—</span>

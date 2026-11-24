@@ -1,14 +1,6 @@
 """Multi-exchange read-only sync manager with adaptive idle-account backoff polling.
 
-Polling cadence per exchange:
-- Active venues (equity >= 20 USDT, open positions, or recent balance/fill change):
-  polls every `base_interval_sec` (default 20s).
-- Idle venues (equity < 20 USDT, no open positions, no balance/row delta):
-  progressively backs off along `IDLE_BACKOFF_LADDER_SEC`:
-  15m -> 30m -> 1h -> 2h -> 4h (900s -> 1800s -> 3600s -> 7200s -> 14400s).
-- Instant wake-up:
-  any balance delta >= 0.05 USDT, new fill/position activity, or manual Sync Now
-  snaps the venue immediately back to 20s (with a 15-minute hot observation window).
+Orchestrates all registered `BaseExchangeAdapter` modules uniformly with zero venue-specific branching.
 """
 
 from __future__ import annotations
@@ -20,9 +12,10 @@ from typing import Any
 
 from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.core.ledger_service import LedgerService
-from opentradeledger.core.legacy_venue_sync import LEGACY_VENUE_SYNCERS
+from opentradeledger.core.notifier import dispatch_notification
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.venue_health import VenueHealthTracker
+from opentradeledger.core.venue_primitives import STABLECOINS
 from opentradeledger.security.vault import CredentialVault
 
 logger = logging.getLogger("opentradeledger.sync")
@@ -119,38 +112,54 @@ def update_venue_schedule(
 
 
 def _extract_snapshot_activity(venue_id: str, snap: dict[str, Any]) -> tuple[float, bool, tuple[int, ...]]:
-    """Extract (equity_usd, has_open_activity, fingerprint) from a plugin snapshot."""
-    equity_usd = 0.0
-    open_count = 0
-    fills_count = 0
-    closed_count = 0
+    """Generic structural activity extractor for snapshot payloads (zero venue-id branching)."""
+    _ = venue_id
+    equity_usd = float(snap.get("equity_usd") or 0.0)
+    tickers = snap.get("tickers") if isinstance(snap.get("tickers"), dict) else {}
 
-    if venue_id == "okx":
-        for bal in snap.get("balances") or []:
+    def _val_usd(ccy_raw: str, amt: float, explicit_usd: float = 0.0) -> float:
+        if explicit_usd > 0:
+            return explicit_usd
+        c = str(ccy_raw or "").strip().upper()
+        if not c or amt == 0:
+            return 0.0
+        if c in STABLECOINS:
+            return amt
+        try:
+            return amt * float(tickers.get(c) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    for bal in snap.get("balances") or []:
+        if isinstance(bal, dict):
             equity_usd += float(bal.get("totalEq") or 0.0)
-        for fb in snap.get("funding") or []:
-            if str(fb.get("ccy") or "").upper() in {"USDT", "USDC"}:
-                equity_usd += float(fb.get("bal") or 0.0)
-        open_count = sum(1 for p in (snap.get("positions") or []) if abs(float(p.get("pos") or 0.0)) > 0)
-        fills_count = len(snap.get("fills") or [])
-        closed_count = len(snap.get("positions_history") or [])
-    elif venue_id == "bybit":
-        wallet = snap.get("wallet") or {}
+    wallet = snap.get("wallet")
+    if isinstance(wallet, dict):
         for acct in wallet.get("list") or []:
-            equity_usd += float(acct.get("totalEquity") or 0.0)
-        funding = snap.get("funding") or {}
+            if isinstance(acct, dict):
+                equity_usd += float(acct.get("totalEquity") or 0.0)
+    funding = snap.get("funding")
+    if isinstance(funding, list):
+        for fb in funding:
+            if isinstance(fb, dict):
+                equity_usd += _val_usd(str(fb.get("ccy") or ""), float(fb.get("bal") or 0.0))
+    elif isinstance(funding, dict):
         for coin in funding.get("balance") or []:
-            if str(coin.get("coin") or "").upper() in {"USDT", "USDC"}:
-                equity_usd += float(coin.get("walletBalance") or 0.0)
-        open_count = sum(1 for p in (snap.get("positions") or []) if abs(float(p.get("size") or 0.0)) > 0)
-        fills_count = len(snap.get("executions") or [])
-        closed_count = len(snap.get("closed_pnl") or [])
-    else:
-        equity_usd = float(snap.get("equity_usd") or 0.0)
-        open_count = len(snap.get("positions") or [])
-        fills_count = len(snap.get("fills") or snap.get("executions") or [])
-        closed_count = len(snap.get("closed_trades") or snap.get("closed_pnl") or [])
+            if isinstance(coin, dict):
+                equity_usd += _val_usd(
+                    str(coin.get("coin") or ""),
+                    float(coin.get("walletBalance") or 0.0),
+                    explicit_usd=float(coin.get("usdValue") or 0.0),
+                )
 
+    positions = snap.get("positions") or []
+    open_count = sum(
+        1
+        for p in positions
+        if isinstance(p, dict) and abs(float(p.get("pos") or p.get("size") or p.get("qty") or 0.0)) > 0
+    )
+    fills_count = len(snap.get("fills") or snap.get("executions") or [])
+    closed_count = len(snap.get("positions_history") or snap.get("closed_pnl") or snap.get("closed_trades") or [])
     return round(equity_usd, 4), open_count > 0, (open_count, closed_count, fills_count)
 
 
@@ -224,24 +233,6 @@ class SyncManager:
             except asyncio.TimeoutError:
                 continue
 
-    def _cached_venue_activity(self, venue_id: str) -> tuple[float, bool, tuple[int, ...]]:
-        """Read last known equity & open-position activity for venues backed by local SQLite."""
-        try:
-            dash = self.ledger_service.get_dashboard()
-            eq = 0.0
-            tcount = 0
-            for ex in dash.get("exchanges") or []:
-                if str(ex.get("venue_id") or "").lower() == venue_id:
-                    eq = float(ex.get("equity_usd") or 0.0)
-                    tcount = int(ex.get("trade_count") or 0)
-                    break
-            open_cnt = sum(
-                1 for p in (dash.get("open_positions") or []) if str(p.get("venue_id") or "").lower() == venue_id
-            )
-            return round(eq, 4), open_cnt > 0, (open_cnt, tcount)
-        except Exception:
-            return 0.0, False, (0, 0)
-
     async def sync_all(
         self,
         *,
@@ -279,81 +270,48 @@ class SyncManager:
                         continue
 
                     prev_entry = schedule.get(vid) if isinstance(schedule.get(vid), dict) else {}
-                    fp_before = tuple(int(x) for x in (prev_entry.get("fingerprint") or []))
+                    sched_fp_before = tuple(int(x) for x in (prev_entry.get("fingerprint") or []))
+                    prev_health = (self.health_tracker.get_all().get(vid) or {}).get("status")
                     client: Any = None
                     try:
                         client = adapter.create_client(cred)
-                        if vid in LEGACY_VENUE_SYNCERS:
-                            eq_usd, has_open, legacy_fp_before, fp_after = await LEGACY_VENUE_SYNCERS[vid](
-                                client,
-                                self.store.legacy,
-                                now_s=now_s,
-                                force_full=force_this,
-                            )
-                            sched = update_venue_schedule(
-                                schedule,
-                                vid,
-                                now_s=now_s,
-                                equity_usd=eq_usd,
-                                has_open_activity=has_open,
-                                fp_before=legacy_fp_before,
-                                fp_after=fp_after,
-                                base_interval_sec=base_iv,
-                            )
-                            results[vid] = {
-                                "ok": True,
-                                "mode": "full_ledger_sync",
-                                "equity_usd": round(eq_usd, 2),
-                                "poll_mode": sched["mode"],
-                                "interval_sec": sched["interval_sec"],
-                                "stage": sched["stage"],
-                            }
-                        elif hasattr(client, "fetch_full_snapshot"):
-                            snap = await client.fetch_full_snapshot()
-                            self.store.upsert_plugin_snapshot(vid, snap)
-                            eq_usd, has_open, fp_after = _extract_snapshot_activity(vid, snap)
-                            sched = update_venue_schedule(
-                                schedule,
-                                vid,
-                                now_s=now_s,
-                                equity_usd=eq_usd,
-                                has_open_activity=has_open,
-                                fp_before=fp_before or fp_after,
-                                fp_after=fp_after,
-                                base_interval_sec=base_iv,
-                            )
-                            results[vid] = {
-                                "ok": True,
-                                "mode": "plugin_snapshot",
-                                "equity_usd": round(eq_usd, 2),
-                                "poll_mode": sched["mode"],
-                                "interval_sec": sched["interval_sec"],
-                                "stage": sched["stage"],
-                                "warnings": snap.get("warnings") or [],
-                            }
-                        else:
-                            conn = await adapter.test_connection(cred)
-                            eq_usd, has_open, fp_after = self._cached_venue_activity(vid)
-                            sched = update_venue_schedule(
-                                schedule,
-                                vid,
-                                now_s=now_s,
-                                equity_usd=eq_usd,
-                                has_open_activity=has_open,
-                                fp_before=fp_before or fp_after,
-                                fp_after=fp_after,
-                                base_interval_sec=base_iv,
-                            )
-                            results[vid] = {
-                                "ok": True,
-                                "mode": "verified",
-                                "detail": conn,
-                                "poll_mode": sched["mode"],
-                                "interval_sec": sched["interval_sec"],
-                                "stage": sched["stage"],
-                            }
+                        outcome = await adapter.sync_venue(
+                            client,
+                            self.store,
+                            now_s=now_s,
+                            force_full=force_this,
+                        )
+                        if outcome.mode == "custom_noop":
+                            await adapter.test_connection(cred)
+                        eff_fp_before = outcome.fp_before if outcome.fp_before else (sched_fp_before or outcome.fp_after)
+                        sched = update_venue_schedule(
+                            schedule,
+                            vid,
+                            now_s=now_s,
+                            equity_usd=outcome.equity_usd,
+                            has_open_activity=outcome.has_open_activity,
+                            fp_before=eff_fp_before,
+                            fp_after=outcome.fp_after,
+                            base_interval_sec=base_iv,
+                        )
+                        res_row: dict[str, Any] = {
+                            "ok": True,
+                            "mode": outcome.mode,
+                            "equity_usd": round(outcome.equity_usd, 2),
+                            "poll_mode": sched["mode"],
+                            "interval_sec": sched["interval_sec"],
+                            "stage": sched["stage"],
+                        }
+                        if outcome.warnings:
+                            res_row["warnings"] = outcome.warnings
+                        results[vid] = res_row
                         self.health_tracker.record_success(vid)
                         any_synced = True
+                        if outcome.new_closed_delta > 0:
+                            await self._maybe_notify(
+                                title=f"OpenTradeLedger · {vid.upper()} 新平仓入账",
+                                body=f"{vid.upper()} 新增 {outcome.new_closed_delta} 笔交割记录，当前权益 {outcome.equity_usd:.2f} USDT。",
+                            )
                     except Exception as exc:
                         logger.warning("Sync failed for %s: %s", vid, exc)
                         err_state = self.health_tracker.record_error(vid, exc)
@@ -364,6 +322,11 @@ class SyncManager:
                             "error_code": err_state["error_code"],
                             "raw_error": err_state["raw_error"],
                         }
+                        if prev_health != "error":
+                            await self._maybe_notify(
+                                title=f"OpenTradeLedger · {vid.upper()} 同步异常",
+                                body=err_state["error_reason_zh"] or err_state["error_reason"],
+                            )
                     finally:
                         if client is not None and hasattr(client, "aclose"):
                             try:
@@ -384,3 +347,93 @@ class SyncManager:
                 }
             finally:
                 self.ledger_service.syncing = False
+
+    async def sync_candidate_and_commit(self, cred: Any) -> dict[str, Any]:
+        """Atomically sync a candidate API credential BEFORE committing it to CredentialVault.
+
+        If historical backfill times out or fails mid-way, restores the venue's SQLite
+        partition snapshot and leaves any previously saved credential & health untouched.
+        """
+        vid = cred.venue_id.strip().lower()
+        adapter = self.registry.get(vid)
+        if adapter is None:
+            raise ValueError(f"Unsupported exchange adapter: {vid}")
+
+        async with self._sync_lock:
+            self.ledger_service.syncing = True
+            now_s = int(time.time())
+            base_iv = max(1, int(round(self.poll_interval_sec)))
+            partition_snap = self.store.snapshot_venue_partition(vid)
+            client: Any = None
+            try:
+                client = adapter.create_client(cred)
+                outcome = await adapter.sync_venue(
+                    client,
+                    self.store,
+                    now_s=now_s,
+                    force_full=True,
+                )
+                if outcome.mode == "custom_noop":
+                    await adapter.test_connection(cred)
+
+                masked = self.vault.upsert(cred)
+                schedule = self._load_schedule()
+                prev_entry = schedule.get(vid) if isinstance(schedule.get(vid), dict) else {}
+                sched_fp_before = tuple(int(x) for x in (prev_entry.get("fingerprint") or []))
+                eff_fp_before = outcome.fp_before if outcome.fp_before else (sched_fp_before or outcome.fp_after)
+                sched = update_venue_schedule(
+                    schedule,
+                    vid,
+                    now_s=now_s,
+                    equity_usd=outcome.equity_usd,
+                    has_open_activity=outcome.has_open_activity,
+                    fp_before=eff_fp_before,
+                    fp_after=outcome.fp_after,
+                    base_interval_sec=base_iv,
+                )
+                self._save_schedule(schedule)
+                h_state = self.health_tracker.record_success(vid)
+                now_ms = int(time.time() * 1000)
+                self.ledger_service.last_sync_ms = now_ms
+                self.store.set_meta("last_sync_ms", now_ms)
+                return {
+                    "ok": True,
+                    "committed": True,
+                    "credential": masked,
+                    "health": h_state,
+                    "synced_ms": now_ms,
+                    "venues": {
+                        vid: {
+                            "ok": True,
+                            "mode": outcome.mode,
+                            "equity_usd": round(outcome.equity_usd, 2),
+                            "poll_mode": sched["mode"],
+                            "interval_sec": sched["interval_sec"],
+                            "stage": sched["stage"],
+                        }
+                    },
+                }
+            except Exception:
+                self.store.restore_venue_partition(vid, partition_snap)
+                raise
+            finally:
+                if client is not None and hasattr(client, "aclose"):
+                    try:
+                        await client.aclose()
+                    except Exception:
+                        pass
+                self.ledger_service.syncing = False
+
+    async def _maybe_notify(self, *, title: str, body: str) -> None:
+        try:
+            prefs = self.ledger_service.get_preferences()
+            n = prefs.notifications
+            if not (
+                n.webhook_url.strip()
+                or (n.telegram_bot_token.strip() and n.telegram_chat_id.strip())
+                or n.bark_push_key.strip()
+            ):
+                return
+            await dispatch_notification(n, title=title, body=body)
+        except Exception as exc:
+            logger.debug("Optional notification dispatch skipped: %s", exc)

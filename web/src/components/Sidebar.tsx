@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Activity,
+  AlertTriangle,
   BookOpen,
   Check,
   LayoutDashboard,
@@ -21,6 +22,7 @@ interface SidebarProps {
   showExtensions: boolean
   lastSyncMs: number
   manualSyncing: boolean
+  syncFailed?: boolean
   onSync: () => void
   authEnabled?: boolean
   onLock?: () => void
@@ -33,16 +35,26 @@ export function Sidebar({
   showExtensions,
   lastSyncMs,
   manualSyncing,
+  syncFailed = false,
   onSync,
   authEnabled = false,
   onLock,
   versionStatus,
 }: SidebarProps) {
   const { locale, t } = useI18n()
+  const asideRef = useRef<HTMLElement | null>(null)
   const navRef = useRef<HTMLElement | null>(null)
   const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({})
-  const [glider, setGlider] = useState<{ top: number; height: number; visible: boolean }>({
+  const [glider, setGlider] = useState<{
+    left: number
+    top: number
+    width: number
+    height: number
+    visible: boolean
+  }>({
+    left: 12,
     top: 0,
+    width: 0,
     height: 36,
     visible: false,
   })
@@ -70,56 +82,109 @@ export function Sidebar({
   }
 
   useLayoutEffect(() => {
-    const btn = itemRefs.current[page]
-    if (!btn) {
-      setGlider(g => ({ ...g, visible: false }))
-      return
+    const syncGlider = () => {
+      const aside = asideRef.current
+      const btn = itemRefs.current[page]
+      if (!aside || !btn) {
+        setGlider(g => (g.visible ? { ...g, visible: false } : g))
+        return
+      }
+      const asideRect = aside.getBoundingClientRect()
+      const btnRect = btn.getBoundingClientRect()
+      if (btnRect.width > 0 && btnRect.height > 0) {
+        setGlider({
+          left: btnRect.left - asideRect.left - aside.clientLeft,
+          top: btnRect.top - asideRect.top - aside.clientTop,
+          width: btnRect.width,
+          height: btnRect.height,
+          visible: true,
+        })
+        return
+      }
+      if (btn.offsetWidth > 0 && btn.offsetHeight > 0) {
+        let l = 0
+        let tp = 0
+        let curEl: HTMLElement | null = btn
+        while (curEl && curEl !== aside) {
+          l += curEl.offsetLeft
+          tp += curEl.offsetTop
+          curEl = curEl.offsetParent as HTMLElement | null
+        }
+        setGlider({
+          left: l,
+          top: tp,
+          width: btn.offsetWidth,
+          height: btn.offsetHeight,
+          visible: true,
+        })
+      }
     }
-    const h = btn.offsetHeight
-    const top = btn.offsetTop
-    if (h > 0) {
-      setGlider({ top, height: h, visible: true })
+
+    syncGlider()
+    if (typeof ResizeObserver !== 'undefined' && asideRef.current) {
+      const ro = new ResizeObserver(() => syncGlider())
+      ro.observe(asideRef.current)
+      if (navRef.current) ro.observe(navRef.current)
+      return () => ro.disconnect()
     }
-  }, [page, showExtensions, locale])
+  }, [page, showExtensions, locale, versionStatus?.update_available])
 
   return (
     <aside
+      ref={asideRef}
       data-testid="sidebar"
-      className="flex flex-col border-r border-[var(--border)] bg-[var(--rail)] px-3 py-4 w-full md:w-[212px] md:shrink-0 md:sticky md:top-0 md:h-screen"
+      className="relative flex flex-col border-b md:border-b-0 md:border-r border-[var(--border)] bg-[var(--rail)] px-3 py-3 md:py-4 w-full md:w-[212px] md:shrink-0 md:sticky md:top-0 md:h-screen transition-colors duration-200"
     >
-      {/* Brand */}
-      <div className="flex items-center gap-2.5 px-2 pb-5">
-        <img
-          src={ledgerLogo}
-          alt={t('brand')}
-          data-testid="brand-logo"
-          draggable={false}
-          className="h-7 w-7 rounded-lg object-contain shrink-0 select-none"
+      {/* Unified 2D Velvet Glider across all 6 navigation items (including Settings & Mobile) */}
+      <div
+        data-testid="sidebar-glider"
+        data-active-page={page}
+        aria-hidden="true"
+        className="otl-glider absolute left-0 top-0 rounded-lg pointer-events-none z-0"
+        style={{
+          width: `${glider.width}px`,
+          height: `${glider.height}px`,
+          opacity: glider.visible ? 1 : 0,
+          transform: `translate3d(${glider.left}px, ${glider.top}px, 0)`,
+          background: 'var(--accent-soft)',
+          boxShadow: '0 1px 10px var(--accent-soft)',
+        }}
+      >
+        <span
+          className="hidden md:block absolute left-0 top-2 bottom-2 w-[3px] rounded-full"
+          style={{ background: 'var(--accent)' }}
         />
-        <span data-testid="brand-title" className="text-[15px] font-semibold tracking-tight text-[var(--fg)]">
-          {t('brand')}
+      </div>
+
+      {/* Brand + Mobile Quick Sync Header */}
+      <div className="relative z-10 flex items-center justify-between gap-2 px-1.5 pb-2.5 md:px-2 md:pb-5">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <img
+            src={ledgerLogo}
+            alt={t('brand')}
+            data-testid="brand-logo"
+            draggable={false}
+            className="h-7 w-7 rounded-lg object-contain shrink-0 select-none"
+          />
+          <span
+            data-testid="brand-title"
+            className="text-[15px] font-semibold tracking-tight text-[var(--fg)] truncate"
+          >
+            {t('brand')}
+          </span>
+        </div>
+        <span className="md:hidden inline-flex items-center gap-1.5 text-[11px] text-[var(--fg-3)] shrink-0">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+          <span>{fmtSyncTime(lastSyncMs)}</span>
         </span>
       </div>
 
-      {/* Primary navigation with smooth Velvet glider */}
+      {/* Primary navigation */}
       <nav
         ref={navRef}
         aria-label={t('brand')}
-        className="relative flex flex-row md:flex-col gap-1 overflow-x-auto md:overflow-visible"
+        className="relative z-10 flex flex-row flex-wrap md:flex-nowrap md:flex-col gap-1"
       >
-        {glider.visible && (
-          <div
-            aria-hidden="true"
-            className="otl-glider hidden md:block absolute left-0 right-0 rounded-lg pointer-events-none"
-            style={{
-              height: `${glider.height}px`,
-              transform: `translateY(${glider.top}px)`,
-              background: 'var(--accent-soft)',
-              boxShadow: '0 0 14px var(--accent-soft)',
-            }}
-          />
-        )}
-
         {primaryItems.map(item => {
           const Icon = item.icon
           const active = page === item.id
@@ -130,9 +195,10 @@ export function Sidebar({
                 itemRefs.current[item.id] = el
               }}
               type="button"
+              data-no-ripple="true"
               data-testid={`nav-${item.id}`}
               onClick={() => onNavigate(item.id)}
-              className="relative z-10 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-colors whitespace-nowrap cursor-pointer"
+              className="relative z-10 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium whitespace-nowrap cursor-pointer"
               style={{
                 background: active && !glider.visible ? 'var(--accent-soft)' : 'transparent',
                 color: active ? 'var(--accent)' : 'var(--fg-2)',
@@ -146,14 +212,18 @@ export function Sidebar({
       </nav>
 
       {/* Footer: Settings + Read-Only Indicator + Manual Sync + Lock */}
-      <div className="mt-4 md:mt-auto pt-3 border-t border-[var(--border)] flex flex-col gap-2">
+      <div className="relative z-10 mt-4 md:mt-auto pt-3 border-t border-[var(--border)] flex flex-col gap-2">
         <button
+          ref={el => {
+            itemRefs.current.settings = el
+          }}
           type="button"
+          data-no-ripple="true"
           data-testid="nav-settings"
           onClick={() => onNavigate('settings')}
-          className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-[13px] font-medium transition-colors cursor-pointer"
+          className="relative z-10 flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-[13px] font-medium cursor-pointer"
           style={{
-            background: page === 'settings' ? 'var(--accent-soft)' : 'transparent',
+            background: page === 'settings' && !glider.visible ? 'var(--accent-soft)' : 'transparent',
             color: page === 'settings' ? 'var(--accent)' : 'var(--fg-2)',
           }}
         >
@@ -187,15 +257,24 @@ export function Sidebar({
             data-testid="sync-now-btn"
             disabled={manualSyncing}
             onClick={onSync}
-            className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer transition-colors"
+            className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
           >
             {justSynced && !manualSyncing ? (
-              <>
-                <Check size={13} className="text-emerald-500" />
-                <span className="text-emerald-500">
-                  {locale === 'en' ? 'Synced' : '已同步'}
-                </span>
-              </>
+              syncFailed ? (
+                <>
+                  <AlertTriangle size={13} className="text-amber-500" />
+                  <span className="text-amber-500">
+                    {locale === 'en' ? 'Sync Error' : '同步异常'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Check size={13} className="text-emerald-500" />
+                  <span className="text-emerald-500">
+                    {locale === 'en' ? 'Synced' : '已同步'}
+                  </span>
+                </>
+              )
             ) : (
               <>
                 <RefreshCw size={13} className={manualSyncing ? 'animate-spin' : ''} />
@@ -210,7 +289,7 @@ export function Sidebar({
               title={locale === 'en' ? 'Lock Ledger' : '立即锁定账本'}
               aria-label={locale === 'en' ? 'Lock Ledger' : '立即锁定账本'}
               onClick={onLock}
-              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer shrink-0 transition-colors"
+              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer shrink-0"
             >
               <Lock size={13} />
             </button>

@@ -21,9 +21,9 @@ export function attachVelvetRippleListener(): () => void {
     if (!target) return
 
     const host = target.closest(
-      '.otl-card-interactive, button:not([disabled]):not(.otl-switch)',
+      '.otl-card-interactive, button:not([disabled]):not(.otl-switch):not([data-no-ripple])',
     ) as HTMLElement | null
-    if (!host) return
+    if (!host || host.hasAttribute('data-no-ripple')) return
 
     // Skip tiny icon-only buttons (< 26px) to keep micro-controls crisp
     const rect = host.getBoundingClientRect()

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
 import { SegmentedPills } from '../components/SegmentedPills'
@@ -12,19 +12,45 @@ export function ExtensionsPage({
   data,
   enableCopy,
   enableStocks,
+  requestedTab,
+  onTabChange,
   onInspectSymbol,
 }: {
   data: DashboardData
   enableCopy: boolean
   enableStocks: boolean
+  requestedTab?: 'copy' | 'stock'
+  onTabChange?: (tab: 'copy' | 'stock') => void
   onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
-  const defaultTab: 'copy' | 'stock' = enableCopy ? 'copy' : 'stock'
+  const vName = (en: string, zh?: string) => (locale === 'en' ? en : zh || en)
+  const defaultTab: 'copy' | 'stock' =
+    requestedTab === 'stock' && enableStocks
+      ? 'stock'
+      : requestedTab === 'copy' && enableCopy
+        ? 'copy'
+        : enableCopy
+          ? 'copy'
+          : 'stock'
   const [subTab, setSubTab] = useState<'copy' | 'stock'>(defaultTab)
+
+  useEffect(() => {
+    if (requestedTab === 'stock' && enableStocks) {
+      setSubTab('stock')
+    } else if (requestedTab === 'copy' && enableCopy) {
+      setSubTab('copy')
+    }
+  }, [requestedTab, enableCopy, enableStocks])
+
   const activeTab: 'copy' | 'stock' =
     subTab === 'copy' && !enableCopy ? 'stock' : subTab === 'stock' && !enableStocks ? 'copy' : subTab
+
+  const handleSelectTab = (next: 'copy' | 'stock') => {
+    setSubTab(next)
+    onTabChange?.(next)
+  }
 
   const cp = data.extensions.copy_trading
   const st = data.extensions.stocks
@@ -32,11 +58,14 @@ export function ExtensionsPage({
   const activeFeeRates = st.venue_fee_rates
     .filter(vr => holdingVenueSet.has(vr.venue_id.toLowerCase()))
     .map(vr => {
-      const cleaned = vr.summary
+      const rawSummary = locale === 'en' ? vr.summary : vr.summary_zh || vr.summary
+      const dispVenue = vName(vr.venue_name, vr.venue_name_zh)
+      const cleaned = rawSummary
         .replace(new RegExp(`^${vr.venue_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'i'), '')
+        .replace(new RegExp(`^${dispVenue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'i'), '')
         .replace(new RegExp(`^${vr.venue_id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'i'), '')
         .trim()
-      return { ...vr, cleanedSummary: cleaned || vr.summary }
+      return { ...vr, dispVenue, cleanedSummary: cleaned || rawSummary }
     })
   const activeRateHero = (() => {
     if (!activeFeeRates.length) return '—'
@@ -50,11 +79,11 @@ export function ExtensionsPage({
   })()
 
   return (
-    <div data-testid="extensions-page" className="space-y-4">
+    <div data-testid="extensions-page" className="otl-stagger space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <SegmentedPills
           value={activeTab}
-          onChange={setSubTab}
+          onChange={handleSelectTab}
           options={[
             ...(enableCopy ? [{ value: 'copy' as const, label: t('ext_copy_tab'), testId: 'ext-tab-copy' }] : []),
             ...(enableStocks ? [{ value: 'stock' as const, label: t('ext_stock_tab'), testId: 'ext-tab-stock' }] : []),
@@ -65,13 +94,13 @@ export function ExtensionsPage({
 
       {activeTab === 'copy' && enableCopy && (
         <div key="copy" data-testid="copy-module-view" className="otl-panel-swap space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="otl-kpi-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
             <KpiCard label={t('cp_invested')} value={cur.money(cp.total_invested_usd)} />
             <KpiCard
               label={t('cp_active_eq')}
               value={cur.money(cp.active_equity_usd)}
               sub={
-                <span className={pnlTone(cp.book_pnl_usd)}>
+                <span data-testid="copy-book-pnl-sub" className={`sensitive ${pnlTone(cp.book_pnl_usd)}`}>
                   {cur.signedMoney(cp.book_pnl_usd)}
                 </span>
               }
@@ -110,7 +139,7 @@ export function ExtensionsPage({
                     {cp.transfers.map((tr, i) => (
                       <tr key={i}>
                         <td>
-                          <VenueBadge venueId={tr.venue_id} name={tr.venue_name} />
+                          <VenueBadge venueId={tr.venue_id} name={vName(tr.venue_name, tr.venue_name_zh)} />
                         </td>
                         <td className="whitespace-nowrap text-[var(--fg-2)]">{tr.time_str}</td>
                         <td>{locale === 'en' ? tr.direction : tr.direction_zh || tr.direction}</td>
@@ -142,7 +171,7 @@ export function ExtensionsPage({
                     {cp.platforms.map(p => (
                       <tr key={p.venue_id}>
                         <td className="whitespace-nowrap">
-                          <VenueBadge venueId={p.venue_id} name={p.venue_name} />
+                          <VenueBadge venueId={p.venue_id} name={vName(p.venue_name, p.venue_name_zh)} />
                         </td>
                         <td className="text-right whitespace-nowrap sensitive">{cur.money(p.invested_usd)}</td>
                         <td className="text-right whitespace-nowrap txt-pos sensitive">
@@ -179,10 +208,12 @@ export function ExtensionsPage({
                   {cp.rebates.map((rb, i) => (
                     <tr key={i}>
                       <td>
-                        <VenueBadge venueId={rb.venue_id} name={rb.venue_name} />
+                        <VenueBadge venueId={rb.venue_id} name={vName(rb.venue_name, rb.venue_name_zh)} />
                       </td>
                       <td className="whitespace-nowrap text-[var(--fg-2)]">{rb.time_str}</td>
-                      <td className="text-[var(--fg-2)]">{rb.destination}</td>
+                      <td className="text-[var(--fg-2)]">
+                        {locale === 'en' ? rb.destination : rb.destination_zh || rb.destination}
+                      </td>
                       <td className="text-right whitespace-nowrap text-[var(--fg-3)] sensitive">
                         ~{cur.money(rb.est_gross_fee_usd, 3)}
                       </td>
@@ -200,11 +231,11 @@ export function ExtensionsPage({
 
       {activeTab === 'stock' && enableStocks && (
         <div key="stock" data-testid="stock-module-view" className="otl-panel-swap space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-            <KpiCard label={t('st_equity')} value={`${cur.plainMoney(st.equity_usd)} ${cur.code}`} />
+          <div className="otl-kpi-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+            <KpiCard label={t('st_equity')} value={cur.money(st.equity_usd)} />
             <KpiCard
               label={t('st_pnl')}
-              value={`${cur.signedPlainMoney(st.unrealized_pnl_usd)} ${cur.code}`}
+              value={cur.signedMoney(st.unrealized_pnl_usd)}
               valueClass={pnlTone(st.unrealized_pnl_usd)}
             />
             <KpiCard
@@ -219,7 +250,7 @@ export function ExtensionsPage({
                         key={vr.venue_id}
                         className="px-1.5 py-0.5 rounded text-[10.5px] bg-[var(--surface-2)] text-[var(--fg-2)] whitespace-nowrap"
                       >
-                        {vr.venue_name} {vr.cleanedSummary}
+                        {vr.dispVenue} {vr.cleanedSummary}
                       </span>
                     ))}
                   </div>
@@ -230,7 +261,7 @@ export function ExtensionsPage({
                 )
               }
             />
-            <KpiCard label={t('st_fee')} value={`${cur.plainMoney(st.non_perp_fees_usd, 4)} ${cur.code}`} />
+            <KpiCard label={t('st_fee')} value={cur.money(st.non_perp_fees_usd, 4)} />
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
@@ -265,14 +296,14 @@ export function ExtensionsPage({
                             </span>
                           </td>
                           <td>
-                            <VenueBadge venueId={h.venue_id} name={h.venue_name} />
+                            <VenueBadge venueId={h.venue_id} name={vName(h.venue_name, h.venue_name_zh)} />
                           </td>
                           <td className="text-right whitespace-nowrap sensitive">{h.shares}</td>
                           <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
                             {fmtUsd(h.avg_cost_usd)} → {fmtUsd(h.current_price_usd)}
                           </td>
                           <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(h.pnl_usd)}`}>
-                            {cur.signedPlainMoney(h.pnl_usd)} ({fmtSignedPct(h.pnl_pct)})
+                            {cur.signedMoney(h.pnl_usd)} ({fmtSignedPct(h.pnl_pct)})
                           </td>
                         </tr>
                       ))}
@@ -301,10 +332,12 @@ export function ExtensionsPage({
                       <tr key={i}>
                         <td className="whitespace-nowrap text-[var(--fg-2)]">{tx.time_str}</td>
                         <td>
-                          <VenueBadge venueId={tx.venue_id} name={tx.venue_name} />
+                          <VenueBadge venueId={tx.venue_id} name={vName(tx.venue_name, tx.venue_name_zh)} />
                         </td>
                         <td className="font-medium whitespace-nowrap">{tx.symbol}</td>
-                        <td className="text-right font-semibold whitespace-nowrap sensitive">{tx.change}</td>
+                        <td className="text-right font-semibold whitespace-nowrap sensitive">
+                          {cur.convertText(tx.change)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -318,56 +351,64 @@ export function ExtensionsPage({
             <div className="px-5 py-3 border-b border-[var(--border)] text-[14px] font-semibold">
               {t('st_perps')}
             </div>
-            <div className="overflow-x-auto">
-              <table className="otl-table">
-                <thead>
-                  <tr>
-                    <th>{t('th_symbol')}</th>
-                    <th>{t('th_venue')}</th>
-                    <th className="text-right">
-                      {locale === 'en' ? 'Trades / Qty' : '笔数 / 数量'}
-                    </th>
-                    <th className="text-right">
-                      {locale === 'en' ? 'Maker / Taker (bps)' : '挂单 / 吃单 (bps)'}
-                    </th>
-                    <th className="text-right">{t('th_fee_rebate')}</th>
-                    <th className="text-right">{t('th_net_pnl')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {st.perpetuals.map(row => (
-                    <tr
-                      key={`${row.venue_id}-${row.symbol}`}
-                      className={onInspectSymbol ? 'clickable' : undefined}
-                      onClick={() => onInspectSymbol?.(row.venue_id, row.symbol, row.venue_name)}
-                    >
-                      <td className="whitespace-nowrap">
-                        <span className="inline-flex items-center gap-2 font-semibold">
-                          <InstrumentMark instrument={row.symbol} exchange={row.venue_id.toUpperCase()} />
-                          {row.symbol}
-                        </span>
-                      </td>
-                      <td>
-                        <VenueBadge venueId={row.venue_id} name={row.venue_name} />
-                      </td>
-                      <td className="text-right whitespace-nowrap">
-                        {row.trade_count} / {row.qty}
-                      </td>
-                      <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
-                        {row.maker_bps.toFixed(1)} / {row.taker_bps.toFixed(1)} bps
-                      </td>
-                      <td className="text-right whitespace-nowrap sensitive">
-                        -{cur.plainMoney(row.gross_fee_usd, 4)} /{' '}
-                        <span className="txt-pos">+{cur.plainMoney(row.rebate_usd, 4)}</span>
-                      </td>
-                      <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_usd)}`}>
-                        {cur.signedMoney(row.net_pnl_usd)}
-                      </td>
+            {st.perpetuals.length === 0 ? (
+              <div data-testid="stock-perps-empty" className="py-10 text-center text-[12.5px] text-[var(--fg-3)]">
+                {locale === 'en'
+                  ? 'No equity or commodity perpetual trades recorded yet'
+                  : '暂无股票或商品永续合约成交记录'}
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="otl-table">
+                  <thead>
+                    <tr>
+                      <th>{t('th_symbol')}</th>
+                      <th>{t('th_venue')}</th>
+                      <th className="text-right">
+                        {locale === 'en' ? 'Trades / Qty' : '笔数 / 数量'}
+                      </th>
+                      <th className="text-right">
+                        {locale === 'en' ? 'Maker / Taker (bps)' : '挂单 / 吃单 (bps)'}
+                      </th>
+                      <th className="text-right">{t('th_fee_rebate')}</th>
+                      <th className="text-right">{t('th_net_pnl')}</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {st.perpetuals.map(row => (
+                      <tr
+                        key={`${row.venue_id}-${row.symbol}`}
+                        className={onInspectSymbol ? 'clickable' : undefined}
+                        onClick={() => onInspectSymbol?.(row.venue_id, row.symbol, vName(row.venue_name, row.venue_name_zh))}
+                      >
+                        <td className="whitespace-nowrap">
+                          <span className="inline-flex items-center gap-2 font-semibold">
+                            <InstrumentMark instrument={row.symbol} exchange={row.venue_id.toUpperCase()} />
+                            {row.symbol}
+                          </span>
+                        </td>
+                        <td>
+                          <VenueBadge venueId={row.venue_id} name={vName(row.venue_name, row.venue_name_zh)} />
+                        </td>
+                        <td className="text-right whitespace-nowrap">
+                          {row.trade_count} / {row.qty}
+                        </td>
+                        <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
+                          {row.maker_bps.toFixed(1)} / {row.taker_bps.toFixed(1)} bps
+                        </td>
+                        <td className="text-right whitespace-nowrap sensitive">
+                          -{cur.plainMoney(row.gross_fee_usd, 4)} /{' '}
+                          <span className="txt-pos">+{cur.plainMoney(row.rebate_usd, 4)}</span>
+                        </td>
+                        <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_usd)}`}>
+                          {cur.signedMoney(row.net_pnl_usd)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         </div>
       )}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Target } from 'lucide-react'
+import { AnimatedCollapse } from '../components/AnimatedCollapse'
 import { EquityChart } from '../components/EquityChart'
 import { KpiCard } from '../components/KpiCard'
 import { MonthlyCalendar } from '../components/MonthlyCalendar'
@@ -13,14 +14,13 @@ import type { DashboardData, UserSettings } from '../lib/types'
 export function AnalyticsPage({
   data,
   rangeKey,
-  onRangeChange,
   onInspectSymbol,
   settings,
   onUpdateSettings,
 }: {
   data: DashboardData
   rangeKey: string
-  onRangeChange: (rk: string) => void
+  onRangeChange?: (rk: string) => void
   onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
   settings?: UserSettings
   onUpdateSettings?: (patch: Record<string, unknown>) => Promise<void>
@@ -28,12 +28,27 @@ export function AnalyticsPage({
   const { locale, t } = useI18n()
   const cur = useCurrency()
   const [attrMode, setAttrMode] = useState<'symbol' | 'business'>('symbol')
+  const [calMonth, setCalMonth] = useState<string>('')
   const [editingGoal, setEditingGoal] = useState(false)
   const [goalLabel, setGoalLabel] = useState(settings?.goal_label || data.goal?.label || '')
   const [goalAmount, setGoalAmount] = useState(
     String(settings?.goal_target_usd ?? data.goal?.target_usd ?? ''),
   )
   const [savingGoal, setSavingGoal] = useState(false)
+  const [barReady, setBarReady] = useState(false)
+
+  useEffect(() => {
+    const reduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduced || typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      setBarReady(true)
+      return
+    }
+    const id = window.requestAnimationFrame(() => setBarReady(true))
+    return () => window.cancelAnimationFrame(id)
+  }, [])
 
   useEffect(() => {
     if (!editingGoal) {
@@ -43,6 +58,10 @@ export function AnalyticsPage({
   }, [settings?.goal_label, settings?.goal_target_usd, data.goal?.label, data.goal?.target_usd, editingGoal])
 
   const s = data.summary
+  const activeWholePnl = rangeKey === 'all' ? s.whole_net_pnl_usd : (s.range_whole_net_pnl_usd ?? s.whole_net_pnl_usd)
+  const activeWholeRoi = rangeKey === 'all' ? s.whole_roi_pct : (s.range_whole_roi_pct ?? s.whole_roi_pct)
+  const activeBusinessItems =
+    rangeKey === 'all' ? data.reconciliation.items : (data.reconciliation.range_items ?? data.reconciliation.items)
 
   const handleSaveGoal = async () => {
     if (!onUpdateSettings) return
@@ -73,12 +92,12 @@ export function AnalyticsPage({
   }
 
   return (
-    <div data-testid="analytics-page" className="space-y-4">
+    <div data-testid="analytics-page" className="otl-stagger space-y-4">
       {/* Custom Equity Goal Card or Quick Setup Trigger */}
       {data.goal && data.goal.enabled ? (
         <section
           data-testid="custom-goal-banner"
-          className="otl-card otl-drawer-expand p-5 space-y-4"
+          className="otl-card p-5"
         >
           <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
             <div className="md:col-span-5">
@@ -91,7 +110,7 @@ export function AnalyticsPage({
                   {data.goal.progress_pct.toFixed(1)}%
                 </span>
                 <span className="text-[12.5px] text-[var(--fg-2)] whitespace-nowrap sensitive">
-                  {cur.plainMoney(data.goal.current_equity_usd)} / {cur.plainMoney(data.goal.target_usd)} {cur.code}
+                  {cur.plainMoney(data.goal.current_equity_usd)} / {cur.money(data.goal.target_usd)}
                 </span>
               </div>
             </div>
@@ -99,9 +118,9 @@ export function AnalyticsPage({
               <div className="flex items-center justify-between gap-2">
                 <div className="h-2.5 flex-1 rounded-full bg-[var(--track)] overflow-hidden">
                   <div
-                    className="h-full rounded-full transition-all duration-500"
+                    className="otl-bar-fill h-full rounded-full"
                     style={{
-                      width: `${Math.min(100, Math.max(0, data.goal.progress_pct))}%`,
+                      width: `${barReady ? Math.min(100, Math.max(0, data.goal.progress_pct)) : 0}%`,
                       background: 'var(--accent)',
                     }}
                   />
@@ -134,8 +153,11 @@ export function AnalyticsPage({
             </div>
           </div>
 
-          {editingGoal && onUpdateSettings && (
-            <div className="otl-drawer-expand pt-3.5 border-t border-[var(--border)] flex flex-wrap items-center gap-2.5">
+          {onUpdateSettings && (
+            <AnimatedCollapse
+              open={editingGoal}
+              innerClassName="pt-4 mt-4 border-t border-[var(--border)] flex flex-wrap items-center gap-2.5"
+            >
               <input
                 type="text"
                 value={goalLabel}
@@ -167,12 +189,12 @@ export function AnalyticsPage({
               >
                 {locale === 'en' ? 'Hide Goal' : '关闭进度条'}
               </button>
-            </div>
+            </AnimatedCollapse>
           )}
         </section>
       ) : (
         onUpdateSettings && (
-          <div className="space-y-2">
+          <div>
             <div className="flex justify-end">
               <button
                 type="button"
@@ -184,8 +206,8 @@ export function AnalyticsPage({
                 <span>{locale === 'en' ? 'Set Custom Equity Goal' : '设置自定义净值目标'}</span>
               </button>
             </div>
-            {editingGoal && (
-              <section className="otl-card otl-drawer-expand p-4 flex flex-wrap items-center gap-2.5">
+            <AnimatedCollapse open={editingGoal} innerClassName="pt-2.5">
+              <section className="otl-card p-4 flex flex-wrap items-center gap-2.5">
                 <input
                   type="text"
                   value={goalLabel}
@@ -217,18 +239,18 @@ export function AnalyticsPage({
                   {t('cancel')}
                 </button>
               </section>
-            )}
+            </AnimatedCollapse>
           </div>
         )
       )}
 
-      {/* 4 Aligned KPIs with consistent thousand separators */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+      {/* 4 Aligned KPIs */}
+      <div className="otl-kpi-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <KpiCard
           label={t('kpi_whole_pnl')}
-          value={cur.signedPlainMoney(s.whole_net_pnl_usd)}
-          valueClass={pnlTone(s.whole_net_pnl_usd)}
-          sub={fmtSignedPct(s.whole_roi_pct)}
+          value={cur.signedPlainMoney(activeWholePnl)}
+          valueClass={pnlTone(activeWholePnl)}
+          sub={fmtSignedPct(activeWholeRoi)}
         />
         <KpiCard
           label={t('kpi_futures_pnl')}
@@ -260,13 +282,13 @@ export function AnalyticsPage({
           <MonthlyCalendar
             days={data.calendar_days}
             availableMonths={data.available_months}
-            selectedMonth={rangeKey}
-            onSelectMonth={onRangeChange}
+            selectedMonth={calMonth || (/^\d{4}-\d{2}$/.test(rangeKey) ? rangeKey : '')}
+            onSelectMonth={setCalMonth}
           />
         </div>
       </div>
 
-      {/* Full-Width Attribution Table (eliminates right-column whitespace) */}
+      {/* Full-Width Attribution Table — symmetric animated panel swap on both tabs! */}
       <section className="otl-card overflow-hidden">
         <div className="px-5 py-3.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
           <h2 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('an_attr_title')}</h2>
@@ -279,7 +301,7 @@ export function AnalyticsPage({
             ]}
           />
         </div>
-        <div className="overflow-x-auto">
+        <div key={attrMode} className="otl-panel-swap overflow-x-auto">
           {attrMode === 'symbol' ? (
             <table className="otl-table">
               <thead>
@@ -301,7 +323,10 @@ export function AnalyticsPage({
                   >
                     <td className="font-semibold whitespace-nowrap">{row.symbol}</td>
                     <td>
-                      <VenueBadge venueId={row.venue_id} name={row.venue_name} />
+                      <VenueBadge
+                        venueId={row.venue_id}
+                        name={locale === 'en' ? row.venue_name : row.venue_name_zh || row.venue_name}
+                      />
                     </td>
                     <td className="text-right whitespace-nowrap">{row.trade_count}</td>
                     <td className="text-right whitespace-nowrap">{row.win_rate_pct.toFixed(1)}%</td>
@@ -327,13 +352,13 @@ export function AnalyticsPage({
                 </tr>
               </thead>
               <tbody>
-                {data.reconciliation.items.map(it => (
+                {activeBusinessItems.map(it => (
                   <tr key={it.key}>
                     <td className="font-medium whitespace-nowrap">
                       {locale === 'en' ? it.label : it.label_zh || it.label}
                     </td>
-                    <td className="text-[var(--fg-2)]">
-                      {locale === 'en' ? it.detail : it.detail_zh || it.detail}
+                    <td className="text-[var(--fg-2)] sensitive">
+                      {cur.convertText(locale === 'en' ? it.detail : it.detail_zh || it.detail)}
                     </td>
                     <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(it.amount_usd)}`}>
                       {cur.signedMoney(it.amount_usd)}

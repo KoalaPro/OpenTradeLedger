@@ -14,7 +14,7 @@ export interface AuthStatusPayload {
 }
 
 export interface VenueHealthState {
-  status: 'connected' | 'error' | 'unverified' | 'disabled' | 'not_configured'
+  status: 'connected' | 'error' | 'unverified' | 'disabled' | 'archived' | 'not_configured'
   last_attempt_ms: number
   last_ok_ms: number
   error_code: string
@@ -71,6 +71,7 @@ export interface ClosedTrade {
   trade_id: string
   venue_id: string
   venue_name: string
+  venue_name_zh?: string
   color_token: string
   symbol: string
   side: 'LONG' | 'SHORT'
@@ -104,7 +105,7 @@ export interface ExchangeSummary {
   display_name_zh: string
   color_token: string
   connected: boolean
-  health_status?: 'connected' | 'error'
+  health_status?: 'connected' | 'error' | 'archived'
   error_reason?: string
   error_reason_zh?: string
   equity_usd: number
@@ -137,6 +138,7 @@ export interface OpenPosition {
 export interface VenueFeeRow {
   venue_id: string
   display_name: string
+  display_name_zh?: string
   color_token: string
   trade_count: number
   maker_gross_bps: number
@@ -176,7 +178,9 @@ export interface DashboardData {
     total_equity_usd: number
     net_principal_usd: number
     whole_net_pnl_usd: number
+    range_whole_net_pnl_usd?: number
     whole_roi_pct: number
+    range_whole_roi_pct?: number
     futures_net_pnl_usd: number
     futures_book_pnl_usd: number
     trade_count: number
@@ -190,6 +194,12 @@ export interface DashboardData {
     potential_maker_savings_usd: number
     max_drawdown_usd: number
   }
+  equity_breakdown?: {
+    futures_margin_usd: number
+    copy_equity_usd: number
+    stocks_equity_usd: number
+    spot_and_other_usd: number
+  }
   exchanges: ExchangeSummary[]
   open_positions: OpenPosition[]
   spot_holdings?: SpotHolding[]
@@ -200,6 +210,14 @@ export interface DashboardData {
     net_pnl_usd: number
     residual_usd: number
     items: Array<{
+      key: string
+      label: string
+      label_zh: string
+      detail: string
+      detail_zh: string
+      amount_usd: number
+    }>
+    range_items?: Array<{
       key: string
       label: string
       label_zh: string
@@ -224,6 +242,7 @@ export interface DashboardData {
   symbol_attribution: Array<{
     venue_id: string
     venue_name: string
+    venue_name_zh?: string
     color_token: string
     symbol: string
     trade_count: number
@@ -251,12 +270,24 @@ export interface DashboardData {
     generated_at: string
     generated_ms: number
     model: string
+    range_key?: string
+    range_label?: string
+    range_label_zh?: string
+    trade_count_snapshot?: number
     equity_snapshot_usd: number
     stale?: boolean
+    stale_reason?: string
+    stale_reason_zh?: string
     highlights: Array<{
+      kind?: string
       title: string
       title_zh: string
       metric: string
+      amount_usd?: number
+      pct?: number
+      trade_count?: number
+      avg_win_m?: number
+      avg_loss_m?: number
       body: string
       body_zh: string
     }>
@@ -289,6 +320,7 @@ export interface DashboardData {
       platforms: Array<{
         venue_id: string
         venue_name: string
+        venue_name_zh?: string
         color_token: string
         status: string
         invested_usd: number
@@ -300,6 +332,7 @@ export interface DashboardData {
       transfers: Array<{
         venue_id: string
         venue_name: string
+        venue_name_zh?: string
         time_str: string
         direction: string
         direction_zh: string
@@ -308,8 +341,10 @@ export interface DashboardData {
       rebates: Array<{
         venue_id: string
         venue_name: string
+        venue_name_zh?: string
         time_str: string
         destination: string
+        destination_zh?: string
         est_gross_fee_usd: number
         rebate_usd: number
       }>
@@ -323,11 +358,14 @@ export interface DashboardData {
       venue_fee_rates: Array<{
         venue_id: string
         venue_name: string
+        venue_name_zh?: string
         summary: string
+        summary_zh?: string
       }>
       holdings: Array<{
         venue_id: string
         venue_name: string
+        venue_name_zh?: string
         symbol: string
         name: string
         channel: string
@@ -342,16 +380,20 @@ export interface DashboardData {
       cash_ledger: Array<{
         venue_id: string
         venue_name: string
+        venue_name_zh?: string
         time_str: string
         type: string
+        type_zh?: string
         symbol: string
         change: string
       }>
       perpetuals: Array<{
         venue_id: string
         venue_name: string
+        venue_name_zh?: string
         symbol: string
         category: string
+        category_zh?: string
         trade_count: number
         qty: number
         maker_bps: number
@@ -405,6 +447,7 @@ export interface ExchangeAdapterInfo {
   docs_url: string
   api_base_url: string
   configured: boolean
+  has_archived_data?: boolean
   credential?: {
     venue_id: string
     label: string

@@ -46,7 +46,7 @@
 - **7 币种实时汇率一键切换**：顶部栏随时在 `USDT`、`USD`、`CNY`、`GBP`、`EUR`、`HKD`、`JPY` 之间无刷新切换全部金额与图表显示，实时拉取公开外汇源（`open.er-api.com` 主源 + `frankfurter.dev` 备源，本地 SQLite 缓存 1 小时）。
 - **自适应空仓退避轮询**：活跃账户保持 `20 秒` 高频同步；无仓位且净值 `< 20 U` 的闲置账户自动按 `15分钟 → 30分钟 → 1小时 → 2小时 → 4小时` 退避，大幅节省 API 额度与本机资源，一旦检测到 `≥ 0.05 U` 变动或新挂单立即切回 `20 秒` 实时同步。
 - **4 级自动标的图标缓存**：自动识别合约币种（兼容 `1000PEPE` 等倍数前缀）与代币化美股（`NVDAX`、`AAPLX`、`STOCK`、`ON` 等后缀），本地磁盘缓存 30 天并内置确定性 SVG 兜底。
-- **插件化多交易所扩展（无硬编码限制）**：开箱内置 **Binance（币安）**、**OKX（v5）**、**Bybit（v5）**、**Gate**、**Bitget（UTA）**、**MEXC**、**EasiCoin** 只读适配器；所有页面按已接入交易所动态渲染，新增交易所只需增加一个后端适配器类，无需改动任何前端代码。
+- **7 平台全独立对等架构（零单文件耦合、按平台物理隔离归档）**：开箱内置 **Binance（币安）**、**OKX（v5）**、**Bybit（v5）**、**Gate**、**Bitget（UTA）**、**MEXC**、**EasiCoin** 七套完全独立的只读交易所模块（各自拥有独立的 `client.py` + `sync.py` + `accounting.py` 与 SQLite `venue_id` 独立分区）；单改或清退任一平台绝不干扰其他平台，新增交易所无需改动前端代码或中央聚合器。
 - **本地优先安全架构、NAS 密码锁与真实状态诊断**：
   - 底层统一强制经过 `assert_readonly_request()` 拦截器：只放行 `GET` 请求及各交易所只读路径白名单，从代码层面杜绝任何下单、划转或提币请求。
   - 在网页设置页录入的 API Key 经 **Fernet（AES-128-CBC + HMAC-SHA256）** 本地加密保存（密钥文件 `0600` 权限仅存于本地 `data/` 目录），零云端上传、零遥测。
@@ -66,8 +66,8 @@
 | 交易所 | 合约账本 | 实时返佣流水 | 平台币抵扣 | 跟单记录 | 现货 / 代币化美股 | 鉴权方式 |
 |---|:---:|:---:|:---:|:---:|:---:|---|
 | **币安 Binance** | ✓ | ✓ | ✓ (BNB) | ✓ | ✓ | API Key + Secret |
-| **OKX (v5)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret + Passphrase |
-| **Bybit (v5)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret |
+| **OKX (v5)** | ✓ | ✓ | ✓ (OKB) | ✓ | ✓ | API Key + Secret + Passphrase |
+| **Bybit (v5)** | ✓ | ✓ | ✓ (MNT) | ✓ | ✓ | API Key + Secret |
 | **Gate** | ✓ | ✓ | ✓ (GT/点卡) | ✓ | ✓ | API Key + Secret |
 | **Bitget (UTA)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret + Passphrase |
 | **MEXC** | ✓ | ✓ | ✓ (MX) | — | ✓ | API Key + Secret |

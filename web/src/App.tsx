@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { AnimatedCollapse } from './components/AnimatedCollapse'
 import { AuthGate } from './components/AuthGate'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -48,11 +49,35 @@ const DEFAULT_SETTINGS: UserSettings = {
   },
 }
 
+const VALID_PAGES: NavPage[] = ['overview', 'trades', 'analytics', 'fees', 'extensions', 'settings']
+
+function parseHashRoute(hash: string): { page: NavPage; extTab?: 'copy' | 'stock' } {
+  const cleaned = hash.replace(/^#\/?/, '').trim()
+  if (!cleaned) return { page: 'overview' }
+  const [seg0, seg1] = cleaned.split('/')
+  const matched = VALID_PAGES.find(p => p === seg0)
+  if (!matched) return { page: 'overview' }
+  if (matched === 'extensions' && (seg1 === 'copy' || seg1 === 'stock')) {
+    return { page: 'extensions', extTab: seg1 }
+  }
+  return { page: matched }
+}
+
+function buildHashRoute(page: NavPage, extTab?: 'copy' | 'stock'): string {
+  if (page === 'extensions' && extTab) {
+    return `#/extensions/${extTab}`
+  }
+  return `#/${page}`
+}
+
 export default function App() {
-  const [page, setPage] = useState<NavPage>('overview')
+  const initialRoute = parseHashRoute(typeof window !== 'undefined' ? window.location.hash : '')
+  const [page, setPage] = useState<NavPage>(initialRoute.page)
+  const [extTab, setExtTab] = useState<'copy' | 'stock' | undefined>(initialRoute.extTab)
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
   const [privacyMode, setPrivacyMode] = useState(false)
   const initializedPrivacyRef = useRef(false)
+  const bootstrappedRef = useRef(false)
   const [rangeKey, setRangeKey] = useState('all')
   const [venueFilter, setVenueFilter] = useState('ALL')
   const [symbolFilter, setSymbolFilter] = useState('ALL')
@@ -62,6 +87,7 @@ export default function App() {
   const [fx, setFx] = useState<FxRatesPayload>(DEFAULT_FX)
   const [versionStatus, setVersionStatus] = useState<VersionCheckPayload | null>(null)
   const [manualSyncing, setManualSyncing] = useState(false)
+  const [lastSyncHadError, setLastSyncHadError] = useState(false)
   const [generatingAi, setGeneratingAi] = useState(false)
   const [error, setError] = useState('')
   const [drilldown, setDrilldown] = useState<{ venueId: string; venueName?: string; symbol: string } | null>(null)
@@ -118,10 +144,40 @@ export default function App() {
     return false
   }, [])
 
+  useEffect(() => {
+    const onHashChange = () => {
+      const parsed = parseHashRoute(window.location.hash)
+      setPage(parsed.page)
+      if (parsed.extTab) setExtTab(parsed.extTab)
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  const navigateTo = useCallback(
+    (nextPage: NavPage, nextExtTab?: 'copy' | 'stock') => {
+      setPage(nextPage)
+      if (nextPage === 'extensions' && nextExtTab) {
+        setExtTab(nextExtTab)
+      }
+      if (typeof window !== 'undefined') {
+        const targetHash = buildHashRoute(nextPage, nextPage === 'extensions' ? nextExtTab ?? extTab : undefined)
+        if (window.location.hash !== targetHash) {
+          window.location.hash = targetHash
+        }
+        if (window.scrollY) window.scrollTo(0, 0)
+      }
+    },
+    [extTab],
+  )
+
+  const effVenue = page === 'trades' ? venueFilter : 'ALL'
+  const effSymbol = page === 'trades' ? symbolFilter : 'ALL'
+
   const loadAll = useCallback(async () => {
     try {
       const [dash, pref, ex] = await Promise.all([
-        api.getDashboard(rangeKey, page === 'trades' ? venueFilter : 'ALL', page === 'trades' ? symbolFilter : 'ALL'),
+        api.getDashboard(rangeKey, effVenue, effSymbol),
         api.getSettings(),
         api.listExchanges(),
       ])
@@ -137,12 +193,31 @@ export default function App() {
       if (handlePossibleAuthError(e)) return
       setError(e instanceof Error ? e.message : 'Failed to load data')
     }
-  }, [rangeKey, venueFilter, symbolFilter, page, handlePossibleAuthError])
+  }, [rangeKey, effVenue, effSymbol, handlePossibleAuthError])
+
+  const loadDashboardOnly = useCallback(async () => {
+    try {
+      const dash = await api.getDashboard(rangeKey, effVenue, effSymbol)
+      setData(dash)
+      setError('')
+    } catch (e) {
+      if (handlePossibleAuthError(e)) return
+      setError(e instanceof Error ? e.message : 'Failed to load data')
+    }
+  }, [rangeKey, effVenue, effSymbol, handlePossibleAuthError])
 
   useEffect(() => {
-    if (!authChecked || isAuthLocked) return
-    void loadAll()
-  }, [authChecked, isAuthLocked, loadAll])
+    if (!authChecked || isAuthLocked) {
+      bootstrappedRef.current = false
+      return
+    }
+    if (!bootstrappedRef.current) {
+      bootstrappedRef.current = true
+      void loadAll()
+      return
+    }
+    void loadDashboardOnly()
+  }, [authChecked, isAuthLocked, rangeKey, effVenue, effSymbol, loadAll, loadDashboardOnly])
 
   useEffect(() => {
     if (!authChecked || isAuthLocked) return
@@ -195,6 +270,7 @@ export default function App() {
       await loadAll()
       const failedEntries = Object.entries(syncRes.venues || {}).filter(([, v]) => !v.ok)
       if (failedEntries.length > 0) {
+        setLastSyncHadError(true)
         const isZh = settings.locale === 'zh-CN'
         const details = failedEntries
           .map(([vid, v]) => `${vid.toUpperCase()}: ${(isZh ? v.error_zh : v.error) || v.error || 'Error'}`)
@@ -204,8 +280,11 @@ export default function App() {
             ? `部分交易所同步异常 — ${details}`
             : `Exchange sync errors — ${details}`,
         )
+      } else {
+        setLastSyncHadError(false)
       }
     } catch (e) {
+      setLastSyncHadError(true)
       if (handlePossibleAuthError(e)) return
       setError(e instanceof Error ? e.message : 'Sync failed')
     } finally {
@@ -218,11 +297,11 @@ export default function App() {
     await loadAll()
   }
 
-  const handleGenerateAi = async () => {
+  const handleGenerateAi = async (mode: 'auto' | 'ai' | 'local_rules' = 'auto') => {
     setGeneratingAi(true)
     setError('')
     try {
-      await api.generateAiReview(rangeKey)
+      await api.generateAiReview(rangeKey, mode)
       await loadAll()
     } catch (e) {
       if (handlePossibleAuthError(e)) return
@@ -250,8 +329,7 @@ export default function App() {
     setDrilldownOpen(false)
     setVenueFilter(venueId.toLowerCase())
     setSymbolFilter(symbol)
-    setPage('trades')
-    if (typeof window !== 'undefined' && window.scrollY) window.scrollTo(0, 0)
+    navigateTo('trades')
   }
 
   const showExtensions = settings.modules.copy_trading || settings.modules.stocks
@@ -276,17 +354,21 @@ export default function App() {
         {!isAuthLocked && (
           <div
             data-testid="otl-root"
-            className="min-h-screen flex flex-col md:flex-row bg-[var(--bg)] text-[var(--fg)]"
+            className="min-h-screen flex flex-col md:flex-row bg-[var(--bg)] text-[var(--fg)] transition-colors duration-200"
           >
             <Sidebar
               page={page}
               onNavigate={next => {
-                setPage(next)
-                if (typeof window !== 'undefined' && window.scrollY) window.scrollTo(0, 0)
+                if (next === 'trades') {
+                  setVenueFilter('ALL')
+                  setSymbolFilter('ALL')
+                }
+                navigateTo(next)
               }}
               showExtensions={showExtensions}
               lastSyncMs={data?.last_sync_ms ?? 0}
               manualSyncing={manualSyncing}
+              syncFailed={lastSyncHadError}
               onSync={() => void handleSync()}
               authEnabled={Boolean(authStatus.enabled)}
               onLock={() => void handleLockLedger()}
@@ -308,18 +390,18 @@ export default function App() {
                 rangeKey={rangeKey}
                 onChangeRange={setRangeKey}
                 exchangeErrorCount={exchangeErrorCount}
-                onInspectErrors={() => setPage('settings')}
+                onInspectErrors={() => navigateTo('settings')}
               />
 
               <main className="flex-1 px-6 py-5 max-w-[1440px] w-full mx-auto">
-                {error && (
+                <AnimatedCollapse open={Boolean(error)} innerClassName="pb-4">
                   <div
                     data-testid="global-error-banner"
-                    className="otl-status-err mb-4 px-4 py-2.5 rounded-lg text-[12.5px] font-medium"
+                    className="otl-status-err px-4 py-2.5 rounded-lg text-[12.5px] font-medium"
                   >
                     {error}
                   </div>
-                )}
+                </AnimatedCollapse>
 
                 {!data ? (
                   <div className="py-20 text-center text-[13px] text-[var(--fg-3)]">Loading…</div>
@@ -328,7 +410,7 @@ export default function App() {
                     {page === 'overview' && (
                       <OverviewPage
                         data={data}
-                        onNavigate={setPage}
+                        onNavigate={navigateTo}
                         onInspectSymbol={handleInspectSymbol}
                       />
                     )}
@@ -353,13 +435,29 @@ export default function App() {
                       />
                     )}
                     {page === 'fees' && (
-                      <FeesAiPage data={data} generating={generatingAi} onGenerate={handleGenerateAi} />
+                      <FeesAiPage
+                        data={data}
+                        settings={settings}
+                        generating={generatingAi}
+                        onGenerate={handleGenerateAi}
+                        onGoConfigureAi={() => navigateTo('settings')}
+                      />
                     )}
                     {page === 'extensions' && showExtensions && (
                       <ExtensionsPage
                         data={data}
                         enableCopy={settings.modules.copy_trading}
                         enableStocks={settings.modules.stocks}
+                        requestedTab={extTab}
+                        onTabChange={nextTab => {
+                          setExtTab(nextTab)
+                          if (typeof window !== 'undefined') {
+                            const targetHash = buildHashRoute('extensions', nextTab)
+                            if (window.location.hash !== targetHash) {
+                              window.location.hash = targetHash
+                            }
+                          }
+                        }}
                         onInspectSymbol={handleInspectSymbol}
                       />
                     )}
@@ -379,40 +477,50 @@ export default function App() {
                             void handleCheckVersion(false)
                           }
                         }}
-                        onUpsertExchange={async body => {
-                          await api.upsertExchange(body)
-                          let verifyErr: Error | null = null
+                        onUpsertExchange={async (body, onStep) => {
+                          onStep?.('verifying')
+                          await api.verifyExchange(body)
+                          onStep?.('syncing')
                           try {
-                            await api.testExchange(body.venue_id)
-                            const syncRes = await api.triggerSync(body.venue_id)
+                            const syncRes = await api.triggerSync(body.venue_id, body)
                             const venueRes = syncRes.venues?.[body.venue_id]
                             if (venueRes && !venueRes.ok) {
                               const isZh = settings.locale === 'zh-CN'
-                              verifyErr = new Error(
+                              throw new Error(
                                 (isZh ? venueRes.error_zh : venueRes.error) ||
                                   venueRes.error ||
                                   'Exchange sync failed',
                               )
                             }
-                          } catch (err) {
-                            verifyErr = err instanceof Error ? err : new Error('Connection verification failed')
+                            if (syncRes.committed === undefined) {
+                              await api.upsertExchange(body)
+                            }
                           } finally {
                             await loadAll()
                           }
-                          if (verifyErr) {
-                            throw verifyErr
-                          }
+                          onStep?.('done')
                         }}
-                        onDeleteExchange={async vid => {
-                          await api.deleteExchange(vid)
+                        onDeleteExchange={async (vid, keepData = false) => {
+                          await api.deleteExchange(vid, keepData)
                           await loadAll()
                         }}
-                        onTestExchange={async vid => {
+                        onTestExchange={async (vid, isRetry = false) => {
                           try {
                             await api.testExchange(vid)
+                            if (isRetry) {
+                              const syncRes = await api.triggerSync(vid)
+                              const venueRes = syncRes.venues?.[vid]
+                              if (venueRes && !venueRes.ok) {
+                                const isZh = settings.locale === 'zh-CN'
+                                throw new Error(
+                                  (isZh ? venueRes.error_zh : venueRes.error) ||
+                                    venueRes.error ||
+                                    'Exchange sync failed',
+                                )
+                              }
+                            }
                           } finally {
-                            const ex = await api.listExchanges()
-                            applyExchangeList(ex)
+                            await loadAll()
                           }
                         }}
                         onToggleDemo={async enabled => {

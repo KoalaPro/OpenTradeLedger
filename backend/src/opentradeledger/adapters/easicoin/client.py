@@ -13,8 +13,8 @@ from urllib.parse import urlencode
 import httpx
 
 from opentradeledger.adapters.compat_creds import EasiCoinCredentials
-from opentradeledger.adapters.gate.client import ReadOnlyGuardError
 from opentradeledger.adapters.stock_channels import classify_spot_stock_token
+from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 
 logger = logging.getLogger("gate_manual.easicoin")
 

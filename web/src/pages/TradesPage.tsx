@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Check } from 'lucide-react'
 import { InstrumentMark } from '../components/InstrumentMark'
+import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n/zh-CN'
@@ -112,10 +113,15 @@ export function TradesPage({
   const [detailed, setDetailed] = useState(true)
   const [sortBy, setSortBy] = useState<'CLOSE_DESC' | 'OPEN_DESC' | 'PNL_DESC' | 'PNL_ASC'>('CLOSE_DESC')
   const [selectedId, setSelectedId] = useState<string>('')
-  const [draftTags, setDraftTags] = useState<string[]>([])
-  const [draftNote, setDraftNote] = useState('')
+  const [swapDir, setSwapDir] = useState<'next' | 'prev'>('next')
+  const [draftMap, setDraftMap] = useState<Record<string, { tags: string[]; note: string }>>({})
   const [saving, setSaving] = useState(false)
   const [savedAck, setSavedAck] = useState(false)
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
+
+  useEffect(() => {
+    setSelectedId('')
+  }, [venueFilter, symbolFilter])
 
   const sortedTrades = useMemo(() => {
     const arr = [...data.trades]
@@ -134,18 +140,29 @@ export function TradesPage({
   }, [sortedTrades, selectedId])
 
   const selectedIndex = selected ? sortedTrades.indexOf(selected) : -1
+  const currentDraft = selected ? draftMap[selected.trade_id] : undefined
+  const draftTags = currentDraft ? currentDraft.tags : (selected?.tags ?? [])
+  const draftNote = currentDraft ? currentDraft.note : (selected?.note ?? '')
 
   useEffect(() => {
     if (selected) {
-      setDraftTags(selected.tags ?? [])
-      setDraftNote(selected.note ?? '')
       setSavedAck(false)
+      rowRefs.current[selected.trade_id]?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
     }
   }, [selected?.trade_id])
 
+  const selectTradeAt = (nextId: string, nextIdx: number) => {
+    setSwapDir(nextIdx < selectedIndex ? 'prev' : 'next')
+    setSelectedId(nextId)
+  }
+
   const step = (offset: number) => {
-    const next = sortedTrades[selectedIndex + offset]
-    if (next) setSelectedId(next.trade_id)
+    const targetIdx = selectedIndex + offset
+    const next = sortedTrades[targetIdx]
+    if (next) {
+      setSwapDir(offset < 0 ? 'prev' : 'next')
+      setSelectedId(next.trade_id)
+    }
   }
 
   const handleSave = async () => {
@@ -153,6 +170,11 @@ export function TradesPage({
     setSaving(true)
     try {
       await onSaveJournal(selected.trade_id, draftTags, draftNote)
+      setDraftMap(prev => {
+        const next = { ...prev }
+        delete next[selected.trade_id]
+        return next
+      })
       setSavedAck(true)
       setTimeout(() => setSavedAck(false), 2000)
     } finally {
@@ -160,42 +182,35 @@ export function TradesPage({
     }
   }
 
+  const normalizedVenueValue = useMemo(() => {
+    if (venueFilter === 'ALL') return 'ALL'
+    const matched = data.exchanges.find(ex => ex.venue_id.toLowerCase() === venueFilter.toLowerCase())
+    return matched ? matched.venue_id : venueFilter
+  }, [venueFilter, data.exchanges])
+
+  const venueOptions = useMemo(
+    () => [
+      { value: 'ALL', label: t('all_venues'), testId: 'venue-filter-ALL' },
+      ...data.exchanges.map(ex => ({
+        value: ex.venue_id,
+        label: locale === 'en' ? ex.display_name : ex.display_name_zh || ex.display_name,
+        testId: `venue-filter-${ex.venue_id}`,
+      })),
+    ],
+    [data.exchanges, locale, t],
+  )
+
   return (
-    <div data-testid="trades-page" className="space-y-4">
-      {/* Filter Toolbar — fully dynamic venue pills */}
+    <div data-testid="trades-page" className="otl-stagger space-y-4">
+      {/* Filter Toolbar — fully glider-backed venue & view density pills */}
       <div className="flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] flex-wrap">
-            <button
-              type="button"
-              onClick={() => onVenueChange('ALL')}
-              className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer whitespace-nowrap"
-              style={{
-                background: venueFilter === 'ALL' ? 'var(--surface)' : 'transparent',
-                color: venueFilter === 'ALL' ? 'var(--fg)' : 'var(--fg-2)',
-              }}
-            >
-              {t('all_venues')}
-            </button>
-            {data.exchanges.map(ex => {
-              const active = venueFilter.toLowerCase() === ex.venue_id.toLowerCase()
-              return (
-                <button
-                  key={ex.venue_id}
-                  type="button"
-                  data-testid={`venue-filter-${ex.venue_id}`}
-                  onClick={() => onVenueChange(ex.venue_id)}
-                  className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer whitespace-nowrap"
-                  style={{
-                    background: active ? 'var(--surface)' : 'transparent',
-                    color: active ? 'var(--fg)' : 'var(--fg-2)',
-                  }}
-                >
-                  {locale === 'en' ? ex.display_name : ex.display_name_zh || ex.display_name}
-                </button>
-              )
-            })}
-          </div>
+          <SegmentedPills
+            wrap
+            value={normalizedVenueValue}
+            onChange={onVenueChange}
+            options={venueOptions}
+          />
 
           <select
             aria-label={t('all_symbols')}
@@ -213,16 +228,31 @@ export function TradesPage({
               </option>
             ))}
           </select>
+
+          {(venueFilter !== 'ALL' || symbolFilter !== 'ALL') && (
+            <button
+              type="button"
+              data-testid="reset-trade-filters-btn"
+              onClick={() => {
+                onVenueChange('ALL')
+                onSymbolChange('ALL')
+              }}
+              className="otl-panel-swap h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[11.5px] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer whitespace-nowrap"
+            >
+              {locale === 'en' ? 'Reset' : '重置筛选'}
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setDetailed(v => !v)}
-            className="h-8 px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer whitespace-nowrap"
-          >
-            {detailed ? t('view_compact') : t('view_detailed')}
-          </button>
+          <SegmentedPills
+            value={detailed ? 'detailed' : 'compact'}
+            onChange={mode => setDetailed(mode === 'detailed')}
+            options={[
+              { value: 'detailed', label: t('view_detailed') },
+              { value: 'compact', label: t('view_compact') },
+            ]}
+          />
           <select
             aria-label="Sort"
             value={sortBy}
@@ -261,19 +291,22 @@ export function TradesPage({
                   <tr>
                     <th>{t('th_symbol_time')}</th>
                     <th>{t('th_venue')}</th>
-                    {detailed && <th className="text-right">{t('th_entry_exit_fee')}</th>}
+                    {detailed && <th className="hidden sm:table-cell text-right">{t('th_entry_exit_fee')}</th>}
                     <th className="text-right">{t('th_net_pnl')}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedTrades.map(tr => {
+                  {sortedTrades.map((tr, idx) => {
                     const active = selected?.trade_id === tr.trade_id
                     return (
                       <tr
                         key={tr.trade_id}
+                        ref={el => {
+                          rowRefs.current[tr.trade_id] = el
+                        }}
                         data-testid={`trade-row-${tr.trade_id}`}
                         className={`clickable ${active ? 'selected' : ''}`}
-                        onClick={() => setSelectedId(tr.trade_id)}
+                        onClick={() => selectTradeAt(tr.trade_id, idx)}
                       >
                         <td>
                           <div className="flex items-center gap-2">
@@ -299,10 +332,13 @@ export function TradesPage({
                           </div>
                         </td>
                         <td>
-                          <VenueBadge venueId={tr.venue_id} name={tr.venue_name} />
+                          <VenueBadge
+                            venueId={tr.venue_id}
+                            name={locale === 'en' ? tr.venue_name : tr.venue_name_zh || tr.venue_name}
+                          />
                         </td>
                         {detailed && (
-                          <td className="text-right whitespace-nowrap">
+                          <td className="hidden sm:table-cell text-right whitespace-nowrap">
                             <div className="text-[12px] font-medium sensitive">
                               {t('fee_net_short')}{' '}
                               {tr.net_fee_usd > 0 ? `-${cur.money(tr.net_fee_usd, 2)}` : cur.money(0, 2)}
@@ -323,6 +359,7 @@ export function TradesPage({
                             {cur.signedPlainMoney(tr.net_pnl_usd)}
                           </div>
                           <div className="text-[11px] text-[var(--fg-3)] sensitive">
+                            {locale === 'en' ? 'Pre-rebate ' : '返佣前 '}
                             {cur.signedPlainMoney(tr.book_pnl_usd)}
                           </div>
                         </td>
@@ -335,20 +372,20 @@ export function TradesPage({
           )}
         </div>
 
-        {/* Right Settlement Inspector: Explicitly separates Entry Fee & Exit Fee without hidden tabs */}
+        {/* Right Settlement Inspector */}
         <aside data-testid="trade-detail-panel" className="xl:col-span-5 otl-card p-5 flex flex-col gap-4 xl:sticky xl:top-4">
           <div className="flex items-center justify-between gap-2">
             <h2 className="m-0 text-[14.5px] font-semibold text-[var(--fg)]">{t('detail_title')}</h2>
             {sortedTrades.length > 0 && (
               <div className="flex items-center gap-1.5 text-[11.5px] text-[var(--fg-3)]">
-                <span>
+                <span className="tabular-nums">
                   {selectedIndex + 1} / {sortedTrades.length}
                 </span>
                 <button
                   type="button"
                   disabled={selectedIndex <= 0}
                   onClick={() => step(-1)}
-                  className="p-1 rounded border border-[var(--border)] bg-[var(--surface-2)] disabled:opacity-35 cursor-pointer"
+                  className="p-1 rounded border border-[var(--border)] bg-[var(--surface-2)] hover:bg-[var(--surface-hover)] disabled:opacity-35 cursor-pointer"
                   aria-label="Previous"
                 >
                   <ArrowUp size={13} />
@@ -357,7 +394,7 @@ export function TradesPage({
                   type="button"
                   disabled={selectedIndex < 0 || selectedIndex + 1 >= sortedTrades.length}
                   onClick={() => step(1)}
-                  className="p-1 rounded border border-[var(--border)] bg-[var(--surface-2)] disabled:opacity-35 cursor-pointer"
+                  className="p-1 rounded border border-[var(--border)] bg-[var(--surface-2)] hover:bg-[var(--surface-hover)] disabled:opacity-35 cursor-pointer"
                   aria-label="Next"
                 >
                   <ArrowDown size={13} />
@@ -369,99 +406,109 @@ export function TradesPage({
           {!selected ? (
             <div className="py-12 text-center text-[12.5px] text-[var(--fg-3)]">{t('empty_trades')}</div>
           ) : (
-            <div key={selected.trade_id} className="otl-panel-swap flex flex-col gap-4">
-              <div className="flex items-start justify-between gap-3 pb-3 border-b border-[var(--border)]">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <VenueBadge venueId={selected.venue_id} name={selected.venue_name} />
-                    <strong className="text-[15.5px]">{selected.symbol}</strong>
-                    <span
-                      className="px-2 py-0.5 rounded-md text-[11px] font-semibold"
-                      style={{
-                        background: selected.side === 'LONG' ? 'var(--pos-soft)' : 'var(--neg-soft)',
-                        color: selected.side === 'LONG' ? 'var(--pos)' : 'var(--neg)',
-                      }}
-                    >
-                      {selected.side === 'LONG' ? t('side_long') : t('side_short')}
+            <>
+              <div
+                key={selected.trade_id}
+                className={`${swapDir === 'prev' ? 'otl-swap-prev' : 'otl-swap-next'} flex flex-col gap-4`}
+              >
+                <div className="flex items-start justify-between gap-3 pb-3 border-b border-[var(--border)]">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <VenueBadge
+                        venueId={selected.venue_id}
+                        name={locale === 'en' ? selected.venue_name : selected.venue_name_zh || selected.venue_name}
+                      />
+                      <strong className="text-[15.5px]">{selected.symbol}</strong>
+                      <span
+                        className="px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                        style={{
+                          background: selected.side === 'LONG' ? 'var(--pos-soft)' : 'var(--neg-soft)',
+                          color: selected.side === 'LONG' ? 'var(--pos)' : 'var(--neg)',
+                        }}
+                      >
+                        {selected.side === 'LONG' ? t('side_long') : t('side_short')}
+                      </span>
+                    </div>
+                    <div className="text-[12px] text-[var(--fg-3)] mt-1">
+                      {selected.qty > 0
+                        ? `${selected.qty} ${selected.symbol.split(/[_/-]/)[0]} · `
+                        : ''}
+                      {fmtDuration(selected.holding_sec, locale)}
+                      {selected.effective_relief_pct > 0
+                        ? ` · ${t('detail_relief_short')} ${selected.effective_relief_pct.toFixed(1)}%`
+                        : ''}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className={`text-[24px] font-bold tracking-tight leading-none sensitive ${pnlTone(selected.net_pnl_usd)}`}>
+                      {cur.signedMoney(selected.net_pnl_usd)}
+                    </div>
+                    <div className="text-[11px] text-[var(--fg-3)] mt-1">
+                      {selected.rebate_status === 'PENDING' ? t('detail_net_pending') : t('detail_net_after_rebate')}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Mandatory Per-Leg Entry & Exit Fee Cards */}
+                <LegFeeCard
+                  testId="entry-leg-fee-card"
+                  title={t('leg_entry')}
+                  netLabel={t('leg_entry_net')}
+                  leg={selected.entry_leg}
+                />
+                <LegFeeCard
+                  testId="exit-leg-fee-card"
+                  title={t('leg_exit')}
+                  netLabel={t('leg_exit_net')}
+                  leg={selected.exit_leg}
+                />
+
+                {/* Clean Reconciliation Waterfall */}
+                <div className="space-y-1.5 text-[12.5px]">
+                  <div className="flex justify-between">
+                    <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
+                    <span className={`font-medium sensitive ${pnlTone(selected.gross_pnl_usd)}`}>
+                      {cur.signedMoney(selected.gross_pnl_usd)}
                     </span>
                   </div>
-                  <div className="text-[12px] text-[var(--fg-3)] mt-1">
-                    {selected.qty > 0
-                      ? `${selected.qty} ${selected.symbol.split(/[_/-]/)[0]} · `
-                      : ''}
-                    {fmtDuration(selected.holding_sec, locale)}
-                    {selected.effective_relief_pct > 0
-                      ? ` · ${t('detail_relief_short')} ${selected.effective_relief_pct.toFixed(1)}%`
-                      : ''}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className={`text-[24px] font-bold tracking-tight leading-none sensitive ${pnlTone(selected.net_pnl_usd)}`}>
-                    {cur.signedMoney(selected.net_pnl_usd)}
-                  </div>
-                  <div className="text-[11px] text-[var(--fg-3)] mt-1">
-                    {selected.rebate_status === 'PENDING' ? t('detail_net_pending') : t('detail_net_after_rebate')}
-                  </div>
-                </div>
-              </div>
-
-              {/* Mandatory Per-Leg Entry & Exit Fee Cards */}
-              <LegFeeCard
-                testId="entry-leg-fee-card"
-                title={t('leg_entry')}
-                netLabel={t('leg_entry_net')}
-                leg={selected.entry_leg}
-              />
-              <LegFeeCard
-                testId="exit-leg-fee-card"
-                title={t('leg_exit')}
-                netLabel={t('leg_exit_net')}
-                leg={selected.exit_leg}
-              />
-
-              {/* Clean Reconciliation Waterfall */}
-              <div className="space-y-1.5 text-[12.5px]">
-                <div className="flex justify-between">
-                  <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
-                  <span className={`font-medium sensitive ${pnlTone(selected.gross_pnl_usd)}`}>
-                    {cur.signedMoney(selected.gross_pnl_usd)}
-                  </span>
-                </div>
-                {Math.abs(selected.funding_pnl_usd) > 0.0001 && (
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_funding')}</span>
-                    <span className="sensitive">{cur.signedMoney(selected.funding_pnl_usd)}</span>
-                  </div>
-                )}
-                <div className="flex justify-between">
-                  <span className="text-[var(--fg-2)]">{t('wf_total_fee')}</span>
-                  <span className="sensitive">-{cur.money(selected.total_fee_usd, 3)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
-                  <span className="txt-pos sensitive">
-                    +{cur.money(selected.total_rebate_usd, 3)}
-                  </span>
-                </div>
-                <div className="flex justify-between pt-2 border-t border-[var(--border)] font-semibold">
-                  <span>{t('wf_final_net')}</span>
-                  <span className={`sensitive ${pnlTone(selected.net_pnl_usd)}`}>
-                    {cur.signedPlainMoney(selected.net_pnl_usd)} {cur.code}
-                  </span>
-                </div>
-                {selected.total_discount_saved_usd > 0.0001 && (
-                  <div className="flex justify-between text-[11px] text-[var(--fg-3)]">
-                    <span>
-                      {locale === 'en'
-                        ? 'Pre-deduction token fee discount already saved'
-                        : '注：扣费前平台币抵扣已另省（不重复计入返佣）'}
+                    <span className="sensitive">
+                      {Math.abs(selected.funding_pnl_usd) > 0.0001
+                        ? cur.signedMoney(selected.funding_pnl_usd)
+                        : cur.money(0)}
                     </span>
-                    <span className="txt-pos sensitive">+{cur.money(selected.total_discount_saved_usd, 3)}</span>
                   </div>
-                )}
+                  <div className="flex justify-between">
+                    <span className="text-[var(--fg-2)]">{t('wf_total_fee')}</span>
+                    <span className="sensitive">-{cur.money(selected.total_fee_usd, 3)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
+                    <span className="txt-pos sensitive">
+                      +{cur.money(selected.total_rebate_usd, 3)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between pt-2 border-t border-[var(--border)] font-semibold">
+                    <span>{t('wf_final_net')}</span>
+                    <span className={`sensitive ${pnlTone(selected.net_pnl_usd)}`}>
+                      {cur.signedMoney(selected.net_pnl_usd)}
+                    </span>
+                  </div>
+                  {selected.total_discount_saved_usd > 0.0001 && (
+                    <div className="flex justify-between text-[11px] text-[var(--fg-3)]">
+                      <span>
+                        {locale === 'en'
+                          ? 'Pre-deduction token fee discount already saved'
+                          : '注：扣费前平台币抵扣已另省（不重复计入返佣）'}
+                      </span>
+                      <span className="txt-pos sensitive">+{cur.money(selected.total_discount_saved_usd, 3)}</span>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Generic Journal Tags & Notes */}
+              {/* Generic Journal Tags & Notes (kept outside key={selected.trade_id} to preserve DOM focus & synchronous drafts!) */}
               <div className="pt-3 border-t border-[var(--border)] space-y-2.5">
                 <div className="flex items-center justify-between">
                   <span className="text-[12px] font-medium text-[var(--fg-2)]">{t('journal_title')}</span>
@@ -482,11 +529,15 @@ export function TradesPage({
                       <button
                         key={tk.id}
                         type="button"
-                        onClick={() =>
-                          setDraftTags(prev =>
-                            prev.includes(tk.id) ? prev.filter(x => x !== tk.id) : [...prev, tk.id],
-                          )
-                        }
+                        onClick={() => {
+                          const nextTags = draftTags.includes(tk.id)
+                            ? draftTags.filter(x => x !== tk.id)
+                            : [...draftTags, tk.id]
+                          setDraftMap(prev => ({
+                            ...prev,
+                            [selected.trade_id]: { tags: nextTags, note: draftNote },
+                          }))
+                        }}
                         className="px-2.5 py-1 rounded-md text-[11px] font-medium border cursor-pointer"
                         style={{
                           background: on ? 'var(--accent-soft)' : 'var(--surface-2)',
@@ -502,12 +553,18 @@ export function TradesPage({
                 <textarea
                   rows={2}
                   value={draftNote}
-                  onChange={e => setDraftNote(e.target.value)}
+                  onChange={e => {
+                    const val = e.target.value
+                    setDraftMap(prev => ({
+                      ...prev,
+                      [selected.trade_id]: { tags: draftTags, note: val },
+                    }))
+                  }}
                   placeholder={t('journal_placeholder')}
-                  className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-[12px] text-[var(--fg)] placeholder:text-[var(--fg-3)] focus:outline-none focus:border-[var(--accent)]"
+                  className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-[12px] text-[var(--fg)] placeholder:text-[var(--fg-3)]"
                 />
               </div>
-            </div>
+            </>
           )}
         </aside>
       </div>

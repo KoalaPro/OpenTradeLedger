@@ -45,6 +45,11 @@
   --v-mexc-fg: #86efac;
   --v-easicoin-bg: rgba(129, 140, 248, 0.15);
   --v-easicoin-fg: #a5b4fc;
+
+  /* Unified spring curves */
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-quart: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.32, 0.72, 0, 1);
   color-scheme: dark;
 }
 
@@ -77,7 +82,7 @@
   --fg-2: #475569;
   --fg-3: #64748b;
   --accent: #111827;
-  --accent-soft: rgba(17, 24, 39, 0.07);
+  --accent-soft: rgba(17, 24, 39, 0.075);
   --accent-fg: #ffffff;
   --warn: #b45309;
   --warn-soft: rgba(217, 119, 6, 0.1);
@@ -128,6 +133,11 @@
   --neg-bd: rgba(220, 38, 38, 0.22);
 }
 
+/* Lock scrollbar gutter so page switches NEVER shift viewport horizontally by 15px */
+html {
+  scrollbar-gutter: stable;
+}
+
 html,
 body {
   margin: 0;
@@ -139,6 +149,40 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   font-variant-numeric: tabular-nums;
+  transition: background-color 220ms ease, color 180ms ease;
+}
+
+/* Smooth focus halo & tactile control micro-interactions across all forms */
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  transition:
+    border-color 180ms ease,
+    box-shadow 200ms var(--ease-spring),
+    background-color 180ms ease,
+    color 160ms ease;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+button:not(:disabled):not(.otl-switch) {
+  transition:
+    transform 150ms var(--ease-spring),
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 160ms ease,
+    box-shadow 200ms ease,
+    opacity 160ms ease;
+}
+
+button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
+  transform: scale(0.976);
 }
 
 @layer components {
@@ -147,11 +191,18 @@ body {
     border: 1px solid var(--border);
     border-radius: 12px;
     box-shadow: var(--shadow);
+    transition:
+      background-color 220ms ease,
+      border-color 220ms ease,
+      box-shadow 240ms ease;
   }
 
   .otl-surface-2 {
     background: var(--surface-2);
     border: 1px solid var(--border);
+    transition:
+      background-color 220ms ease,
+      border-color 220ms ease;
   }
 
   .otl-table {
@@ -169,6 +220,7 @@ body {
     background: var(--surface-2);
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
+    transition: background-color 220ms ease, border-color 220ms ease;
   }
 
   .otl-table th.text-right,
@@ -180,6 +232,7 @@ body {
     padding: 11px 16px;
     border-bottom: 1px solid var(--border);
     vertical-align: middle;
+    transition: border-color 220ms ease;
   }
 
   .otl-table tbody tr:last-child td {
@@ -189,7 +242,7 @@ body {
   .otl-table tbody tr.clickable {
     cursor: pointer;
     position: relative;
-    transition: background-color 180ms ease, box-shadow 200ms ease;
+    transition: background-color 180ms ease, box-shadow 220ms var(--ease-spring);
   }
 
   .otl-table tbody tr.clickable:hover {
@@ -197,22 +250,25 @@ body {
   }
 
   :root[data-theme="light"] .otl-table tbody tr.clickable:hover {
-    background: linear-gradient(90deg, rgba(15, 23, 42, 0.045), var(--surface-hover) 72%);
+    background: linear-gradient(90deg, rgba(15, 23, 42, 0.04), var(--surface-hover) 72%);
   }
 
   .otl-table tbody tr.selected {
     background-color: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
   }
 }
 
 .txt-pos,
 .otl-table td.txt-pos {
   color: var(--pos);
+  transition: color 180ms ease;
 }
 
 .txt-neg,
 .otl-table td.txt-neg {
   color: var(--neg);
+  transition: color 180ms ease;
 }
 
 .instrument-mark {
@@ -237,32 +293,58 @@ body {
   flex-shrink: 0;
 }
 
-:root[data-privacy="on"] .sensitive {
-  filter: blur(6px);
-  user-select: none;
-  transition: filter 150ms ease;
+.sensitive {
+  transition: filter 200ms var(--ease-spring);
 }
 
-/* Restrained, fluid motion system */
+:root[data-privacy="on"] .sensitive,
+:root[data-privacy="on"] .recharts-tooltip-item-value {
+  filter: blur(6px);
+  user-select: none;
+}
+
+/* ── Compositor-Accelerated Choreographed Motion System (60/120fps) ── */
 @keyframes otlFadeUp {
   from {
     opacity: 0;
-    transform: translateY(7px);
+    transform: translate3d(0, 9px, 0);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
-@keyframes otlExpandDown {
+@keyframes otlTitleSwap {
   from {
     opacity: 0;
-    transform: translateY(-6px) scaleY(0.98);
+    transform: translate3d(0, 5px, 0);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scaleY(1);
+    transform: none;
+  }
+}
+
+@keyframes otlSwapNext {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes otlSwapPrev {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
@@ -275,36 +357,95 @@ body {
   }
 }
 
-@keyframes otlSlideInRight {
-  from {
-    opacity: 0.4;
-    transform: translateX(36px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
 .otl-page-enter {
-  animation: otlFadeUp 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: otlFadeUp 260ms var(--ease-spring) backwards;
 }
 
-.otl-drawer-expand {
-  transform-origin: top center;
-  animation: otlExpandDown 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+/* Staggered section & KPI choreography on page entrance */
+.otl-stagger > * {
+  animation: otlFadeUp 300ms var(--ease-spring) backwards;
+}
+.otl-stagger > *:nth-child(1) { animation-delay: 0ms; }
+.otl-stagger > *:nth-child(2) { animation-delay: 36ms; }
+.otl-stagger > *:nth-child(3) { animation-delay: 72ms; }
+.otl-stagger > *:nth-child(4) { animation-delay: 108ms; }
+.otl-stagger > *:nth-child(5) { animation-delay: 144ms; }
+
+.otl-kpi-grid > * {
+  animation: otlFadeUp 280ms var(--ease-spring) backwards;
+}
+.otl-kpi-grid > *:nth-child(1) { animation-delay: 0ms; }
+.otl-kpi-grid > *:nth-child(2) { animation-delay: 28ms; }
+.otl-kpi-grid > *:nth-child(3) { animation-delay: 56ms; }
+.otl-kpi-grid > *:nth-child(4) { animation-delay: 84ms; }
+
+.otl-title-swap {
+  animation: otlTitleSwap 210ms var(--ease-spring) backwards;
 }
 
 .otl-panel-swap {
-  animation: otlFadeUp 170ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: otlFadeUp 220ms var(--ease-spring) backwards;
+}
+
+.otl-swap-next {
+  animation: otlSwapNext 220ms var(--ease-spring) backwards;
+}
+
+.otl-swap-prev {
+  animation: otlSwapPrev 220ms var(--ease-spring) backwards;
 }
 
 .otl-backdrop-in {
-  animation: otlBackdropIn 200ms ease-out both;
+  animation: otlBackdropIn 220ms ease-out both;
 }
 
-.otl-slide-in-right {
-  animation: otlSlideInRight 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+/* Two-way CSS Grid Height Physics (AnimatedCollapse) */
+.otl-collapse-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translate3d(0, -4px, 0);
+  transition:
+    grid-template-rows 250ms var(--ease-spring),
+    opacity 200ms ease,
+    transform 250ms var(--ease-spring);
+}
+
+.otl-collapse-grid.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+.otl-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Smooth Progress & Allocation Bar Fill */
+.otl-bar-fill {
+  transition: width 560ms var(--ease-spring);
+}
+
+/* TopBar Range Slot: Zero-jump smooth reveal/hide left of pinned utility controls */
+.otl-range-slot {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  max-width: 320px;
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition:
+    max-width 250ms var(--ease-spring),
+    opacity 190ms ease,
+    transform 240ms var(--ease-spring);
+}
+
+.otl-range-slot.is-hidden {
+  max-width: 0;
+  opacity: 0;
+  transform: translate3d(6px, 0, 0) scale(0.95);
+  pointer-events: none;
 }
 
 /* Operational Connection Status Colors (Strictly independent of PnL polarity!) */
@@ -314,8 +455,8 @@ body {
   color: #10b981;
 }
 :root[data-theme="light"] .otl-status-ok {
-  background: rgba(5, 150, 105, 0.1);
-  border-color: rgba(5, 150, 105, 0.26);
+  background: #ecfdf5;
+  border-color: rgba(5, 150, 105, 0.3);
   color: #047857;
 }
 
@@ -325,8 +466,8 @@ body {
   color: #f87171;
 }
 :root[data-theme="light"] .otl-status-err {
-  background: rgba(220, 38, 38, 0.09);
-  border-color: rgba(220, 38, 38, 0.26);
+  background: #fef2f2;
+  border-color: rgba(220, 38, 38, 0.28);
   color: #b91c1c;
 }
 
@@ -336,9 +477,43 @@ body {
   color: #fbbf24;
 }
 :root[data-theme="light"] .otl-status-warn {
-  background: rgba(217, 119, 6, 0.1);
-  border-color: rgba(217, 119, 6, 0.26);
+  background: #fffbeb;
+  border-color: rgba(217, 119, 6, 0.28);
   color: #b45309;
+}
+
+/* Floating Velvet Toast Stack (Zero Layout Shift) */
+@keyframes otlToastIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes otlToastOut {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.96);
+  }
+}
+
+.otl-toast-card {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: otlToastIn 260ms var(--ease-spring) both;
+}
+
+.otl-toast-card.closing {
+  animation: otlToastOut 185ms var(--ease-exit) both;
+  pointer-events: none;
 }
 
 /* NAS Local Login & Ceremony C Brand Unlock Entrance (~1.5s) */
@@ -372,7 +547,7 @@ body {
 }
 
 .otl-ceremony-logo {
-  animation: otlLogoFloat 620ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: otlLogoFloat 620ms var(--ease-spring) forwards;
 }
 
 .otl-ceremony-shimmer {
@@ -395,11 +570,11 @@ body {
   height: 100%;
   width: 0%;
   background: linear-gradient(90deg, #f59e0b, #38bdf8, #10b981);
-  animation: otlCeremonyBarFill 1050ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: otlCeremonyBarFill 1050ms var(--ease-spring) forwards;
 }
 
 .otl-ceremony-curtain {
-  transition: opacity 420ms ease, transform 480ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 420ms ease, transform 480ms var(--ease-spring);
 }
 
 .otl-ceremony-curtain.lifting {
@@ -408,10 +583,24 @@ body {
   pointer-events: none;
 }
 
-/* ── Style 2: Frosted Velvet Shimmer Floating Window & Spotlight Micro-Interactions ── */
+/* Indeterminate shimmer progress for Live Exchange Connection Ceremony */
+@keyframes otlIndeterminateSlide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(260%); }
+}
+
+.otl-ceremony-indeterminate {
+  width: 42%;
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, transparent, var(--accent), #10b981, transparent);
+  animation: otlIndeterminateSlide 1.25s ease-in-out infinite;
+}
+
+/* ── Style 2: Frosted Velvet Shimmer Floating Window, Slide-Over Drawer & Micro-Interactions ── */
 @keyframes otlVelvetRipple {
-  0%   { opacity: 0.85; transform: translate(-50%, -50%) scale(0.14); }
-  100% { opacity: 0; transform: translate(-50%, -50%) scale(2.45); }
+  0%   { opacity: 0.8; transform: translate(-50%, -50%) scale(0.14); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(2.4); }
 }
 
 .otl-velvet-ripple {
@@ -419,12 +608,12 @@ body {
   border-radius: 9999px;
   pointer-events: none;
   z-index: 2;
-  background: radial-gradient(circle, rgba(251, 191, 36, 0.28) 0%, rgba(56, 189, 248, 0.14) 50%, transparent 72%);
-  animation: otlVelvetRipple 520ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.25) 0%, rgba(56, 189, 248, 0.12) 50%, transparent 72%);
+  animation: otlVelvetRipple 500ms var(--ease-out-quart) forwards;
 }
 
 :root[data-theme="light"] .otl-velvet-ripple {
-  background: radial-gradient(circle, rgba(15, 23, 42, 0.12) 0%, rgba(59, 130, 246, 0.10) 52%, transparent 72%);
+  background: radial-gradient(circle, rgba(15, 23, 42, 0.1) 0%, rgba(59, 130, 246, 0.08) 52%, transparent 72%);
 }
 
 .otl-card-interactive {
@@ -432,54 +621,57 @@ body {
   overflow: hidden;
   cursor: pointer;
   transition:
-    transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
-    border-color 240ms ease,
-    box-shadow 260ms ease,
+    transform 220ms var(--ease-spring),
+    border-color 220ms ease,
+    box-shadow 240ms var(--ease-spring),
     background-color 200ms ease;
 }
 
 .otl-card-interactive:hover {
-  border-color: rgba(251, 191, 36, 0.32);
-  box-shadow: var(--shadow), 0 0 22px rgba(251, 191, 36, 0.07);
+  transform: translate3d(0, -1.5px, 0);
+  border-color: rgba(251, 191, 36, 0.34);
+  box-shadow: var(--shadow), 0 8px 24px rgba(0, 0, 0, 0.22), 0 0 18px rgba(251, 191, 36, 0.06);
 }
 
 :root[data-theme="light"] .otl-card-interactive:hover {
   border-color: #94a3b8;
-  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.07);
 }
 
 .otl-card-interactive:active {
-  transform: scale(0.988);
+  transform: translate3d(0, 0, 0) scale(0.988);
 }
 
 .otl-glider {
+  will-change: transform, width, height;
   transition:
-    transform 250ms cubic-bezier(0.16, 1, 0.3, 1),
-    width 250ms cubic-bezier(0.16, 1, 0.3, 1),
-    height 250ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 270ms var(--ease-spring),
+    width 270ms var(--ease-spring),
+    height 270ms var(--ease-spring),
     opacity 180ms ease;
 }
 
+/* Pure GPU-composited modal float (no filter:blur rasterization jank!) */
 @keyframes otlVelvetFloatIn {
-  0%   { opacity: 0; filter: blur(6px); transform: translateY(15px) scale(0.95); }
-  100% { opacity: 1; filter: blur(0px); transform: translateY(0) scale(1); }
+  0%   { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.962); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes otlVelvetFloatOut {
-  0%   { opacity: 1; filter: blur(0px); transform: translateY(0) scale(1); }
-  100% { opacity: 0; filter: blur(4px); transform: translateY(-9px) scale(0.965); }
+  0%   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  100% { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.972); }
 }
 
 .otl-modal-backdrop {
-  background: rgba(5, 8, 14, 0.58);
+  background: rgba(5, 8, 14, 0.56);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  animation: otlBackdropIn 210ms ease-out both;
-  transition: opacity 185ms ease;
+  animation: otlBackdropIn 220ms ease-out both;
+  transition: opacity 190ms ease;
 }
 
 :root[data-theme="light"] .otl-modal-backdrop {
-  background: rgba(15, 23, 42, 0.32);
+  background: rgba(15, 23, 42, 0.3);
 }
 
 .otl-modal-backdrop.closing {
@@ -493,12 +685,13 @@ body {
   border: 1px solid rgba(251, 191, 36, 0.28);
   border-radius: 16px;
   box-shadow: 0 28px 72px rgba(0, 0, 0, 0.68), 0 0 32px rgba(251, 191, 36, 0.08);
-  animation: otlVelvetFloatIn 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+  animation: otlVelvetFloatIn 270ms var(--ease-spring) both;
 }
 
 :root[data-theme="light"] .otl-velvet-window {
   border-color: var(--border-strong);
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.16);
 }
 
 .otl-velvet-window::before {
@@ -514,7 +707,60 @@ body {
 }
 
 .otl-modal-backdrop.closing .otl-velvet-window {
-  animation: otlVelvetFloatOut 185ms ease-in both;
+  animation: otlVelvetFloatOut 185ms var(--ease-exit) both;
+}
+
+/* Right-Edge Slide-Over Sheet (TradeDrilldownDrawer) */
+@keyframes otlDrawerSlideIn {
+  from {
+    transform: translate3d(100%, 0, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes otlDrawerSlideOut {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+.otl-drawer-backdrop {
+  background: rgba(5, 8, 14, 0.48);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: otlBackdropIn 240ms ease-out both;
+  transition: opacity 220ms ease;
+}
+
+:root[data-theme="light"] .otl-drawer-backdrop {
+  background: rgba(15, 23, 42, 0.26);
+}
+
+.otl-drawer-backdrop.closing {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.otl-drawer-panel {
+  position: relative;
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -24px 0 64px rgba(0, 0, 0, 0.48);
+  will-change: transform;
+  animation: otlDrawerSlideIn 310ms var(--ease-spring) both;
+}
+
+:root[data-theme="light"] .otl-drawer-panel {
+  box-shadow: -20px 0 56px rgba(15, 23, 42, 0.14);
+}
+
+.otl-drawer-backdrop.closing .otl-drawer-panel {
+  animation: otlDrawerSlideOut 220ms var(--ease-exit) both;
 }
 
 .otl-switch {
@@ -545,7 +791,7 @@ body {
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
   transform: translateX(0);
-  transition: transform 250ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 250ms var(--ease-spring);
 }
 
 .otl-switch[aria-checked="true"] .otl-switch-knob {
@@ -554,20 +800,29 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .otl-page-enter,
-  .otl-drawer-expand,
+  .otl-stagger > *,
+  .otl-kpi-grid > *,
+  .otl-title-swap,
   .otl-panel-swap,
+  .otl-swap-next,
+  .otl-swap-prev,
   .otl-backdrop-in,
-  .otl-slide-in-right,
   .otl-shake,
   .otl-ceremony-logo,
   .otl-ceremony-shimmer,
   .otl-ceremony-bar-fill,
+  .otl-ceremony-indeterminate,
   .otl-velvet-window,
+  .otl-drawer-panel,
+  .otl-toast-card,
   .otl-velvet-ripple {
     animation: none !important;
   }
   .otl-ceremony-curtain,
   .otl-glider,
+  .otl-collapse-grid,
+  .otl-bar-fill,
+  .otl-range-slot,
   .otl-switch-knob,
   .otl-card-interactive {
     transition: none !important;

@@ -130,6 +130,19 @@ export const api = {
   listExchanges(): Promise<{ adapters: ExchangeAdapterInfo[]; error_count?: number }> {
     return req('/api/v1/exchanges')
   },
+  verifyExchange(body: {
+    venue_id: string
+    label: string
+    api_key: string
+    api_secret: string
+    passphrase?: string
+  }): Promise<{ ok: boolean; verified?: boolean; permission_warning?: string; permission_warning_zh?: string }> {
+    return req('/api/v1/exchanges/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
   upsertExchange(body: {
     venue_id: string
     label: string
@@ -143,8 +156,12 @@ export const api = {
       body: JSON.stringify(body),
     })
   },
-  deleteExchange(venueId: string): Promise<{ ok: boolean }> {
-    return req(`/api/v1/exchanges/${encodeURIComponent(venueId)}`, { method: 'DELETE' })
+  deleteExchange(
+    venueId: string,
+    keepData = false,
+  ): Promise<{ ok: boolean; kept_data?: boolean; has_archived_data?: boolean }> {
+    const qs = `?keep_data=${keepData ? 'true' : 'false'}`
+    return req(`/api/v1/exchanges/${encodeURIComponent(venueId)}${qs}`, { method: 'DELETE' })
   },
   testExchange(
     venueId: string,
@@ -153,8 +170,16 @@ export const api = {
   },
   triggerSync(
     venueId?: string,
+    candidateCredential?: {
+      venue_id: string
+      label: string
+      api_key: string
+      api_secret: string
+      passphrase?: string
+    },
   ): Promise<{
     ok: boolean
+    committed?: boolean
     venues?: Record<
       string,
       {
@@ -170,7 +195,11 @@ export const api = {
     return req('/api/v1/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ force_all: true, ...(venueId ? { venue_id: venueId } : {}) }),
+      body: JSON.stringify({
+        force_all: true,
+        ...(venueId ? { venue_id: venueId } : {}),
+        ...(candidateCredential ? { candidate_credential: candidateCredential } : {}),
+      }),
     })
   },
   setDemoMode(enabled: boolean): Promise<{ ok: boolean; demo_mode: boolean }> {
@@ -187,11 +216,14 @@ export const api = {
       body: JSON.stringify({ tags, note }),
     })
   },
-  generateAiReview(rangeKey: string): Promise<NonNullable<DashboardData['ai_review']>> {
+  generateAiReview(
+    rangeKey: string,
+    mode: 'auto' | 'ai' | 'local_rules' = 'auto',
+  ): Promise<NonNullable<DashboardData['ai_review']>> {
     return req('/api/v1/ai-review', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ range_key: rangeKey }),
+      body: JSON.stringify({ range_key: rangeKey, mode }),
     })
   },
   listAiModels(baseUrl: string, apiKey: string): Promise<{ ok: boolean; models: string[]; count: number }> {

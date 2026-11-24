@@ -30,8 +30,8 @@ def _parse_utc_str_ms(raw: str) -> int:
 import httpx
 
 from opentradeledger.adapters.compat_creds import BinanceCredentials
-from opentradeledger.adapters.gate.client import ReadOnlyGuardError
 from opentradeledger.adapters.stock_channels import _KNOWN_CRYPTO_EXCLUSIONS, classify_spot_stock_token
+from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 
 logger = logging.getLogger("gate_manual.binance")
 

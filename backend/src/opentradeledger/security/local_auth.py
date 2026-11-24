@@ -191,6 +191,33 @@ class LocalAuthManager:
         return hmac.compare_digest(sig, expected)
 
     def get_status(self, session_token: str | None = None, *, demo_mode: bool = False) -> dict[str, Any]:
+        state = self._load()
+        initialized = bool(state.get("initialized"))
+        has_hash = bool(state.get("salt_hex") and state.get("hash_hex"))
+        enabled = bool(state.get("enabled")) and has_hash
+
+        # Never bypass an active password lock or OTL_REQUIRE_AUTH=true, even when Demo Mode is active
+        if enabled:
+            is_authed = self.verify_session_token(session_token)
+            return {
+                "demo_bypass": False,
+                "initialized": True,
+                "enabled": True,
+                "authenticated": is_authed,
+                "require_setup": False,
+                "can_skip": not self.require_auth_env,
+            }
+
+        if self.require_auth_env and not has_hash:
+            return {
+                "demo_bypass": False,
+                "initialized": False,
+                "enabled": False,
+                "authenticated": False,
+                "require_setup": True,
+                "can_skip": False,
+            }
+
         if demo_mode:
             return {
                 "demo_bypass": True,
@@ -200,11 +227,6 @@ class LocalAuthManager:
                 "require_setup": False,
                 "can_skip": True,
             }
-
-        state = self._load()
-        initialized = bool(state.get("initialized"))
-        has_hash = bool(state.get("salt_hex") and state.get("hash_hex"))
-        enabled = bool(state.get("enabled")) and has_hash
 
         if not initialized:
             if not self.auto_prompt_setup and not self.require_auth_env:
@@ -225,34 +247,13 @@ class LocalAuthManager:
                 "can_skip": not self.require_auth_env,
             }
 
-        if self.require_auth_env and not has_hash:
-            return {
-                "demo_bypass": False,
-                "initialized": False,
-                "enabled": False,
-                "authenticated": False,
-                "require_setup": True,
-                "can_skip": False,
-            }
-
-        if not enabled and not self.require_auth_env:
-            return {
-                "demo_bypass": False,
-                "initialized": True,
-                "enabled": False,
-                "authenticated": True,
-                "require_setup": False,
-                "can_skip": True,
-            }
-
-        is_authed = self.verify_session_token(session_token)
         return {
             "demo_bypass": False,
             "initialized": True,
-            "enabled": True,
-            "authenticated": is_authed,
+            "enabled": False,
+            "authenticated": True,
             "require_setup": False,
-            "can_skip": not self.require_auth_env,
+            "can_skip": True,
         }
 
     def is_request_allowed(self, session_token: str | None, *, demo_mode: bool = False) -> bool:
@@ -266,6 +267,8 @@ class LocalAuthManager:
         prev = self._load()
         if prev.get("enabled") and prev.get("hash_hex"):
             raise AuthValidationError("Password is already enabled; use change-password instead")
+        if prev.get("initialized") and not self.require_auth_env:
+            raise AuthValidationError("Initial setup already completed; enable password via Settings")
         salt = secrets.token_bytes(16)
         state = {
             "initialized": True,

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { EquityChart } from '../components/EquityChart'
 import { FloatingModal } from '../components/FloatingModal'
 import { InstrumentMark } from '../components/InstrumentMark'
@@ -26,13 +26,28 @@ export function OverviewPage({
   onInspectSymbol,
 }: {
   data: DashboardData
-  onNavigate: (page: NavPage) => void
+  onNavigate: (page: NavPage, extTab?: 'copy' | 'stock') => void
   onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
   const [openModal, setOpenModal] = useState<null | 'equity' | 'reconcile'>(null)
   const [holdingTab, setHoldingTab] = useState<'all' | 'futures' | 'stocks' | 'spot'>('all')
+  const [barsReady, setBarsReady] = useState(false)
+
+  useEffect(() => {
+    const reduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduced || typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      setBarsReady(true)
+      return
+    }
+    const id = window.requestAnimationFrame(() => setBarsReady(true))
+    return () => window.cancelAnimationFrame(id)
+  }, [])
+
   const showEquity = openModal === 'equity'
   const showReconcile = openModal === 'reconcile'
   const s = data.summary
@@ -50,9 +65,13 @@ export function OverviewPage({
     data.exchanges.reduce((acc, ex) => acc + Math.max(0, ex.equity_usd), 0),
   )
   const totalAvailableMargin = data.exchanges.reduce((acc, ex) => acc + Math.max(0, ex.available_margin_usd), 0)
-  const copyActiveEq = Math.max(0, data.extensions?.copy_trading?.active_equity_usd || 0)
-  const stockEq = Math.max(0, data.extensions?.stocks?.equity_usd || 0)
-  const spotTotalVal = spotList.reduce((acc, sp) => acc + Math.max(0, sp.market_value_usd), 0)
+  const eb = data.equity_breakdown
+  const futuresBucketVal = eb ? eb.futures_margin_usd : totalAvailableMargin
+  const copyActiveEq = eb ? eb.copy_equity_usd : Math.max(0, data.extensions?.copy_trading?.active_equity_usd || 0)
+  const stockEq = eb ? eb.stocks_equity_usd : Math.max(0, data.extensions?.stocks?.equity_usd || 0)
+  const spotTotalVal = eb
+    ? eb.spot_and_other_usd
+    : Math.max(0, s.total_equity_usd - futuresBucketVal - copyActiveEq - stockEq)
   const sortedExchanges = [...data.exchanges].sort((a, b) => b.equity_usd - a.equity_usd)
   const curveHeadlinePnl =
     data.equity_curve.length > 0
@@ -70,10 +89,15 @@ export function OverviewPage({
     .filter(([, , visible]) => visible)
     .map(([value, label]) => ({ value, label }))
 
+  const futuresShare = s.total_equity_usd > 0 ? (futuresBucketVal / s.total_equity_usd) * 100 : 0
+  const copyShare = s.total_equity_usd > 0 ? (copyActiveEq / s.total_equity_usd) * 100 : 0
+  const stockShare = s.total_equity_usd > 0 ? (stockEq / s.total_equity_usd) * 100 : 0
+  const spotShare = s.total_equity_usd > 0 ? (spotTotalVal / s.total_equity_usd) * 100 : 0
+
   return (
-    <div data-testid="overview-page" className="space-y-4">
-      {/* 4 pure, uncluttered KPI cards (zero 'click to open' helper badges) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+    <div data-testid="overview-page" className="otl-stagger space-y-4">
+      {/* 4 pure, uncluttered KPI cards */}
+      <div className="otl-kpi-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <KpiCard
           testId="kpi-equity"
           label={t('kpi_total_equity')}
@@ -164,52 +188,51 @@ export function OverviewPage({
           </span>
         }
       >
-        {/* 4-tile Structure Strip */}
+        {/* 4-tile Closed-Loop Structure Strip */}
         <div className="px-5 py-3.5 border-b border-[var(--border)] grid grid-cols-2 lg:grid-cols-4 gap-3 text-[12px]">
-          <div className="otl-surface-2 rounded-lg p-3">
-            <div className="text-[11px] text-[var(--fg-3)]">
-              {locale === 'en' ? 'Futures Avail. Margin' : '合约可用保证金'}
+          {[
+            {
+              title: locale === 'en' ? 'Futures Margin Equity' : '合约保证金权益',
+              val: futuresBucketVal,
+              pct: futuresShare,
+              color: '#3b82f6',
+            },
+            {
+              title: locale === 'en' ? 'Active Copy Pool' : '跟单池在途净值',
+              val: copyActiveEq,
+              pct: copyShare,
+              color: '#a78bfa',
+            },
+            {
+              title: locale === 'en' ? 'Equities & Tokens' : '美股与股票代币',
+              val: stockEq,
+              pct: stockShare,
+              color: '#f59e0b',
+            },
+            {
+              title: locale === 'en' ? 'Spot, Earn & Token Dust' : '现货、理财与空投尾仓',
+              val: spotTotalVal,
+              pct: spotShare,
+              color: '#10b981',
+            },
+          ].map((b, idx) => (
+            <div key={idx} className="otl-surface-2 rounded-lg p-3 flex flex-col gap-1">
+              <div className="text-[11px] text-[var(--fg-3)]">{b.title}</div>
+              <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">{cur.money(b.val)}</div>
+              <div className="flex items-center justify-between gap-2 mt-0.5">
+                <div className="h-1 flex-1 rounded-full bg-[var(--track)] overflow-hidden">
+                  <div
+                    className="otl-bar-fill h-full rounded-full"
+                    style={{
+                      width: `${showEquity ? Math.min(100, Math.max(0, b.pct)) : 0}%`,
+                      background: b.color,
+                    }}
+                  />
+                </div>
+                <span className="text-[11px] text-[var(--fg-3)]">{b.pct.toFixed(1)}%</span>
+              </div>
             </div>
-            <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
-              {cur.money(totalAvailableMargin)}
-            </div>
-            <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
-              {s.total_equity_usd > 0 ? `${((totalAvailableMargin / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
-            </div>
-          </div>
-          <div className="otl-surface-2 rounded-lg p-3">
-            <div className="text-[11px] text-[var(--fg-3)]">
-              {locale === 'en' ? 'Active Copy Pool' : '跟单池在途净值'}
-            </div>
-            <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
-              {cur.money(copyActiveEq)}
-            </div>
-            <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
-              {s.total_equity_usd > 0 ? `${((copyActiveEq / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
-            </div>
-          </div>
-          <div className="otl-surface-2 rounded-lg p-3">
-            <div className="text-[11px] text-[var(--fg-3)]">
-              {locale === 'en' ? 'Equities & Tokens' : '美股与股票代币'}
-            </div>
-            <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
-              {cur.money(stockEq)}
-            </div>
-            <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
-              {s.total_equity_usd > 0 ? `${((stockEq / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
-            </div>
-          </div>
-          <div className="otl-surface-2 rounded-lg p-3">
-            <div className="text-[11px] text-[var(--fg-3)]">
-              {locale === 'en' ? 'Crypto Spot' : '加密现货市值'}
-            </div>
-            <div className="text-[15px] font-semibold text-[var(--fg)] mt-1 sensitive">
-              {cur.money(spotTotalVal)}
-            </div>
-            <div className="text-[11px] text-[var(--fg-3)] mt-0.5">
-              {s.total_equity_usd > 0 ? `${((spotTotalVal / s.total_equity_usd) * 100).toFixed(1)}%` : '0.0%'}
-            </div>
-          </div>
+          ))}
         </div>
 
         {/* Per-Venue Asset Table */}
@@ -233,10 +256,17 @@ export function OverviewPage({
                 return (
                   <tr key={ex.venue_id}>
                     <td>
-                      <VenueBadge
-                        venueId={ex.venue_id}
-                        name={locale === 'en' ? ex.display_name : ex.display_name_zh || ex.display_name}
-                      />
+                      <div className="inline-flex items-center gap-1.5">
+                        <VenueBadge
+                          venueId={ex.venue_id}
+                          name={locale === 'en' ? ex.display_name : ex.display_name_zh || ex.display_name}
+                        />
+                        {ex.health_status === 'archived' && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-3)] whitespace-nowrap">
+                            {locale === 'en' ? 'Archived' : '已封存'}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="text-right font-semibold whitespace-nowrap sensitive">
                       {cur.plainMoney(ex.equity_usd)}
@@ -313,8 +343,8 @@ export function OverviewPage({
                   <td className="font-medium whitespace-nowrap">
                     {locale === 'en' ? item.label : item.label_zh || item.label}
                   </td>
-                  <td className="text-[var(--fg-2)]">
-                    {locale === 'en' ? item.detail : item.detail_zh || item.detail}
+                  <td className="text-[var(--fg-2)] sensitive">
+                    {cur.convertText(locale === 'en' ? item.detail : item.detail_zh || item.detail)}
                   </td>
                   <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(item.amount_usd)}`}>
                     {cur.signedPlainMoney(item.amount_usd)}
@@ -326,6 +356,30 @@ export function OverviewPage({
         </div>
       </FloatingModal>
 
+      {data.goal && data.goal.enabled && (
+        <div
+          onClick={() => onNavigate('analytics')}
+          className="otl-card otl-card-interactive px-5 py-3 flex flex-wrap items-center justify-between gap-3 text-[12px]"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="font-semibold text-[var(--fg)]">{data.goal.label || t('an_goal_default')}</span>
+            <span className="text-[var(--fg-2)] sensitive">
+              {cur.plainMoney(data.goal.current_equity_usd)} / {cur.money(data.goal.target_usd)} (
+              {data.goal.progress_pct.toFixed(1)}%)
+            </span>
+          </div>
+          <div className="w-full sm:w-56 h-2 rounded-full bg-[var(--track)] overflow-hidden">
+            <div
+              className="otl-bar-fill h-full rounded-full"
+              style={{
+                width: `${barsReady ? Math.min(100, Math.max(0, data.goal.progress_pct)) : 0}%`,
+                background: 'var(--accent)',
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Equity Curve + Dynamic Venue Allocation */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
         <div className="lg:col-span-7 otl-card p-5 flex flex-col gap-3">
@@ -335,7 +389,7 @@ export function OverviewPage({
               <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('ov_curve_sub')}</p>
             </div>
             <span className={`text-[13px] font-semibold sensitive whitespace-nowrap ${pnlTone(curveHeadlinePnl)}`}>
-              {cur.signedPlainMoney(curveHeadlinePnl)} {cur.code}
+              {cur.signedMoney(curveHeadlinePnl)}
             </span>
           </div>
           <EquityChart points={data.equity_curve} height={210} />
@@ -360,8 +414,9 @@ export function OverviewPage({
               return (
                 <div
                   key={ex.venue_id}
+                  className="otl-bar-fill h-full"
                   style={{
-                    width: `${pct}%`,
+                    width: `${barsReady ? pct : 0}%`,
                     background: BAR_COLORS[ex.color_token] || 'var(--accent)',
                   }}
                 />
@@ -380,6 +435,19 @@ export function OverviewPage({
                       name={locale === 'en' ? ex.display_name : ex.display_name_zh || ex.display_name}
                     />
                     <span className="text-[11.5px] text-[var(--fg-3)] whitespace-nowrap">{pct.toFixed(1)}%</span>
+                    {ex.health_status === 'archived' && (
+                      <span
+                        data-testid={`overview-archived-badge-${ex.venue_id}`}
+                        title={
+                          locale === 'en'
+                            ? 'API unbound — local historical ledger archived'
+                            : 'API 已解绑 · 本地历史账单封存保留'
+                        }
+                        className="px-1.5 py-0.5 rounded text-[10.5px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-3)] whitespace-nowrap"
+                      >
+                        {locale === 'en' ? 'Archived' : '已封存'}
+                      </span>
+                    )}
                     {ex.health_status === 'error' && (
                       <button
                         type="button"
@@ -483,7 +551,7 @@ export function OverviewPage({
                     <tr
                       key={`stk-${h.venue_id}-${h.symbol}`}
                       className="clickable"
-                      onClick={() => onNavigate('extensions')}
+                      onClick={() => onNavigate('extensions', 'stock')}
                     >
                       <td className="whitespace-nowrap">
                         <span className="inline-flex items-center gap-2 font-semibold">

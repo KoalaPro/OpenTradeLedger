@@ -11,6 +11,7 @@ interface SegmentedPillsProps<T extends string> {
   value: T
   onChange: (next: T) => void
   size?: 'sm' | 'md'
+  wrap?: boolean
 }
 
 export function SegmentedPills<T extends string>({
@@ -18,12 +19,21 @@ export function SegmentedPills<T extends string>({
   value,
   onChange,
   size = 'md',
+  wrap = false,
 }: SegmentedPillsProps<T>) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({})
-  const [glider, setGlider] = useState<{ left: number; width: number; ready: boolean }>({
+  const [glider, setGlider] = useState<{
+    left: number
+    top: number
+    width: number
+    height: number
+    ready: boolean
+  }>({
     left: 2,
+    top: 2,
     width: 0,
+    height: 0,
     ready: false,
   })
 
@@ -35,9 +45,11 @@ export function SegmentedPills<T extends string>({
         return
       }
       const w = btn.offsetWidth
+      const h = btn.offsetHeight
       const l = btn.offsetLeft
-      if (w > 0) {
-        setGlider({ left: l, width: w, ready: true })
+      const t = btn.offsetTop
+      if (w > 0 && h > 0) {
+        setGlider({ left: l, top: t, width: w, height: h, ready: true })
       }
     }
     sync()
@@ -53,16 +65,19 @@ export function SegmentedPills<T extends string>({
   return (
     <div
       ref={containerRef}
-      className="relative inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)]"
+      className={`relative inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] ${
+        wrap ? 'flex-wrap gap-0.5' : ''
+      }`}
     >
       {glider.ready && (
         <div
           aria-hidden="true"
-          className="otl-glider absolute top-0.5 bottom-0.5 left-0 rounded-md bg-[var(--surface)] border border-[var(--border-strong)] pointer-events-none"
+          className="otl-glider absolute left-0 top-0 rounded-md bg-[var(--surface)] border border-[var(--border-strong)] pointer-events-none"
           style={{
             width: `${glider.width}px`,
-            transform: `translateX(${glider.left}px)`,
-            boxShadow: '0 1px 4px rgba(0, 0, 0, 0.18)',
+            height: `${glider.height}px`,
+            transform: `translate3d(${glider.left}px, ${glider.top}px, 0)`,
+            boxShadow: '0 1px 4px rgba(0, 0, 0, 0.16)',
           }}
         />
       )}
@@ -75,9 +90,10 @@ export function SegmentedPills<T extends string>({
               btnRefs.current[opt.value] = el
             }}
             type="button"
+            data-no-ripple="true"
             data-testid={opt.testId}
             onClick={() => onChange(opt.value)}
-            className={`relative z-10 rounded-md font-medium whitespace-nowrap cursor-pointer transition-colors ${padClass}`}
+            className={`relative z-10 rounded-md font-medium whitespace-nowrap cursor-pointer ${padClass}`}
             style={{
               background: !glider.ready && active ? 'var(--surface)' : 'transparent',
               color: active ? 'var(--fg)' : 'var(--fg-2)',

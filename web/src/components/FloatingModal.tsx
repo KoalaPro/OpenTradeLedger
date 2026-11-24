@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 
 interface FloatingModalProps {
@@ -74,7 +75,7 @@ export function FloatingModal({
 
   if (!rendered) return null
 
-  return (
+  const dialogNode = (
     <div
       data-testid={testId}
       role="dialog"
@@ -87,7 +88,7 @@ export function FloatingModal({
       }`}
     >
       <div
-        className={`otl-velvet-window w-full ${maxWidthClass} max-h-[82vh] flex flex-col overflow-hidden`}
+        className={`otl-velvet-window w-full ${maxWidthClass} max-h-[88vh] flex flex-col overflow-hidden`}
       >
         <div className="px-5 py-3.5 border-b border-[var(--border)] bg-[var(--surface-2)] flex items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
@@ -101,7 +102,16 @@ export function FloatingModal({
             <button
               type="button"
               onClick={requestClose}
-              aria-label="Close"
+              aria-label={
+                typeof document !== 'undefined' && (document.documentElement.lang || '').startsWith('zh')
+                  ? '关闭'
+                  : 'Close'
+              }
+              title={
+                typeof document !== 'undefined' && (document.documentElement.lang || '').startsWith('zh')
+                  ? '关闭'
+                  : 'Close'
+              }
               className="h-7 w-7 inline-flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer transition-colors"
             >
               <X size={14} />
@@ -113,4 +123,6 @@ export function FloatingModal({
       </div>
     </div>
   )
+
+  return typeof document !== 'undefined' ? createPortal(dialogNode, document.body) : dialogNode
 }

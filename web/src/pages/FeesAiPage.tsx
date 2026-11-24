@@ -1,27 +1,81 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronUp, ShieldCheck, Sparkles } from 'lucide-react'
+import { ChevronDown, Settings, ShieldCheck, Sparkles } from 'lucide-react'
+import { AnimatedCollapse } from '../components/AnimatedCollapse'
+import { FloatingModal } from '../components/FloatingModal'
 import { SimpleMarkdown } from '../components/SimpleMarkdown'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
-import type { DashboardData } from '../lib/types'
+import type { DashboardData, UserSettings } from '../lib/types'
 
 export function FeesAiPage({
   data,
+  settings,
   generating,
   onGenerate,
+  onGoConfigureAi,
 }: {
   data: DashboardData
+  settings?: UserSettings
   generating: boolean
-  onGenerate: () => Promise<void>
+  onGenerate: (mode?: 'auto' | 'ai' | 'local_rules') => Promise<void>
+  onGoConfigureAi?: () => void
 }) {
   const { locale, t } = useI18n()
+  const isZh = locale !== 'en'
   const cur = useCurrency()
   const [showAiPayload, setShowAiPayload] = useState(false)
+  const [showAiUnconfiguredModal, setShowAiUnconfiguredModal] = useState(false)
   const ai = data.ai_review
 
+  const rawAiUrl = (settings?.ai_base_url || '').trim()
+  const isLocalAiHost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(rawAiUrl)
+  const aiConfigured = Boolean(rawAiUrl && (settings?.ai_api_key_set || isLocalAiHost))
+
+  const rk = (data.range_key || 'all').toLowerCase()
+  const currentPeriodLabel =
+    locale === 'en'
+      ? rk === '7d'
+        ? 'Last 7 Days'
+        : rk === '30d'
+          ? 'Last 30 Days'
+          : rk === 'all'
+            ? 'All-Time'
+            : rk
+      : rk === '7d'
+        ? '近 7 天'
+        : rk === '30d'
+          ? '近 30 天'
+          : rk === 'all'
+            ? '全部历史'
+            : `${rk} 月度`
+
+  const formatModelAttribution = (m: string) => {
+    if (m === 'local-actuarial') {
+      return isZh ? '本地精算规则（未调用 AI）' : 'Local Actuarial Rules (No LLM)'
+    }
+    if (m === 'demo-local-actuarial') {
+      return isZh ? '演示精算规则' : 'Demo Actuarial Rules'
+    }
+    return m
+  }
+
+  const formatHighlightMetric = (h: NonNullable<DashboardData['ai_review']>['highlights'][number]) => {
+    if (!h.metric) return ''
+    if (cur.code !== 'USDT') {
+      if (h.kind === 'net_fee' && typeof h.amount_usd === 'number') {
+        const pctSuffix = typeof h.pct === 'number' ? ` (${h.pct.toFixed(1)}%)` : ''
+        return `-${cur.money(Math.abs(h.amount_usd), 2)}${pctSuffix}`
+      }
+      if (h.kind === 'maker_upside' && typeof h.amount_usd === 'number') {
+        return `+${cur.money(Math.abs(h.amount_usd), 2)}`
+      }
+    }
+    return cur.convertText(h.metric)
+  }
+
   return (
-    <div data-testid="fees-ai-page" className="space-y-4">
+    <div data-testid="fees-ai-page" className="otl-stagger space-y-4">
       {/* Cross-venue Fee & Rebate Comparison Matrix Table */}
       <section data-testid="fee-matrix-section" className="otl-card overflow-hidden">
         <div className="px-5 py-3.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
@@ -56,7 +110,10 @@ export function FeesAiPage({
               {data.fee_matrix.map(row => (
                 <tr key={row.venue_id}>
                   <td>
-                    <VenueBadge venueId={row.venue_id} name={row.display_name} />
+                    <VenueBadge
+                      venueId={row.venue_id}
+                      name={locale === 'en' ? row.display_name : row.display_name_zh || row.display_name}
+                    />
                   </td>
                   <td className="text-right whitespace-nowrap">{row.trade_count}</td>
                   <td className="text-right whitespace-nowrap">
@@ -96,11 +153,45 @@ export function FeesAiPage({
       {/* Structured AI Review */}
       <section className="otl-card p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="m-0 text-[15px] font-semibold text-[var(--fg)]">{t('ai_title')}</h2>
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="m-0 text-[15px] font-semibold text-[var(--fg)]">{t('ai_title')}</h2>
+              {settings && (
+                <span
+                  data-testid="ai-config-status-badge"
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
+                    aiConfigured
+                      ? 'otl-status-ok'
+                      : 'border border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--fg-2)]'
+                  }`}
+                >
+                  {aiConfigured
+                    ? isZh
+                      ? `已连接 AI · ${settings.ai_model || 'gpt-4o-mini'}`
+                      : `AI Ready · ${settings.ai_model || 'gpt-4o-mini'}`
+                    : isZh
+                      ? '尚未配置 AI 模型'
+                      : 'AI Not Configured'}
+                </span>
+              )}
+              {ai && (
+                <span
+                  data-testid="ai-scope-badge"
+                  className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)]"
+                >
+                  {isZh
+                    ? `统计周期：${ai.range_label_zh || currentPeriodLabel}${
+                        typeof ai.trade_count_snapshot === 'number' ? ` · ${ai.trade_count_snapshot} 笔` : ''
+                      }`
+                    : `Scope: ${ai.range_label || currentPeriodLabel}${
+                        typeof ai.trade_count_snapshot === 'number' ? ` · ${ai.trade_count_snapshot} trades` : ''
+                      }`}
+                </span>
+              )}
+            </div>
             {ai && (
-              <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">
-                {ai.generated_at} · {ai.model}
+              <p className="m-0 text-[12px] text-[var(--fg-3)]">
+                {ai.generated_at} · {formatModelAttribution(ai.model)}
               </p>
             )}
           </div>
@@ -108,11 +199,17 @@ export function FeesAiPage({
             type="button"
             data-testid="generate-ai-btn"
             disabled={generating}
-            onClick={() => void onGenerate()}
+            onClick={() => {
+              if (settings && !aiConfigured) {
+                setShowAiUnconfiguredModal(true)
+                return
+              }
+              void onGenerate(aiConfigured ? 'ai' : 'auto')
+            }}
             className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
             style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
           >
-            <Sparkles size={14} />
+            <Sparkles size={14} className={generating ? 'animate-pulse' : ''} />
             <span>{generating ? t('ai_generating') : t('ai_generate')}</span>
           </button>
         </div>
@@ -127,7 +224,7 @@ export function FeesAiPage({
               color: 'var(--warn)',
             }}
           >
-            {t('ai_stale_notice')}
+            {(isZh ? ai.stale_reason_zh : ai.stale_reason) || t('ai_stale_notice')}
           </div>
         )}
 
@@ -141,55 +238,71 @@ export function FeesAiPage({
         )}
 
         {!ai ? (
-          <div className="py-10 text-center text-[13px] text-[var(--fg-3)]">{t('ai_empty')}</div>
+          <div className="py-10 text-center text-[13px] text-[var(--fg-3)]">
+            {isZh
+              ? `当前统计周期（${currentPeriodLabel} · ${data.summary.trade_count} 笔交割）尚未生成复盘报告，点击右上角「${t('ai_generate')}」即可针对本周期生成诊断。`
+              : `No review generated yet for ${currentPeriodLabel} (${data.summary.trade_count} trades). Click "${t('ai_generate')}" above to analyze this period.`}
+          </div>
         ) : (
           <>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {ai.highlights.map((h, i) => (
-                <div key={i} className="otl-surface-2 rounded-xl p-4 flex flex-col gap-1.5">
-                  <div className="text-[12px] text-[var(--fg-3)]">
-                    {locale === 'en' ? h.title : h.title_zh || h.title}
+              {ai.highlights.map((h, i) => {
+                const formattedMetric = formatHighlightMetric(h)
+                const rawBody = locale === 'en' ? h.body : h.body_zh || h.body
+                return (
+                  <div key={i} className="otl-surface-2 rounded-xl p-4 flex flex-col gap-1.5">
+                    <div className="text-[12px] text-[var(--fg-3)]">
+                      {locale === 'en' ? h.title : h.title_zh || h.title}
+                    </div>
+                    {formattedMetric && (
+                      <div className="text-[17px] font-semibold text-[var(--fg)] sensitive">{formattedMetric}</div>
+                    )}
+                    <p className="m-0 text-[12px] leading-relaxed text-[var(--fg-2)] sensitive">
+                      {cur.convertText(rawBody)}
+                    </p>
                   </div>
-                  {h.metric && <div className="text-[17px] font-semibold text-[var(--fg)] sensitive">{h.metric}</div>}
-                  <p className="m-0 text-[12px] leading-relaxed text-[var(--fg-2)]">
-                    {locale === 'en' ? h.body : h.body_zh || h.body}
-                  </p>
-                </div>
-              ))}
+                )
+              })}
             </div>
 
             {(ai.markdown_commentary || ai.markdown_commentary_zh) && (
               <div className="otl-surface-2 rounded-xl p-4 space-y-2.5">
                 <div className="text-[13px] font-semibold text-[var(--fg)]">{t('ai_commentary_title')}</div>
-                <SimpleMarkdown
-                  content={
-                    locale === 'en'
-                      ? ai.markdown_commentary
-                      : ai.markdown_commentary_zh || ai.markdown_commentary
-                  }
-                />
+                <div className="sensitive">
+                  <SimpleMarkdown
+                    content={cur.convertText(
+                      locale === 'en'
+                        ? ai.markdown_commentary
+                        : ai.markdown_commentary_zh || ai.markdown_commentary,
+                    )}
+                  />
+                </div>
               </div>
             )}
 
-            {/* Prompt Data Transparency Disclosure */}
+            {/* Prompt Data Transparency Disclosure — silky two-way AnimatedCollapse */}
             <div className="pt-1">
               <button
                 type="button"
+                data-no-press="true"
                 data-testid="toggle-ai-payload-btn"
                 onClick={() => setShowAiPayload(v => !v)}
                 className="inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
               >
-                <ShieldCheck size={13} className="txt-pos" />
+                <ShieldCheck size={13} className="txt-pos shrink-0" />
                 <span>
                   {locale === 'en'
                     ? 'Inspect sanitized data sent to AI (Zero API keys / UIDs)'
                     : '查看本次喂给 AI 的脱敏数据维度（绝不含 API Key / UID / 钱包地址）'}
                 </span>
-                {showAiPayload ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                <ChevronDown
+                  size={13}
+                  className={`shrink-0 transition-transform duration-200 ${showAiPayload ? 'rotate-180' : ''}`}
+                />
               </button>
 
-              {showAiPayload && (
-                <div className="otl-drawer-expand mt-2.5 otl-surface-2 rounded-xl p-4 space-y-3 text-[12px]">
+              <AnimatedCollapse open={showAiPayload} innerClassName="pt-2.5">
+                <div className="otl-surface-2 rounded-xl p-4 space-y-3 text-[12px]">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-[var(--fg-2)]">
                     <div>
                       <b className="text-[var(--fg)]">
@@ -230,16 +343,70 @@ export function FeesAiPage({
                     </div>
                   </div>
                   {ai.context_preview && (
-                    <pre className="m-0 p-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[11px] text-[var(--fg-2)] overflow-x-auto max-h-64">
+                    <pre
+                      data-testid="ai-payload-pre"
+                      className="m-0 p-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[11px] text-[var(--fg-2)] overflow-x-auto max-h-64 sensitive"
+                    >
                       {JSON.stringify(ai.context_preview, null, 2)}
                     </pre>
                   )}
                 </div>
-              )}
+              </AnimatedCollapse>
             </div>
           </>
         )}
       </section>
+
+      <FloatingModal
+        open={showAiUnconfiguredModal}
+        onClose={() => setShowAiUnconfiguredModal(false)}
+        testId="ai-unconfigured-modal"
+        maxWidthClass="max-w-[450px]"
+        title={isZh ? '尚未配置 AI 大模型' : 'AI Model Not Configured'}
+      >
+        <div className="p-5 space-y-4 text-[12.5px]">
+          <p className="m-0 text-[var(--fg-2)] leading-relaxed">
+            {isZh
+              ? `当前尚未配置 AI 接口地址与 API Key，无法调用外部大模型生成深度复盘。你可以前往「设置与连接」接入任意 OpenAI 兼容模型，或选择使用内置本地精算规则生成「${currentPeriodLabel}」基础诊断报告。`
+              : `No AI Base URL or API Key is configured yet. You can configure any OpenAI-compatible model in Settings, or generate a "${currentPeriodLabel}" report using built-in local actuarial rules.`}
+          </p>
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setShowAiUnconfiguredModal(false)}
+              className="h-8 px-3 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] cursor-pointer"
+            >
+              {t('cancel')}
+            </button>
+            {onGoConfigureAi && (
+              <button
+                type="button"
+                data-testid="ai-modal-go-settings-btn"
+                onClick={() => {
+                  setShowAiUnconfiguredModal(false)
+                  onGoConfigureAi()
+                }}
+                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+              >
+                <Settings size={12} />
+                <span>{isZh ? '前往配置 AI' : 'Configure AI'}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="ai-modal-use-local-btn"
+              onClick={() => {
+                setShowAiUnconfiguredModal(false)
+                void onGenerate('local_rules')
+              }}
+              className="h-8 px-3.5 rounded-lg text-[12px] font-semibold cursor-pointer"
+              style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+            >
+              {isZh ? '使用本地规则生成' : 'Use Local Rules'}
+            </button>
+          </div>
+        </div>
+      </FloatingModal>
     </div>
   )
 }

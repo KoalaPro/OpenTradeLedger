@@ -47,6 +47,8 @@ interface CurrencyContextValue {
   plainMoney: (usd: number, decimals?: number) => string
   /** Formats signed converted amount without trailing " U" */
   signedPlainMoney: (usd: number, decimals?: number) => string
+  /** Converts embedded "+23.39 U" / "-358.83 USDT" tokens inside descriptive strings to active display currency */
+  convertText: (text: string) => string
 }
 
 function buildHelpers(code: CurrencyCode, fx: FxRatesPayload): CurrencyContextValue {
@@ -91,6 +93,23 @@ function buildHelpers(code: CurrencyCode, fx: FxRatesPayload): CurrencyContextVa
     return isUsdt ? `${base} U` : base
   }
 
+  const convertText = (text: string) => {
+    if (!text || isUsdt) return text
+    // 1. Convert explicit U / USDT amounts (e.g. "+23.39 USDT", "-49.57 U", "53.32 U")
+    let out = text.replace(/([+-]?\d[\d,]*(?:\.\d+)?)\s*U(?:SDT)?\b/g, (_m, numStr: string) => {
+      const parsed = Number(numStr.replace(/,/g, ''))
+      if (!Number.isFinite(parsed)) return _m
+      return numStr.startsWith('+') || numStr.startsWith('-') ? signedMoney(parsed) : money(parsed)
+    })
+    // 2. Convert standalone signed 2-decimal ledger components (e.g. "账面 -358.83 + 手操返佣 +157.86")
+    out = out.replace(/(^|[\s(])([+-]\d+(?:\.\d{2}))(?![\d.%A-Za-z])/g, (full, pre: string, numStr: string) => {
+      const parsed = Number(numStr)
+      if (!Number.isFinite(parsed)) return full
+      return `${pre}${signedMoney(parsed)}`
+    })
+    return out
+  }
+
   return {
     code,
     symbol: opt.symbol,
@@ -100,6 +119,7 @@ function buildHelpers(code: CurrencyCode, fx: FxRatesPayload): CurrencyContextVa
     signedMoney,
     plainMoney,
     signedPlainMoney,
+    convertText,
   }
 }
 

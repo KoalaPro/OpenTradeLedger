@@ -6,10 +6,18 @@ from datetime import datetime, timezone
 import json
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from opentradeledger.config import UserPreferences
+
+_BLOCKED_METADATA_HOSTS = {
+    "169.254.169.254",
+    "metadata.google.internal",
+    "100.100.100.200",
+    "fd00:ec2::254",
+}
 
 
 def _normalize_ai_base(base_url: str) -> str:
@@ -18,6 +26,25 @@ def _normalize_ai_base(base_url: str) -> str:
         if b.endswith(suffix):
             b = b[: -len(suffix)].rstrip("/")
     return b
+
+
+def validate_ai_base_url(base_url: str) -> str:
+    base = _normalize_ai_base(base_url)
+    if not base:
+        raise ValueError("AI Base URL is required")
+    parts = urlsplit(base)
+    if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
+        raise ValueError("AI Base URL must start with http:// or https:// and include a valid host")
+    host = parts.hostname.lower().strip("[]")
+    if host in _BLOCKED_METADATA_HOSTS or host.startswith("169.254."):
+        raise ValueError("Blocked cloud metadata address in AI Base URL")
+    return base
+
+
+def is_local_ai_host(base_url: str) -> bool:
+    parts = urlsplit(_normalize_ai_base(base_url))
+    host = (parts.hostname or "").lower().strip("[]")
+    return host in {"localhost", "127.0.0.1", "::1"}
 
 
 def _extract_responses_text(data: dict[str, Any]) -> str:
@@ -43,9 +70,7 @@ async def list_ai_models(
     client: httpx.AsyncClient | None = None,
 ) -> list[str]:
     """Fetch available model IDs from any OpenAI-compatible `/models` endpoint (or Ollama `/api/tags`)."""
-    base = _normalize_ai_base(base_url)
-    if not base:
-        raise ValueError("AI Base URL is required")
+    base = validate_ai_base_url(base_url)
 
     headers: dict[str, str] = {"Accept": "application/json"}
     if (api_key or "").strip():
@@ -136,9 +161,14 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
         key=lambda r: abs(float(r.get("net_pnl_usd") or 0.0)),
         reverse=True,
     )[:15]
+    venue_display_by_id = {
+        str(ex.get("venue_id") or "").lower(): (ex.get("display_name") or ex.get("venue_id") or "")
+        for ex in (dashboard.get("exchanges") or [])
+    }
+
     top_symbols = [
         {
-            "venue": r.get("venue_name"),
+            "venue": venue_display_by_id.get(str(r.get("venue_id") or "").lower()) or r.get("venue_name"),
             "symbol": r.get("symbol"),
             "trades": r.get("trade_count"),
             "win_rate_pct": r.get("win_rate_pct"),
@@ -151,7 +181,7 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
 
     open_positions = [
         {
-            "venue": p.get("venue_name"),
+            "venue": venue_display_by_id.get(str(p.get("venue_id") or "").lower()) or p.get("venue_name"),
             "symbol": p.get("symbol"),
             "side": p.get("side"),
             "leverage": p.get("leverage"),
@@ -164,7 +194,7 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
 
     spot_holdings = [
         {
-            "venue": sp.get("venue_name"),
+            "venue": venue_display_by_id.get(str(sp.get("venue_id") or "").lower()) or sp.get("venue_name"),
             "asset": sp.get("asset"),
             "qty": sp.get("qty"),
             "market_value_usd": sp.get("market_value_usd"),
@@ -175,14 +205,25 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
     ext = dashboard.get("extensions") or {}
     cp = ext.get("copy_trading") or {}
     stk = ext.get("stocks") or {}
+    stock_holdings = [
+        {
+            "venue": venue_display_by_id.get(str(h.get("venue_id") or "").lower()) or h.get("venue_name"),
+            "symbol": h.get("symbol"),
+            "shares": h.get("shares"),
+            "market_value_usd": h.get("market_value_usd"),
+            "pnl_usd": h.get("pnl_usd"),
+        }
+        for h in (stk.get("holdings") or [])
+    ]
 
     recent_20_trades = [
         {
-            "venue": t.get("venue_name"),
+            "venue": venue_display_by_id.get(str(t.get("venue_id") or "").lower()) or t.get("venue_name"),
             "symbol": t.get("symbol"),
             "side": t.get("side"),
             "close_time": t.get("close_time_str"),
-            "holding_min": round(float(t.get("holding_sec") or 0) / 60.0, 1),
+            "holding_sec": int(t.get("holding_sec") or 0),
+            "holding_min": round(float(t.get("holding_sec") or 0) / 60.0, 2),
             "entry_mode": (t.get("entry_leg") or {}).get("mode_code"),
             "entry_bps": (t.get("entry_leg") or {}).get("fee_bps"),
             "entry_gross_fee": (t.get("entry_leg") or {}).get("gross_fee_usd"),
@@ -240,6 +281,7 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "unrealized_pnl_usd": stk.get("unrealized_pnl_usd"),
             "non_perp_fees_usd": stk.get("non_perp_fees_usd"),
             "holdings_count": len(stk.get("holdings") or []),
+            "holdings": stock_holdings,
             "perps_count": len(stk.get("perpetuals") or []),
         },
         "goal": dashboard.get("goal"),
@@ -263,27 +305,50 @@ def build_local_highlights(dashboard: dict[str, Any]) -> list[dict[str, str]]:
 
     return [
         {
+            "kind": "net_fee",
             "title": "Net Fee Burden & Relief",
             "title_zh": "净手续费磨损与减免率",
             "metric": f"-{net_fee:.2f} U ({relief:.1f}%)",
+            "amount_usd": -round(net_fee, 2),
+            "pct": round(relief, 1),
+            "trade_count": trade_count,
             "body": f"Across {trade_count} closed trades, fee rebates & token discounts covered {relief:.1f}% of gross fees.",
             "body_zh": f"共 {trade_count} 笔平仓，返佣与平台币抵扣覆盖了 {relief:.1f}% 的原始手续费，实付净费 -{net_fee:.2f} U。",
         },
         {
+            "kind": "win_rate",
             "title": "Win Rate & Hold Discipline",
             "title_zh": "胜率与持仓纪律",
             "metric": f"{win_rate:.1f}%",
+            "pct": round(win_rate, 1),
+            "avg_win_m": avg_win_m,
+            "avg_loss_m": avg_loss_m,
             "body": f"Average winning hold is {avg_win_m}m vs losing hold {avg_loss_m}m.",
             "body_zh": f"整体胜率 {win_rate:.1f}%；盈利单平均持仓 {avg_win_m} 分钟，亏损单平均持仓 {avg_loss_m} 分钟。",
         },
         {
+            "kind": "maker_upside",
             "title": "Maker Execution Upside",
             "title_zh": "吃单改挂单增厚空间",
             "metric": f"+{pot:.2f} U",
+            "amount_usd": round(pot, 2),
             "body": f"Shifting discretionary taker legs to passive limit orders could retain an extra +{pot:.2f} USDT.",
             "body_zh": f"将可控吃单腿改为被动限价挂单，按各平台实测费率差预计可多留存 +{pot:.2f} USDT 纯利润。",
         },
     ]
+
+
+def resolve_range_labels(range_key: str) -> tuple[str, str, str]:
+    rk = (range_key or "all").strip().lower() or "all"
+    if rk == "all":
+        return "all", "All-Time", "全部历史"
+    if rk == "30d":
+        return "30d", "Last 30 Days", "近 30 天"
+    if rk == "7d":
+        return "7d", "Last 7 Days", "近 7 天"
+    if len(rk) == 7 and rk[4] == "-":
+        return rk, rk, f"{rk} 月度"
+    return rk, rk.upper(), rk.upper()
 
 
 async def generate_ai_review(
@@ -291,6 +356,7 @@ async def generate_ai_review(
     prefs: UserPreferences,
     *,
     client: httpx.AsyncClient | None = None,
+    force_local: bool = False,
 ) -> dict[str, Any]:
     now_ms = int(time.time() * 1000)
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -298,14 +364,16 @@ async def generate_ai_review(
     ctx = build_ai_context_payload(dashboard)
     s = dashboard.get("summary") or {}
     equity = float(s.get("total_equity_usd") or 0.0)
+    trade_count = int(s.get("trade_count") or 0)
+    rk_norm, range_label_en, range_label_zh = resolve_range_labels(str(dashboard.get("range_key") or "all"))
 
     commentary = ""
     model_used = "local-actuarial"
     ai_error = ""
     ai_error_zh = ""
 
-    base = _normalize_ai_base(prefs.ai_base_url or "")
-    api_key = (prefs.ai_api_key or "").strip()
+    base = "" if force_local else _normalize_ai_base(prefs.ai_base_url or "")
+    api_key = "" if force_local else (prefs.ai_api_key or "").strip()
     model = (prefs.ai_model or "").strip() or "gpt-4o-mini"
 
     if base and (api_key or "127.0.0.1" in base or "localhost" in base):
@@ -414,8 +482,14 @@ async def generate_ai_review(
         "generated_at": generated_at,
         "generated_ms": now_ms,
         "model": model_used,
+        "range_key": rk_norm,
+        "range_label": range_label_en,
+        "range_label_zh": range_label_zh,
+        "trade_count_snapshot": trade_count,
         "equity_snapshot_usd": equity,
         "stale": False,
+        "stale_reason": "",
+        "stale_reason_zh": "",
         "highlights": highlights,
         "markdown_commentary": commentary,
         "markdown_commentary_zh": commentary_zh,

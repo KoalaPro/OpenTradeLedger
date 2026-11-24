@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowUpCircle,
@@ -14,6 +14,9 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
+import { AnimatedCollapse } from '../components/AnimatedCollapse'
+import { FloatingModal } from '../components/FloatingModal'
+import { FloatingToastViewport } from '../components/FloatingToast'
 import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
@@ -40,22 +43,25 @@ interface SettingsPageProps {
   versionStatus?: VersionCheckPayload | null
   onCheckVersion?: (force?: boolean) => Promise<VersionCheckPayload | null>
   onUpdateSettings: (patch: Record<string, unknown>) => Promise<void>
-  onUpsertExchange: (body: {
-    venue_id: string
-    label: string
-    api_key: string
-    api_secret: string
-    passphrase?: string
-  }) => Promise<void>
-  onDeleteExchange: (venueId: string) => Promise<void>
-  onTestExchange: (venueId: string) => Promise<void>
+  onUpsertExchange: (
+    body: {
+      venue_id: string
+      label: string
+      api_key: string
+      api_secret: string
+      passphrase?: string
+    },
+    onStep?: (step: 'verifying' | 'syncing' | 'done') => void,
+  ) => Promise<void>
+  onDeleteExchange: (venueId: string, keepData?: boolean) => Promise<void>
+  onTestExchange: (venueId: string, isRetry?: boolean) => Promise<void>
   onToggleDemo: (enabled: boolean) => Promise<void>
 }
 
 function getAdapterVisualStatus(
   ad: ExchangeAdapterInfo,
-): 'not_configured' | 'disabled' | 'connected' | 'error' | 'unverified' {
-  if (!ad.configured) return 'not_configured'
+): 'not_configured' | 'archived' | 'disabled' | 'connected' | 'error' | 'unverified' {
+  if (!ad.configured) return ad.has_archived_data ? 'archived' : 'not_configured'
   if (ad.credential && ad.credential.enabled === false) return 'disabled'
   const st = ad.health?.status
   if (st === 'error') return 'error'
@@ -83,11 +89,19 @@ export function SettingsPage({
   const isZh = locale === 'zh-CN'
 
   const [addingVenue, setAddingVenue] = useState<string>('')
+  const [deletingVenue, setDeletingVenue] = useState<string>('')
+  const [deleteMode, setDeleteMode] = useState<'choice' | 'purge_archived'>('choice')
+  const [keepHistoryOnDelete, setKeepHistoryOnDelete] = useState<boolean>(true)
+  const [modalError, setModalError] = useState('')
+  const [modalShake, setModalShake] = useState(false)
+  const [submitStep, setSubmitStep] = useState<'' | 'verifying' | 'syncing' | 'done'>('')
   const [apiKey, setApiKey] = useState('')
   const [apiSecret, setApiSecret] = useState('')
   const [passphrase, setPassphrase] = useState('')
   const [label, setLabel] = useState('')
   const [busyVenue, setBusyVenue] = useState('')
+  const statusTimerRef = useRef<number | null>(null)
+  const closeCeremonyTimerRef = useRef<number | null>(null)
 
   const [goalLabel, setGoalLabel] = useState(settings.goal_label || '')
   const [goalInput, setGoalInput] = useState(String(settings.goal_target_usd ?? ''))
@@ -100,6 +114,9 @@ export function SettingsPage({
   const [webhookUrl, setWebhookUrl] = useState(settings.notifications?.webhook_url || '')
   const [tgToken, setTgToken] = useState('')
   const [tgChat, setTgChat] = useState(settings.notifications?.telegram_chat_id || '')
+  const [barkServerUrl, setBarkServerUrl] = useState(
+    settings.notifications?.bark_server_url || 'https://api.day.app',
+  )
   const [barkKey, setBarkKey] = useState('')
   const [testingNotify, setTestingNotify] = useState(false)
 
@@ -144,6 +161,7 @@ export function SettingsPage({
     setAiModel(settings.ai_model || '')
     setWebhookUrl(settings.notifications?.webhook_url || '')
     setTgChat(settings.notifications?.telegram_chat_id || '')
+    setBarkServerUrl(settings.notifications?.bark_server_url || 'https://api.day.app')
   }, [
     settings.goal_label,
     settings.goal_target_usd,
@@ -151,48 +169,99 @@ export function SettingsPage({
     settings.ai_model,
     settings.notifications?.webhook_url,
     settings.notifications?.telegram_chat_id,
+    settings.notifications?.bark_server_url,
   ])
 
   const selectedAdapter = adapters.find(a => a.venue_id === addingVenue)
+  const deletingAdapter = adapters.find(a => a.venue_id === deletingVenue)
   const authEnabled = Boolean(authStatus?.enabled)
 
   const flashOk = (msg: string, ms = 3200) => {
+    if (statusTimerRef.current !== null) {
+      window.clearTimeout(statusTimerRef.current)
+    }
     setErrorMsg('')
     setStatusMsg(msg)
-    window.setTimeout(() => setStatusMsg(''), ms)
+    statusTimerRef.current = window.setTimeout(() => {
+      setStatusMsg('')
+      statusTimerRef.current = null
+    }, ms)
   }
+
+  useEffect(() => {
+    return () => {
+      if (statusTimerRef.current !== null) window.clearTimeout(statusTimerRef.current)
+      if (closeCeremonyTimerRef.current !== null) window.clearTimeout(closeCeremonyTimerRef.current)
+    }
+  }, [])
 
   const handleAddSubmit = async () => {
     if (!addingVenue || !apiKey.trim() || !apiSecret.trim()) return
+    if (selectedAdapter?.requires_passphrase && !passphrase.trim()) return
     setBusyVenue(addingVenue)
+    setSubmitStep('verifying')
+    setModalError('')
     setErrorMsg('')
     try {
-      await onUpsertExchange({
-        venue_id: addingVenue,
-        label: label.trim(),
-        api_key: apiKey.trim(),
-        api_secret: apiSecret.trim(),
-        passphrase: passphrase.trim(),
-      })
-      setAddingVenue('')
-      setApiKey('')
-      setApiSecret('')
-      setPassphrase('')
-      setLabel('')
-      flashOk(isZh ? 'API 验证通过，已完成加密保存与数据同步' : 'API verified, encrypted & synced successfully', 4000)
+      await onUpsertExchange(
+        {
+          venue_id: addingVenue,
+          label: label.trim(),
+          api_key: apiKey.trim(),
+          api_secret: apiSecret.trim(),
+          passphrase: passphrase.trim(),
+        },
+        step => setSubmitStep(step),
+      )
+      setSubmitStep('done')
+      flashOk(
+        isZh ? 'API 验证通过，已完成加密保存与数据同步' : 'API verified, encrypted & synced successfully',
+        4000,
+      )
+      const reduced =
+        typeof window !== 'undefined' &&
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const finishClose = () => {
+        setAddingVenue('')
+        setApiKey('')
+        setApiSecret('')
+        setPassphrase('')
+        setLabel('')
+        setSubmitStep('')
+        setBusyVenue('')
+        closeCeremonyTimerRef.current = null
+      }
+      if (reduced) {
+        finishClose()
+      } else {
+        closeCeremonyTimerRef.current = window.setTimeout(finishClose, 380)
+      }
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Connection failed')
-    } finally {
+      const m = err instanceof Error ? err.message : 'Connection failed'
+      setModalError(m)
+      setErrorMsg(m)
+      setSubmitStep('')
       setBusyVenue('')
+      setModalShake(true)
+      window.setTimeout(() => setModalShake(false), 380)
     }
   }
 
-  const handleTest = async (vid: string) => {
+  const handleTest = async (vid: string, isRetry = false) => {
     setBusyVenue(vid)
     setErrorMsg('')
     try {
-      await onTestExchange(vid)
-      flashOk(isZh ? `${vid.toUpperCase()} 只读 API 连接验证正常` : `${vid.toUpperCase()} read-only API verified`)
+      await onTestExchange(vid, isRetry)
+      flashOk(
+        isRetry
+          ? isZh
+            ? `${vid.toUpperCase()} 连接与数据同步已恢复正常`
+            : `${vid.toUpperCase()} connection & sync restored`
+          : isZh
+            ? `${vid.toUpperCase()} 只读 API 连接验证正常`
+            : `${vid.toUpperCase()} read-only API verified`,
+      )
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Connection test failed')
     } finally {
@@ -257,26 +326,22 @@ export function SettingsPage({
     }
   }
 
+  const formReady = Boolean(
+    selectedAdapter &&
+      apiKey.trim() &&
+      apiSecret.trim() &&
+      (!selectedAdapter.requires_passphrase || passphrase.trim()),
+  )
+  const ceremonyStage: 'credentials' | 'verifying' | 'syncing' | 'done' = submitStep || 'credentials'
+
   return (
-    <div data-testid="settings-page" className="space-y-4">
-      {statusMsg && (
-        <div
-          data-testid="settings-ok-banner"
-          className="otl-status-ok px-4 py-2.5 rounded-lg text-[12.5px] font-medium flex items-center gap-2"
-        >
-          <Check size={14} />
-          <span>{statusMsg}</span>
-        </div>
-      )}
-      {errorMsg && (
-        <div
-          data-testid="settings-error-banner"
-          className="otl-status-err px-4 py-2.5 rounded-lg text-[12.5px] font-medium flex items-center gap-2"
-        >
-          <AlertTriangle size={14} className="shrink-0" />
-          <span>{errorMsg}</span>
-        </div>
-      )}
+    <div data-testid="settings-page" className="otl-stagger space-y-4">
+      <FloatingToastViewport
+        statusMsg={statusMsg}
+        errorMsg={errorMsg}
+        onClearStatus={() => setStatusMsg('')}
+        onClearError={() => setErrorMsg('')}
+      />
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
         {/* Left: Pluggable Exchange Adapters (Binance / OKX / Bybit / Gate / Bitget / MEXC / EasiCoin) */}
@@ -294,7 +359,6 @@ export function SettingsPage({
           <div className="space-y-2.5">
             {adapters.map(ad => {
               const vStatus = getAdapterVisualStatus(ad)
-              const isEditing = addingVenue === ad.venue_id
               const errReason = isZh
                 ? ad.health?.error_reason_zh || ad.health?.error_reason || ''
                 : ad.health?.error_reason || ad.health?.error_reason_zh || ''
@@ -320,8 +384,16 @@ export function SettingsPage({
                       <div className="min-w-0">
                         <div className="text-[13px] font-medium text-[var(--fg)] truncate">
                           {ad.configured && ad.credential
-                            ? `${ad.credential.label} · ${ad.credential.masked_api_key}`
-                            : ad.api_base_url}
+                            ? ad.credential.label &&
+                              ad.credential.label.toLowerCase() !== ad.display_name.toLowerCase() &&
+                              ad.credential.label.toLowerCase() !== ad.venue_id.toLowerCase()
+                              ? `${ad.credential.label} · ${ad.credential.masked_api_key}`
+                              : ad.credential.masked_api_key
+                            : vStatus === 'archived'
+                              ? isZh
+                                ? '本地历史记录已封存（API 已解绑）'
+                                : 'Local history archived (API unbound)'
+                              : ad.api_base_url}
                         </div>
                         <div className="text-[11px] text-[var(--fg-3)]">
                           {ad.requires_passphrase ? t('set_passphrase_req') : 'GET-Only Signed API'}
@@ -370,7 +442,7 @@ export function SettingsPage({
                             type="button"
                             data-testid={`test-adapter-${ad.venue_id}`}
                             disabled={busyVenue === ad.venue_id}
-                            onClick={() => void handleTest(ad.venue_id)}
+                            onClick={() => void handleTest(ad.venue_id, vStatus === 'error')}
                             className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer disabled:opacity-50"
                           >
                             {busyVenue === ad.venue_id
@@ -388,15 +460,12 @@ export function SettingsPage({
                             type="button"
                             data-testid={`edit-adapter-${ad.venue_id}`}
                             onClick={() => {
-                              if (isEditing) {
-                                setAddingVenue('')
-                              } else {
-                                setAddingVenue(ad.venue_id)
-                                setLabel(ad.credential?.label || ad.display_name)
-                                setApiKey('')
-                                setApiSecret('')
-                                setPassphrase('')
-                              }
+                              setAddingVenue(ad.venue_id)
+                              setModalError('')
+                              setLabel(ad.credential?.label || ad.display_name)
+                              setApiKey('')
+                              setApiSecret('')
+                              setPassphrase('')
                             }}
                             title={isZh ? '修改或更新 API 密钥' : 'Update API credentials'}
                             className="inline-flex items-center gap-1 h-7 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[11.5px] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
@@ -407,9 +476,53 @@ export function SettingsPage({
 
                           <button
                             type="button"
-                            onClick={() => void onDeleteExchange(ad.venue_id)}
+                            data-testid={`remove-adapter-${ad.venue_id}`}
+                            onClick={() => {
+                              setDeleteMode('choice')
+                              setKeepHistoryOnDelete(true)
+                              setDeletingVenue(ad.venue_id)
+                            }}
                             className="h-7 px-2 rounded-lg border border-[var(--border)] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
                             aria-label={t('set_remove')}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      ) : vStatus === 'archived' ? (
+                        <>
+                          <span
+                            data-testid={`adapter-status-${ad.venue_id}`}
+                            className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--fg-2)]"
+                          >
+                            {isZh ? '已封存' : 'Archived'}
+                          </span>
+                          <button
+                            type="button"
+                            data-testid={`configure-adapter-${ad.venue_id}`}
+                            onClick={() => {
+                              setAddingVenue(ad.venue_id)
+                              setModalError('')
+                              setLabel(ad.display_name)
+                              setApiKey('')
+                              setApiSecret('')
+                              setPassphrase('')
+                            }}
+                            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                          >
+                            <Plus size={13} />
+                            <span>{isZh ? '重新绑定 API' : 'Re-bind API'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            data-testid={`purge-archived-${ad.venue_id}`}
+                            title={isZh ? '彻底清空该平台封存的本地历史数据' : 'Permanently clear archived local data'}
+                            onClick={() => {
+                              setDeleteMode('purge_archived')
+                              setKeepHistoryOnDelete(false)
+                              setDeletingVenue(ad.venue_id)
+                            }}
+                            className="h-7 px-2 rounded-lg border border-[var(--border)] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+                            aria-label={isZh ? '清空封存数据' : 'Purge archived data'}
                           >
                             <Trash2 size={13} />
                           </button>
@@ -419,7 +532,8 @@ export function SettingsPage({
                           type="button"
                           data-testid={`configure-adapter-${ad.venue_id}`}
                           onClick={() => {
-                            setAddingVenue(isEditing ? '' : ad.venue_id)
+                            setAddingVenue(ad.venue_id)
+                            setModalError('')
                             setLabel(ad.display_name)
                             setApiKey('')
                             setApiSecret('')
@@ -449,57 +563,6 @@ export function SettingsPage({
                           {rawErr}
                         </div>
                       )}
-                    </div>
-                  )}
-
-                  {isEditing && selectedAdapter && (
-                    <div className="otl-drawer-expand pt-3 border-t border-[var(--border)] grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <input
-                        type="text"
-                        value={apiKey}
-                        onChange={e => setApiKey(e.target.value)}
-                        placeholder={ad.configured ? 'New Read-Only API Key' : 'Read-Only API Key'}
-                        className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
-                      />
-                      <input
-                        type="password"
-                        value={apiSecret}
-                        onChange={e => setApiSecret(e.target.value)}
-                        placeholder={ad.configured ? 'New API Secret' : 'API Secret'}
-                        className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
-                      />
-                      {selectedAdapter.requires_passphrase && (
-                        <input
-                          type="password"
-                          value={passphrase}
-                          onChange={e => setPassphrase(e.target.value)}
-                          placeholder="API Passphrase"
-                          className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)] sm:col-span-2"
-                        />
-                      )}
-                      <div className="sm:col-span-2 flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setAddingVenue('')}
-                          className="h-7 px-3 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] cursor-pointer"
-                        >
-                          {t('cancel')}
-                        </button>
-                        <button
-                          type="button"
-                          data-testid="save-exchange-btn"
-                          disabled={busyVenue === ad.venue_id || !apiKey.trim() || !apiSecret.trim()}
-                          onClick={() => void handleAddSubmit()}
-                          className="h-7 px-3 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
-                          style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-                        >
-                          {busyVenue === ad.venue_id
-                            ? isZh
-                              ? '验证并同步中…'
-                              : 'Verifying…'
-                            : t('confirm_save')}
-                        </button>
-                      </div>
                     </div>
                   )}
                 </div>
@@ -635,7 +698,7 @@ export function SettingsPage({
                   {isZh ? '版本与更新' : 'Version & Updates'}
                 </h3>
                 <span className="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--border)] font-mono text-[11px] text-[var(--fg-2)]">
-                  v{versionStatus?.current_version || '1.2.0'}
+                  v{versionStatus?.current_version || '1.3.0'}
                 </span>
               </div>
 
@@ -842,19 +905,19 @@ export function SettingsPage({
               />
             </div>
 
-            {/* Theme */}
-            <div className="flex items-center justify-between gap-2 text-[12.5px] pt-3 border-t border-[var(--border)]">
+            {/* Theme — Glider-backed SegmentedPills with smooth color crossfade */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[12.5px] pt-3 border-t border-[var(--border)]">
               <span className="text-[var(--fg-2)]">{t('set_theme')}</span>
-              <select
-                aria-label={t('set_theme')}
+              <SegmentedPills
+                size="sm"
                 value={settings.theme}
-                onChange={e => void onUpdateSettings({ theme: e.target.value as Theme })}
-                className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)] cursor-pointer"
-              >
-                <option value="obsidian">{t('theme_obsidian')}</option>
-                <option value="ocean">{t('theme_ocean')}</option>
-                <option value="light">{t('theme_light')}</option>
-              </select>
+                onChange={(th: Theme) => void onUpdateSettings({ theme: th })}
+                options={[
+                  { value: 'obsidian', label: t('theme_obsidian'), testId: 'theme-obsidian' },
+                  { value: 'ocean', label: t('theme_ocean'), testId: 'theme-ocean' },
+                  { value: 'light', label: t('theme_light'), testId: 'theme-light' },
+                ]}
+              />
             </div>
 
             {/* Polarity */}
@@ -953,52 +1016,55 @@ export function SettingsPage({
                   role="switch"
                   aria-label={t('set_goal_title')}
                   aria-checked={Boolean(settings.goal_enabled)}
-                  onClick={() =>
-                    void onUpdateSettings({
-                      goal_enabled: !settings.goal_enabled,
-                      goal_target_usd: Number(goalInput) > 0 ? Number(goalInput) : 10000,
-                    })
-                  }
+                  onClick={() => {
+                    const nextOn = !settings.goal_enabled
+                    const patch: Record<string, unknown> = { goal_enabled: nextOn }
+                    if (nextOn && Number(goalInput) > 0) {
+                      patch.goal_target_usd = Number(goalInput)
+                    }
+                    void onUpdateSettings(patch)
+                  }}
                   className="otl-switch"
                 >
                   <span className="otl-switch-knob" />
                 </button>
               </div>
-              {settings.goal_enabled && (
-                <div className="otl-drawer-expand space-y-2 pt-1">
+              <AnimatedCollapse
+                open={Boolean(settings.goal_enabled)}
+                innerClassName="space-y-2 pt-2"
+              >
+                <input
+                  type="text"
+                  value={goalLabel}
+                  onChange={e => setGoalLabel(e.target.value)}
+                  placeholder={locale === 'en' ? 'Goal name (e.g. 2026 Target)' : '目标名称（如：阶段净值目标）'}
+                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                />
+                <div className="flex items-center gap-2">
                   <input
-                    type="text"
-                    value={goalLabel}
-                    onChange={e => setGoalLabel(e.target.value)}
-                    placeholder={locale === 'en' ? 'Goal name (e.g. 2026 Target)' : '目标名称（如：阶段净值目标）'}
-                    className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                    type="number"
+                    value={goalInput}
+                    onChange={e => setGoalInput(e.target.value)}
+                    placeholder={t('set_goal_target')}
+                    className="h-8 flex-1 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
                   />
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={goalInput}
-                      onChange={e => setGoalInput(e.target.value)}
-                      placeholder={t('set_goal_target')}
-                      className="h-8 flex-1 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                    />
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await onUpdateSettings({
-                          goal_enabled: true,
-                          goal_label: goalLabel.trim(),
-                          goal_target_usd: Number(goalInput) > 0 ? Number(goalInput) : null,
-                        })
-                        flashOk(t('set_save_ok'), 2500)
-                      }}
-                      className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
-                      style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-                    >
-                      {t('save_config')}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onUpdateSettings({
+                        goal_enabled: true,
+                        goal_label: goalLabel.trim(),
+                        goal_target_usd: Number(goalInput) > 0 ? Number(goalInput) : null,
+                      })
+                      flashOk(t('set_save_ok'), 2500)
+                    }}
+                    className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
+                    style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+                  >
+                    {t('save_config')}
+                  </button>
                 </div>
-              )}
+              </AnimatedCollapse>
             </div>
 
             {/* Demo Mode Toggle */}
@@ -1163,19 +1229,29 @@ export function SettingsPage({
                 className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
               />
             </div>
-            <input
-              type="password"
-              value={barkKey}
-              onChange={e => setBarkKey(e.target.value)}
-              placeholder={
-                settings.notifications?.bark_push_key_set
-                  ? isZh
-                    ? 'Bark Push Key（已保存）'
-                    : 'Bark Key (configured)'
-                  : 'Bark Push Key'
-              }
-              className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input
+                type="text"
+                data-testid="bark-server-url-input"
+                value={barkServerUrl}
+                onChange={e => setBarkServerUrl(e.target.value)}
+                placeholder="Bark Server (https://api.day.app)"
+                className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+              />
+              <input
+                type="password"
+                value={barkKey}
+                onChange={e => setBarkKey(e.target.value)}
+                placeholder={
+                  settings.notifications?.bark_push_key_set
+                    ? isZh
+                      ? 'Bark Push Key（已保存）'
+                      : 'Bark Key (configured)'
+                    : 'Bark Push Key'
+                }
+                className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+              />
+            </div>
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
@@ -1211,6 +1287,7 @@ export function SettingsPage({
                       webhook_url: webhookUrl,
                       telegram_bot_token: tgToken,
                       telegram_chat_id: tgChat,
+                      bark_server_url: barkServerUrl.trim() || 'https://api.day.app',
                       bark_push_key: barkKey,
                     },
                   })
@@ -1227,6 +1304,436 @@ export function SettingsPage({
           </div>
         </section>
       </div>
+
+      {/* Guided Velvet Floating Modal for Adding / Updating Exchange Credentials */}
+      <FloatingModal
+        open={Boolean(selectedAdapter)}
+        onClose={() => {
+          if (!busyVenue) {
+            setAddingVenue('')
+            setModalError('')
+          }
+        }}
+        testId="add-exchange-modal"
+        maxWidthClass="max-w-[520px]"
+        title={
+          selectedAdapter ? (
+            <span className="inline-flex items-center gap-2">
+              <VenueBadge
+                venueId={selectedAdapter.venue_id}
+                name={isZh ? selectedAdapter.display_name_zh || selectedAdapter.display_name : selectedAdapter.display_name}
+              />
+              <span>
+                {selectedAdapter.configured
+                  ? isZh
+                    ? '更新只读 API 密钥'
+                    : 'Update Read-Only API Key'
+                  : isZh
+                    ? '接入只读交易所账户'
+                    : 'Connect Read-Only Exchange'}
+              </span>
+            </span>
+          ) : null
+        }
+        subtitle={selectedAdapter?.api_base_url}
+        headerActions={
+          selectedAdapter?.docs_url ? (
+            <a
+              href={selectedAdapter.docs_url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--accent)] hover:underline"
+            >
+              <span>{isZh ? 'API 文档' : 'API Docs'}</span>
+              <ExternalLink size={11} />
+            </a>
+          ) : undefined
+        }
+      >
+        {selectedAdapter && (
+          <div className={`p-5 space-y-3.5 text-[12.5px] ${modalShake ? 'otl-shake' : ''}`}>
+            {/* 3-Stage Live Read-Only Connection Ceremony Stepper */}
+            <div
+              data-testid="exchange-ceremony-stepper"
+              data-stage={ceremonyStage}
+              data-ready={String(formReady)}
+              className="grid grid-cols-3 gap-1.5"
+            >
+              {[
+                {
+                  id: 'step1',
+                  num: '1',
+                  title: isZh ? '填写只读密钥' : 'Read-Only Keys',
+                  done: formReady || ceremonyStage !== 'credentials',
+                  active: ceremonyStage === 'credentials',
+                  spinning: false,
+                },
+                {
+                  id: 'step2',
+                  num: '2',
+                  title: isZh ? '权限握手验活' : 'Handshake Check',
+                  done: ceremonyStage === 'syncing' || ceremonyStage === 'done',
+                  active: ceremonyStage === 'verifying',
+                  spinning: ceremonyStage === 'verifying',
+                },
+                {
+                  id: 'step3',
+                  num: '3',
+                  title: isZh ? '加密入库同步' : 'Encrypt & Sync',
+                  done: ceremonyStage === 'done',
+                  active: ceremonyStage === 'syncing',
+                  spinning: ceremonyStage === 'syncing',
+                },
+              ].map(st => (
+                <div
+                  key={st.id}
+                  className="rounded-lg border px-2.5 py-2 flex items-center gap-2 text-[11px] font-medium transition-all duration-200"
+                  style={{
+                    background: st.done
+                      ? 'rgba(16, 185, 129, 0.1)'
+                      : st.active
+                        ? 'var(--accent-soft)'
+                        : 'var(--surface-2)',
+                    borderColor: st.done
+                      ? 'rgba(16, 185, 129, 0.34)'
+                      : st.active
+                        ? 'var(--accent)'
+                        : 'var(--border)',
+                    color: st.done ? '#10b981' : st.active ? 'var(--fg)' : 'var(--fg-3)',
+                  }}
+                >
+                  <span
+                    className="h-4 w-4 rounded-full inline-flex items-center justify-center text-[10px] font-bold shrink-0"
+                    style={{
+                      background: st.done
+                        ? '#10b981'
+                        : st.active
+                          ? 'var(--accent)'
+                          : 'var(--track)',
+                      color: st.done || st.active ? '#ffffff' : 'var(--fg-3)',
+                    }}
+                  >
+                    {st.done ? (
+                      <Check size={10} strokeWidth={3} />
+                    ) : st.spinning ? (
+                      <RefreshCw size={9} className="animate-spin" />
+                    ) : (
+                      st.num
+                    )}
+                  </span>
+                  <span className="truncate">{st.title}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="otl-surface-2 rounded-lg px-3.5 py-2.5 text-[11.5px] text-[var(--fg-2)] space-y-1">
+              <div className="font-semibold text-[var(--fg)] flex items-center gap-1.5">
+                <ShieldCheck size={13} className="text-emerald-500 shrink-0" />
+                <span>{isZh ? '安全接入指引（先验活、再加密入库）' : 'Read-Only Safety Checklist'}</span>
+              </div>
+              <p className="m-0 leading-relaxed">
+                {isZh
+                  ? '请在交易所后台创建仅勾选「只读 / 查询」权限的 API Key，切勿勾选下单或提币；若绑定 IP 白名单，请填入当前运行设备的公网出口 IP。'
+                  : 'Create an API key with Read-Only permissions only (never enable trading or withdrawals). Whitelist this host public IP if IP restriction is enabled.'}
+              </p>
+            </div>
+
+            <AnimatedCollapse open={Boolean(modalError)}>
+              <div className="otl-status-err rounded-lg px-3 py-2 text-[12px] flex items-start gap-2">
+                <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                <span>{modalError}</span>
+              </div>
+            </AnimatedCollapse>
+
+            <div className="space-y-2.5">
+              <label className="block space-y-1">
+                <span className="text-[11.5px] font-medium text-[var(--fg-2)]">
+                  {isZh ? '账户备注名称（选填）' : 'Account Label (Optional)'}
+                </span>
+                <input
+                  type="text"
+                  data-testid="exchange-label-input"
+                  value={label}
+                  onChange={e => setLabel(e.target.value)}
+                  placeholder={isZh ? `如：${selectedAdapter.display_name_zh || selectedAdapter.display_name} 主账户` : `e.g. ${selectedAdapter.display_name} Main`}
+                  className="h-9 w-full px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12.5px] text-[var(--fg)]"
+                />
+              </label>
+
+              <label className="block space-y-1">
+                <span className="text-[11.5px] font-medium text-[var(--fg-2)]">
+                  {isZh ? '只读 API Key *' : 'Read-Only API Key *'}
+                </span>
+                <input
+                  type="text"
+                  data-testid="exchange-key-input"
+                  autoComplete="off"
+                  value={apiKey}
+                  onChange={e => setApiKey(e.target.value)}
+                  placeholder={isZh ? '粘贴交易所生成的 API Key' : 'Paste Read-Only API Key'}
+                  className="h-9 w-full px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12.5px] text-[var(--fg)] font-mono"
+                />
+              </label>
+
+              <label className="block space-y-1">
+                <span className="text-[11.5px] font-medium text-[var(--fg-2)]">
+                  {isZh ? 'API Secret 密钥 *' : 'API Secret *'}
+                </span>
+                <input
+                  type="password"
+                  data-testid="exchange-secret-input"
+                  autoComplete="new-password"
+                  value={apiSecret}
+                  onChange={e => setApiSecret(e.target.value)}
+                  placeholder={isZh ? '粘贴对应的 API Secret' : 'Paste API Secret'}
+                  className="h-9 w-full px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12.5px] text-[var(--fg)] font-mono"
+                />
+              </label>
+
+              {selectedAdapter.requires_passphrase && (
+                <label className="block space-y-1">
+                  <span className="text-[11.5px] font-medium text-[var(--fg-2)]">
+                    {isZh ? 'API 口令 (Passphrase) *' : 'API Passphrase *'}
+                  </span>
+                  <input
+                    type="password"
+                    data-testid="exchange-passphrase-input"
+                    autoComplete="new-password"
+                    value={passphrase}
+                    onChange={e => setPassphrase(e.target.value)}
+                    placeholder={isZh ? '创建该 API Key 时设置的口令' : 'Passphrase set when creating this API key'}
+                    className="h-9 w-full px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12.5px] text-[var(--fg)]"
+                  />
+                </label>
+              )}
+            </div>
+
+            <AnimatedCollapse open={busyVenue === selectedAdapter.venue_id || submitStep === 'done'}>
+              <div
+                className={`rounded-lg px-3 py-2.5 text-[11.5px] space-y-2 ${
+                  submitStep === 'done'
+                    ? 'otl-status-ok'
+                    : 'border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)]'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {submitStep === 'done' ? (
+                    <Check size={14} className="shrink-0" />
+                  ) : (
+                    <RefreshCw size={13} className="animate-spin text-[var(--accent)] shrink-0" />
+                  )}
+                  <span className="font-medium">
+                    {submitStep === 'done'
+                      ? isZh
+                        ? '连接已就绪 · 已完成加密入库与首轮对账同步'
+                        : 'Connected · Encrypted & synced successfully'
+                      : submitStep === 'verifying'
+                        ? isZh
+                          ? '正在握手验证只读签名与 API 权限边界…'
+                          : 'Verifying read-only signature & API permissions…'
+                        : isZh
+                          ? '验权通过 · 正在本地加密保存并回溯全历史账单（约 10～25 秒）…'
+                          : 'Verified · Encrypting locally & syncing historical ledger (10–25s)…'}
+                  </span>
+                </div>
+                {submitStep !== 'done' && (
+                  <div className="h-1 w-full rounded-full bg-[var(--track)] overflow-hidden">
+                    <div className="otl-ceremony-indeterminate" />
+                  </div>
+                )}
+              </div>
+            </AnimatedCollapse>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-[var(--border)]">
+              <button
+                type="button"
+                data-testid="cancel-exchange-modal-btn"
+                disabled={busyVenue === selectedAdapter.venue_id}
+                onClick={() => {
+                  setAddingVenue('')
+                  setModalError('')
+                }}
+                className="h-8 px-3.5 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer disabled:opacity-50"
+              >
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                data-testid="save-exchange-btn"
+                disabled={busyVenue === selectedAdapter.venue_id || !formReady}
+                onClick={() => void handleAddSubmit()}
+                className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
+                style={{
+                  background: submitStep === 'done' ? '#10b981' : 'var(--accent)',
+                  color: submitStep === 'done' ? '#ffffff' : 'var(--accent-fg)',
+                }}
+              >
+                {submitStep === 'done' ? (
+                  <>
+                    <Check size={13} />
+                    <span>{isZh ? '连接成功' : 'Connected'}</span>
+                  </>
+                ) : busyVenue === selectedAdapter.venue_id ? (
+                  <>
+                    <RefreshCw size={12} className="animate-spin" />
+                    <span>{isZh ? '验证并同步中…' : 'Verifying & Syncing…'}</span>
+                  </>
+                ) : (
+                  <span>{isZh ? '验证并保存连接' : t('confirm_save')}</span>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+      </FloatingModal>
+
+      {/* Safe Confirmation Modal Before Unbinding API or Purging Cached Ledger */}
+      <FloatingModal
+        open={Boolean(deletingAdapter)}
+        onClose={() => setDeletingVenue('')}
+        testId="delete-exchange-modal"
+        maxWidthClass="max-w-[460px]"
+        title={
+          deleteMode === 'purge_archived'
+            ? isZh
+              ? '确认清空本地封存数据'
+              : 'Purge Archived Local Data'
+            : isZh
+              ? '移除交易所 API 连接'
+              : 'Remove Exchange API Connection'
+        }
+      >
+        {deletingAdapter && (
+          <div className="p-5 space-y-4 text-[12.5px]">
+            {deleteMode === 'choice' ? (
+              <>
+                <p className="m-0 text-[var(--fg-2)] leading-relaxed">
+                  {isZh
+                    ? `请选择移除「${deletingAdapter.display_name_zh || deletingAdapter.display_name}」时的本地历史数据处理方式：`
+                    : `Choose how to handle local historical data when removing ${deletingAdapter.display_name}:`}
+                </p>
+
+                <div className="space-y-2.5">
+                  <button
+                    type="button"
+                    data-testid="delete-opt-keep"
+                    onClick={() => setKeepHistoryOnDelete(true)}
+                    className="w-full text-left rounded-xl border p-3.5 transition-colors cursor-pointer space-y-1"
+                    style={{
+                      borderColor: keepHistoryOnDelete ? 'var(--accent)' : 'var(--border)',
+                      background: keepHistoryOnDelete ? 'var(--accent-soft)' : 'var(--surface-2)',
+                    }}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-[var(--fg)]">
+                        {isZh ? '仅解绑 API，保留本地历史记录（推荐）' : 'Unbind API Key, Keep Local History (Recommended)'}
+                      </span>
+                      <span
+                        className="h-4 w-4 rounded-full border inline-flex items-center justify-center shrink-0"
+                        style={{
+                          borderColor: keepHistoryOnDelete ? 'var(--accent)' : 'var(--border-strong)',
+                          background: keepHistoryOnDelete ? 'var(--accent)' : 'transparent',
+                          color: '#ffffff',
+                        }}
+                      >
+                        {keepHistoryOnDelete && <Check size={10} strokeWidth={3} />}
+                      </span>
+                    </div>
+                    <p className="m-0 text-[11.5px] text-[var(--fg-2)] leading-relaxed">
+                      {isZh
+                        ? '销毁本地加密密钥并停止后台轮询；已同步的平仓交割、充提本金与闭环对账记录继续保留在本地（标为「已封存」）。'
+                        : 'Deletes the encrypted API key and stops polling; synced trades, principal, and reconciliation stay archived locally.'}
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="delete-opt-purge"
+                    onClick={() => setKeepHistoryOnDelete(false)}
+                    className="w-full text-left rounded-xl border p-3.5 transition-colors cursor-pointer space-y-1"
+                    style={{
+                      borderColor: !keepHistoryOnDelete ? 'rgba(239, 68, 68, 0.55)' : 'var(--border)',
+                      background: !keepHistoryOnDelete ? 'rgba(239, 68, 68, 0.08)' : 'var(--surface-2)',
+                    }}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-[var(--fg)]">
+                        {isZh ? '彻底删除 API 及全部本地数据' : 'Delete API Key & Purge All Local Data'}
+                      </span>
+                      <span
+                        className="h-4 w-4 rounded-full border inline-flex items-center justify-center shrink-0"
+                        style={{
+                          borderColor: !keepHistoryOnDelete ? '#ef4444' : 'var(--border-strong)',
+                          background: !keepHistoryOnDelete ? '#ef4444' : 'transparent',
+                          color: '#ffffff',
+                        }}
+                      >
+                        {!keepHistoryOnDelete && <Check size={10} strokeWidth={3} />}
+                      </span>
+                    </div>
+                    <p className="m-0 text-[11.5px] text-[var(--fg-2)] leading-relaxed">
+                      {isZh
+                        ? '同时销毁本地 API 密钥并清空该平台分区内的全部资产与历史交易流水（不影响其他交易所，手写复盘笔记保留）。'
+                        : 'Deletes the API key and wipes all cached balances and trades in this venue partition (other exchanges and journal notes are untouched).'}
+                    </p>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="m-0 text-[var(--fg-2)] leading-relaxed">
+                {isZh
+                  ? `确认彻底清空「${deletingAdapter.display_name_zh || deletingAdapter.display_name}」在本地封存的全部历史资产与交割流水吗？若超出交易所官方 API 保留期，清空后将无法重新拉回（其他交易所不受影响，复盘笔记保留）。`
+                  : `Permanently purge all archived local balances and trades for ${deletingAdapter.display_name}? Records older than the exchange API retention window cannot be re-fetched (other exchanges and journal notes are preserved).`}
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDeletingVenue('')}
+                className="h-8 px-3.5 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] cursor-pointer"
+              >
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                data-testid="confirm-delete-exchange-btn"
+                onClick={async () => {
+                  const vid = deletingAdapter.venue_id
+                  const shouldKeep = deleteMode === 'choice' ? keepHistoryOnDelete : false
+                  setDeletingVenue('')
+                  await onDeleteExchange(vid, shouldKeep)
+                  flashOk(
+                    shouldKeep
+                      ? isZh
+                        ? `已解绑 ${vid.toUpperCase()} 密钥，本地历史记录已封存保留`
+                        : `Unbound ${vid.toUpperCase()} key · local history archived`
+                      : isZh
+                        ? `已彻底清空 ${vid.toUpperCase()} 本地数据`
+                        : `Purged ${vid.toUpperCase()} local data`,
+                  )
+                }}
+                className={`h-8 px-3.5 rounded-lg text-[12px] font-semibold cursor-pointer ${
+                  deleteMode === 'choice' && keepHistoryOnDelete ? '' : 'otl-status-err'
+                }`}
+                style={
+                  deleteMode === 'choice' && keepHistoryOnDelete
+                    ? { background: 'var(--accent)', color: 'var(--accent-fg)' }
+                    : undefined
+                }
+              >
+                {deleteMode === 'choice' && keepHistoryOnDelete
+                  ? isZh
+                    ? '解绑并保留记录'
+                    : 'Unbind & Keep History'
+                  : isZh
+                    ? '确认彻底清空'
+                    : 'Delete & Purge'}
+              </button>
+            </div>
+          </div>
+        )}
+      </FloatingModal>
     </div>
   )
 }

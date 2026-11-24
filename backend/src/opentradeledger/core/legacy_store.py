@@ -254,6 +254,93 @@ class GateManualStore:
                 (key, raw, now),
             )
 
+    def purge_venue(self, venue_id: str) -> None:
+        vid = (venue_id or "").strip().lower()
+        venue_tables: dict[str, tuple[str, ...]] = {
+            "gate": (
+                "futures_closes",
+                "futures_trades",
+                "futures_orders",
+                "partner_rebates",
+                "spot_account_book",
+                "stock_orders",
+                "stock_deals",
+                "stock_transactions",
+            ),
+            "easicoin": (
+                "easicoin_closed_pnl",
+                "easicoin_fills",
+                "easicoin_orders",
+                "easicoin_transfers",
+            ),
+            "binance": (
+                "binance_income",
+                "binance_fills",
+                "binance_orders",
+                "binance_cashflows",
+            ),
+            "bitget": (
+                "bitget_positions_history",
+                "bitget_fills",
+                "bitget_orders",
+                "bitget_bills",
+            ),
+            "mexc": (
+                "mexc_positions_history",
+                "mexc_deals",
+                "mexc_orders",
+                "mexc_funding",
+                "mexc_transfers",
+            ),
+        }
+        venue_meta_keys: dict[str, tuple[str, ...]] = {
+            "gate": (
+                "live_bundle",
+                "contract_specs",
+                "backfill_completed",
+                "spot_window_backfill_v2",
+                "gate_decimal_trades_v2",
+            ),
+            "easicoin": ("easicoin_live_bundle", "easicoin_backfill_v1"),
+            "binance": (
+                "binance_live_bundle",
+                "binance_commission_rates",
+                "binance_cashflow_sync_sec",
+                "binance_copy_cf_v1",
+                "binance_bnb_prices",
+                "binance_backfill_v2",
+            ),
+            "bitget": ("bitget_live_bundle", "bitget_fee_rates", "bitget_backfill_v3"),
+            "mexc": ("mexc_live_bundle", "mexc_cashflow_sync_sec", "mexc_contract_specs", "mexc_backfill_v1"),
+        }
+        venue_snapshot_zero_sql: dict[str, str] = {
+            "gate": "UPDATE equity_snapshots SET total_equity = 0.0, unified_equity = 0.0, quant_equity = 0.0, stock_equity = 0.0",
+            "easicoin": "UPDATE equity_snapshots SET easicoin_equity = 0.0",
+            "binance": "UPDATE equity_snapshots SET binance_equity = 0.0",
+            "bitget": "UPDATE equity_snapshots SET bitget_equity = 0.0",
+            "mexc": "UPDATE equity_snapshots SET mexc_equity = 0.0",
+        }
+        with self._lock, self._connect() as conn:
+            for tbl in venue_tables.get(vid, ()):
+                conn.execute(f"DELETE FROM {tbl}")
+            for mk in venue_meta_keys.get(vid, ()):
+                conn.execute("DELETE FROM kv_meta WHERE key = ?", (mk,))
+            if vid in venue_snapshot_zero_sql:
+                conn.execute(venue_snapshot_zero_sql[vid])
+                conn.execute(
+                    """
+                    DELETE FROM equity_snapshots
+                    WHERE ABS(total_equity) < 1e-9
+                      AND ABS(unified_equity) < 1e-9
+                      AND ABS(quant_equity) < 1e-9
+                      AND ABS(stock_equity) < 1e-9
+                      AND ABS(easicoin_equity) < 1e-9
+                      AND ABS(binance_equity) < 1e-9
+                      AND ABS(bitget_equity) < 1e-9
+                      AND ABS(mexc_equity) < 1e-9
+                    """
+                )
+
     def upsert_futures_closes(self, rows: Sequence[Mapping[str, Any]]) -> int:
         if not rows:
             return 0

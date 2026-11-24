@@ -413,10 +413,18 @@ def build_demo_dashboard(
             "today_delta_usd": equity_curve[-1]["delta_usd"] if equity_curve else 0.0,
         }
 
+    rk_norm = (range_key or "all").strip().lower() or "all"
+    rk_lbl_en = "Last 7 Days" if rk_norm == "7d" else ("Last 30 Days" if rk_norm == "30d" else (rk_norm if rk_norm != "all" else "All-Time"))
+    rk_lbl_zh = "近 7 天" if rk_norm == "7d" else ("近 30 天" if rk_norm == "30d" else (f"{rk_norm} 月度" if rk_norm != "all" else "全部历史"))
+
     default_ai = latest_ai_review or {
         "generated_at": "2026-11-22 18:00:00",
         "generated_ms": int(now_dt.timestamp() * 1000),
         "model": "demo-local-actuarial",
+        "range_key": rk_norm,
+        "range_label": rk_lbl_en,
+        "range_label_zh": rk_lbl_zh,
+        "trade_count_snapshot": len(filtered),
         "equity_snapshot_usd": total_equity,
         "stale": False,
         "highlights": [
@@ -479,6 +487,12 @@ def build_demo_dashboard(
             "combined_relief_pct": relief_pct,
             "potential_maker_savings_usd": round(sum(r["potential_maker_savings_usd"] for r in fee_matrix), 2),
             "max_drawdown_usd": 148.60,
+        },
+        "equity_breakdown": {
+            "futures_margin_usd": round(total_equity - 1642.80 - 1240.00 - 4480.00, 2),
+            "copy_equity_usd": 1642.80,
+            "stocks_equity_usd": 1240.00,
+            "spot_and_other_usd": 4480.00,
         },
         "exchanges": exchanges,
         "open_positions": [
