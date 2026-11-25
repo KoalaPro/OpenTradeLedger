@@ -1145,8 +1145,8 @@ def build_bitget_venue_ledger(
         daily_pnl[today_bj_str] += bg_unrealized_usd
         daily_comp[today_bj_str]["bitget_futures"] += bg_unrealized_usd
     if bg_stock_net_usd != 0:
-        daily_pnl[today_bj_str] += bg_stock_net_usd
-        daily_comp[today_bj_str]["bitget_stock"] += bg_stock_net_usd
+        daily_pnl[bg_first_day] += bg_stock_net_usd
+        daily_comp[bg_first_day]["bitget_stock"] += bg_stock_net_usd
     if bg_rem_adj != 0:
         daily_pnl[bg_first_day] += bg_rem_adj
         daily_comp[bg_first_day]["bitget_other_net"] += bg_rem_adj

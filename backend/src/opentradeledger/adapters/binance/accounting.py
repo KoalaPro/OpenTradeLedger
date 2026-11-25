@@ -1448,8 +1448,8 @@ def build_binance_venue_ledger(
         daily_pnl[today_bj_str] += bn_unrealized_usd
         daily_comp[today_bj_str]["binance_futures"] += bn_unrealized_usd
     if bn_stock_net_usd != 0:
-        daily_pnl[today_bj_str] += bn_stock_net_usd
-        daily_comp[today_bj_str]["binance_stock"] += bn_stock_net_usd
+        daily_pnl[bn_first_day] += bn_stock_net_usd
+        daily_comp[bn_first_day]["binance_stock"] += bn_stock_net_usd
     if bn_non_usdt_tokens_usd != 0:
         daily_pnl[bn_first_day] += bn_non_usdt_tokens_usd
         daily_comp[bn_first_day]["binance_early_adj" if has_bn_early_adj else "binance_fx_spot_adj"] += bn_non_usdt_tokens_usd

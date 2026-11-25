@@ -234,6 +234,7 @@ def build_demo_dashboard(
     prefs: UserPreferences | None = None,
     journals: dict[str, dict[str, Any]] | None = None,
     latest_ai_review: dict[str, Any] | None = None,
+    now_dt: datetime | None = None,
 ) -> dict[str, Any]:
     prefs = prefs or UserPreferences()
     journals = journals or {}
@@ -243,7 +244,7 @@ def build_demo_dashboard(
             tr["tags"] = journals[tr["trade_id"]].get("tags", tr["tags"])
             tr["note"] = journals[tr["trade_id"]].get("note", "")
 
-    now_dt = datetime(2026, 11, 22, 23, 59, tzinfo=timezone(timedelta(hours=8)))
+    now_dt = now_dt or datetime(2026, 11, 22, 23, 59, tzinfo=timezone(timedelta(hours=8)))
 
     def _in_range(tr: dict[str, Any]) -> bool:
         if range_key == "7d":
@@ -400,6 +401,7 @@ def build_demo_dashboard(
         target = float(prefs.goal_target_usd)
         remaining = max(0.0, round(target - total_equity, 2))
         surplus = max(0.0, round(total_equity - target, 2))
+        today_str = now_dt.strftime("%Y-%m-%d")
         goal_info = {
             "enabled": True,
             "label": prefs.goal_label or "",
@@ -410,7 +412,7 @@ def build_demo_dashboard(
             "is_reached": total_equity >= target,
             "progress_pct": round(min(100.0, (total_equity / target) * 100.0), 2),
             "needed_gain_pct": round((remaining / total_equity) * 100.0, 2) if total_equity > 0 and remaining > 0 else 0.0,
-            "today_delta_usd": equity_curve[-1]["delta_usd"] if equity_curve else 0.0,
+            "today_delta_usd": next((pt["delta_usd"] for pt in reversed(equity_curve) if pt.get("date") == today_str), 0.0),
         }
 
     rk_norm = (range_key or "all").strip().lower() or "all"

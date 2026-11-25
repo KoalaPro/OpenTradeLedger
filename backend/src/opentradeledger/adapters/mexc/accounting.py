@@ -1032,8 +1032,8 @@ def build_mexc_venue_ledger(
         daily_pnl[today_bj_str] += mx_unrealized_usd
         daily_comp[today_bj_str]["mexc_futures"] += mx_unrealized_usd
     if mx_stock_net_usd != 0:
-        daily_pnl[today_bj_str] += mx_stock_net_usd
-        daily_comp[today_bj_str]["mexc_stock"] += mx_stock_net_usd
+        daily_pnl[mx_first_day] += mx_stock_net_usd
+        daily_comp[mx_first_day]["mexc_stock"] += mx_stock_net_usd
     for d_ch, v_ch in mx_meta["daily_contract_hold"].items():
         daily_pnl[d_ch] += v_ch
         daily_comp[d_ch]["mexc_other_net"] += v_ch

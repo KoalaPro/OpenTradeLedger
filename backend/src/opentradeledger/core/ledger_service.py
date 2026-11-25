@@ -665,7 +665,7 @@ class LedgerService:
                 "is_reached": total_equity >= goal_target,
                 "progress_pct": round(min(100.0, (total_equity / goal_target) * 100.0), 2),
                 "needed_gain_pct": round((rem / total_equity) * 100.0, 2) if total_equity > 0 and rem > 0 else 0.0,
-                "today_delta_usd": equity_curve[-1]["delta_usd"] if equity_curve else 0.0,
+                "today_delta_usd": f2(all_daily_pnl.get(today_bj_str, Decimal("0")), 2),
             }
 
         ai_out = latest_ai_review

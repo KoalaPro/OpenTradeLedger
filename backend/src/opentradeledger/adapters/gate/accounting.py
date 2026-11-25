@@ -1299,21 +1299,48 @@ def build_gate_venue_ledger(
     snap_days = sorted(eod_snap_by_day.keys())
     anchor_day = snap_days[0] if snap_days else today_bj_str
 
+    all_gate_hist_days = [
+        d
+        for d in (
+            set(daily_ext_flow.keys())
+            | set(daily_realized_ledger.keys())
+            | set(daily_copy_prin_flow.keys())
+            | set(daily_lp_flow.keys())
+            | {r["close_date_bj"] for r in internal_records if r.get("close_date_bj")}
+        )
+        if d and d <= anchor_day
+    ]
+    gate_first_day = min(all_gate_hist_days) if all_gate_hist_days else anchor_day
+    copy_origin_day = min(
+        (d for d in daily_copy_prin_flow.keys() if d and d <= anchor_day),
+        default=gate_first_day,
+    )
+    lp_days_pre = [d for d in daily_lp_flow.keys() if d and d <= anchor_day]
+    stk_deal_days_pre = [
+        fmt_bj(norm_sec(sd.get("time") or sd.get("create_time")), "%Y-%m-%d")
+        for sd in stock_deals
+        if norm_sec(sd.get("time") or sd.get("create_time")) > 0
+    ]
+    stk_deal_days_pre = [d for d in stk_deal_days_pre if d and d <= anchor_day]
+    stock_origin_day = (
+        max(lp_days_pre)
+        if lp_days_pre
+        else (min(stk_deal_days_pre) if stk_deal_days_pre else gate_first_day)
+    )
+
     whole_daily_pnl: dict[str, Decimal] = defaultdict(Decimal)
     daily_comp: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     for d_key, val in daily_realized_ledger.items():
-        if d_key < anchor_day and val != 0:
-            whole_daily_pnl[d_key] = val
+        if d_key <= anchor_day and val != 0:
+            whole_daily_pnl[d_key] += val
             for c_k, c_v in daily_comp_realized[d_key].items():
-                daily_comp[d_key][c_k] = c_v
+                daily_comp[d_key][c_k] += c_v
 
-    prior_sum_before_anchor = sum(whole_daily_pnl.values(), Decimal("0"))
     cum_prin_at_anchor = sum((v for d_k, v in daily_ext_flow.items() if d_k <= anchor_day), Decimal("0"))
     if anchor_day in eod_snap_by_day and cum_prin_at_anchor > 0:
         target_cum_at_anchor = eod_snap_by_day[anchor_day]["total"] - cum_prin_at_anchor
     else:
         target_cum_at_anchor = gate_only_net_pnl_usd
-    whole_daily_pnl[anchor_day] = target_cum_at_anchor - prior_sum_before_anchor
 
     if anchor_day == today_bj_str or len(snap_days) <= 1:
         anchor_targets = {
@@ -1343,12 +1370,43 @@ def build_gate_venue_ledger(
         }
 
     for c_k, t_val in anchor_targets.items():
-        prior_c = sum((daily_comp[d_k][c_k] for d_k in daily_comp if d_k < anchor_day), Decimal("0"))
-        daily_comp[anchor_day][c_k] = t_val - prior_c
-    daily_comp[anchor_day]["fx_voucher_adj"] = whole_daily_pnl[anchor_day] - sum(
-        (daily_comp[anchor_day][k] for k in ("manual_futures", "copy_trading", "stock", "earn", "airdrop_tokens")),
+        realized_c = sum((daily_comp[d_k][c_k] for d_k in list(daily_comp.keys()) if d_k <= anchor_day), Decimal("0"))
+        gap_c = t_val - realized_c
+        if gap_c == 0:
+            continue
+        if c_k == "manual_futures":
+            if anchor_day == today_bj_str and gate_open_upl != 0:
+                whole_daily_pnl[today_bj_str] += gate_open_upl
+                daily_comp[today_bj_str]["manual_futures"] += gate_open_upl
+                rem_m = gap_c - gate_open_upl
+                if rem_m != 0:
+                    whole_daily_pnl[gate_first_day] += rem_m
+                    daily_comp[gate_first_day]["manual_futures"] += rem_m
+            else:
+                whole_daily_pnl[gate_first_day] += gap_c
+                daily_comp[gate_first_day]["manual_futures"] += gap_c
+        elif c_k == "copy_trading":
+            if other_unmatched_rebate_usd != 0:
+                whole_daily_pnl[gate_first_day] += other_unmatched_rebate_usd
+                daily_comp[gate_first_day]["copy_trading"] += other_unmatched_rebate_usd
+            rem_cp = gap_c - other_unmatched_rebate_usd
+            if rem_cp != 0:
+                whole_daily_pnl[copy_origin_day] += rem_cp
+                daily_comp[copy_origin_day]["copy_trading"] += rem_cp
+        elif c_k == "stock":
+            whole_daily_pnl[stock_origin_day] += gap_c
+            daily_comp[stock_origin_day]["stock"] += gap_c
+        else:
+            whole_daily_pnl[gate_first_day] += gap_c
+            daily_comp[gate_first_day][c_k] += gap_c
+
+    fx_gap = target_cum_at_anchor - sum(
+        (whole_daily_pnl[d_k] for d_k in list(whole_daily_pnl.keys()) if d_k <= anchor_day),
         Decimal("0"),
     )
+    if fx_gap != 0:
+        whole_daily_pnl[gate_first_day] += fx_gap
+        daily_comp[gate_first_day]["fx_voucher_adj"] += fx_gap
 
     for idx_s in range(1, len(snap_days)):
         prev_d = snap_days[idx_s - 1]

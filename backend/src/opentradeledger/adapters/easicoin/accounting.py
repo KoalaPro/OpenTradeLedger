@@ -901,6 +901,10 @@ def build_easicoin_venue_ledger(
     )
 
     today_bj_str = fmt_bj(now_s, "%Y-%m-%d")
+    ec_first_day = min(
+        (r["close_date_bj"] for r in ec_closed_records if r.get("close_date_bj")),
+        default=today_bj_str,
+    )
     daily_pnl: dict[str, Decimal] = defaultdict(Decimal)
     daily_comp: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     for ec_r in ec_closed_records:
@@ -912,11 +916,11 @@ def build_easicoin_venue_ledger(
         daily_pnl[today_bj_str] += ec_unrealized_usd
         daily_comp[today_bj_str]["easicoin_futures"] += ec_unrealized_usd
     if ec_stock_net_usd != 0:
-        daily_pnl[today_bj_str] += ec_stock_net_usd
-        daily_comp[today_bj_str]["easicoin_stock"] += ec_stock_net_usd
+        daily_pnl[ec_first_day] += ec_stock_net_usd
+        daily_comp[ec_first_day]["easicoin_stock"] += ec_stock_net_usd
     if ec_tok_and_adj != 0:
-        daily_pnl[today_bj_str] += ec_tok_and_adj
-        daily_comp[today_bj_str]["easicoin_tokens_adj"] += ec_tok_and_adj
+        daily_pnl[ec_first_day] += ec_tok_and_adj
+        daily_comp[ec_first_day]["easicoin_tokens_adj"] += ec_tok_and_adj
 
     px_float_map = {**(global_spot_prices or {}), **extract_easicoin_spot_prices(store)}
     spot_holdings = build_spot_holdings_list(

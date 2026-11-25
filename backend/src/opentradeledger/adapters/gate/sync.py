@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.core.venue_primitives import fmt_bj
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
@@ -118,8 +119,26 @@ async def sync_gate_venue(
 
     wt_g = live_bundle.get("wallet_total") or {}
     det_g = wt_g.get("details") or {}
+    stk_assets_g = live_bundle.get("stock_assets") or {}
     eq_now = float((wt_g.get("total") or {}).get("amount") or 0.0)
     q_now = float((det_g.get("quant") or {}).get("amount") or 0.0)
+    s_now = float(stk_assets_g.get("equity") or (det_g.get("tradfi_spot") or {}).get("amount") or 0.0)
+    if eq_now > 0:
+        day_bj = fmt_bj(now_s, "%Y-%m-%d")
+        scope.upsert_records(
+            "eod_snapshots",
+            [
+                {
+                    "day_bj": day_bj,
+                    "ts_sec": int(now_s),
+                    "total_equity": eq_now,
+                    "quant_equity": q_now,
+                    "stock_equity": s_now,
+                }
+            ],
+            key_fn=lambda r: str(r.get("day_bj") or fmt_bj(float(r.get("ts_sec") or 0), "%Y-%m-%d")),
+            ts_fn=lambda r: float(r.get("ts_sec") or 0),
+        )
     has_open = bool(
         live_bundle.get("positions")
         or live_bundle.get("futures_positions")
