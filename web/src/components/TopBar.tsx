@@ -1,12 +1,17 @@
-import { AlertTriangle, Eye, EyeOff, Languages } from 'lucide-react'
+import { Eye, EyeOff } from 'lucide-react'
 import { useI18n } from '../i18n'
 import { CURRENCY_OPTIONS } from '../lib/currency'
-import type { CurrencyCode, Locale, NavPage } from '../lib/types'
+import type { CurrencyCode, Locale, NavPage, Polarity, Theme } from '../lib/types'
 import { SegmentedPills } from './SegmentedPills'
 
 interface TopBarProps {
   page: NavPage
   demoMode: boolean
+  reconciledZero?: boolean
+  theme?: Theme
+  onChangeTheme?: (next: Theme) => void
+  polarity?: Polarity
+  onTogglePolarity?: () => void
   privacyMode: boolean
   onTogglePrivacy: () => void
   locale: Locale
@@ -34,6 +39,11 @@ const pageTitleKeys: Record<
 export function TopBar({
   page,
   demoMode,
+  reconciledZero = false,
+  theme = 'obsidian',
+  onChangeTheme,
+  polarity = 'cn',
+  onTogglePolarity,
   privacyMode,
   onTogglePrivacy,
   locale,
@@ -49,7 +59,7 @@ export function TopBar({
   const showRange = page !== 'settings' && page !== 'extensions'
 
   return (
-    <header className="min-h-[54px] py-2 px-4 sm:px-7 border-b border-[var(--border)] bg-[var(--bg)] flex flex-wrap items-center justify-between gap-3 shrink-0">
+    <header className="sticky top-0 z-20 min-h-[54px] py-2 px-5 sm:px-8 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm flex flex-wrap items-center justify-between gap-3 shrink-0">
       <div className="flex items-baseline gap-3 shrink-0">
         <h1 key={page} className="t-h1 otl-title-swap whitespace-nowrap">
           {t(pageTitleKeys[page])}
@@ -59,7 +69,8 @@ export function TopBar({
             data-testid="demo-mode-badge"
             className="text-[13px] text-[var(--fg-3)] whitespace-nowrap"
           >
-            · {t('demo_badge')}
+            {t('demo_badge')}
+            {reconciledZero ? ` · ${t('kpi_reconciled_zero')}` : ''}
           </span>
         )}
         {!demoMode && exchangeErrorCount > 0 && (
@@ -67,20 +78,25 @@ export function TopBar({
             type="button"
             data-testid="topbar-exchange-error-badge"
             onClick={onInspectErrors}
-            className="otl-status-err inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[13px] font-medium cursor-pointer whitespace-nowrap self-center"
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[var(--err)] hover:underline bg-transparent border-0 p-0 cursor-pointer whitespace-nowrap self-center"
           >
-            <AlertTriangle size={13} />
+            <span className="otl-venue-dot" style={{ background: 'var(--err)' }} />
             <span>
               {locale === 'en'
-                ? `${exchangeErrorCount} Exchange API ${exchangeErrorCount > 1 ? 'Errors' : 'Error'} · View`
-                : `${exchangeErrorCount} 个交易所 API 报错 · 查看原因`}
+                ? `${exchangeErrorCount} Exchange API ${exchangeErrorCount > 1 ? 'Errors' : 'Error'} · View →`
+                : `${exchangeErrorCount} 个交易所 API 报错 · 查看原因 →`}
             </span>
           </button>
+        )}
+        {!demoMode && exchangeErrorCount === 0 && reconciledZero && (
+          <span className="text-[13px] text-[var(--fg-3)] hidden sm:inline whitespace-nowrap">
+            {t('kpi_reconciled_zero')}
+          </span>
         )}
       </div>
 
       {/* Range slot stays LEFT of utility controls so Currency / Privacy / Locale stay pinned */}
-      <div className="flex items-center gap-2 flex-wrap justify-end">
+      <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap justify-end">
         <div
           data-testid="topbar-range-slot"
           aria-hidden={!showRange}
@@ -98,7 +114,48 @@ export function TopBar({
               ...(/^\d{4}-\d{2}$/.test(rangeKey) ? [{ value: rangeKey, label: rangeKey }] : []),
             ]}
           />
+          <span className="h-4 w-px ml-2.5 mr-0.5 hidden sm:inline-block bg-[var(--border)]" />
         </div>
+
+        {onChangeTheme && (
+          <div className="otl-theme-swatches" role="group" aria-label={t('set_theme')}>
+            {(
+              [
+                ['obsidian', '#141820', t('theme_obsidian')],
+                ['ocean', '#0f283d', t('theme_ocean')],
+                ['light', '#f3f5f8', t('theme_light')],
+              ] as const
+            ).map(([th, hex, lbl]) => (
+              <button
+                key={th}
+                type="button"
+                data-no-press="true"
+                title={lbl}
+                aria-label={lbl}
+                onClick={() => onChangeTheme(th)}
+                className={`otl-swatch-dot ${theme === th ? 'active' : ''}`}
+                style={{ background: hex }}
+              />
+            ))}
+          </div>
+        )}
+
+        {onTogglePolarity && (
+          <button
+            type="button"
+            onClick={onTogglePolarity}
+            title={t('set_polarity')}
+            className="otl-btn-ghost hidden sm:inline-flex"
+          >
+            {polarity === 'global'
+              ? locale === 'en'
+                ? 'Green Up'
+                : '绿盈红亏'
+              : locale === 'en'
+                ? 'Red Up'
+                : '红盈绿亏'}
+          </button>
+        )}
 
         {onChangeCurrency && (
           <select
@@ -106,7 +163,7 @@ export function TopBar({
             data-testid="currency-selector"
             value={currency}
             onChange={e => onChangeCurrency(e.target.value as CurrencyCode)}
-            className="otl-select h-8 py-0 px-2.5 text-[13px] font-medium cursor-pointer"
+            className="otl-btn-ghost cursor-pointer pr-1"
           >
             {CURRENCY_OPTIONS.map(opt => (
               <option key={opt.code} value={opt.code}>
@@ -120,20 +177,21 @@ export function TopBar({
           type="button"
           data-testid="privacy-toggle-btn"
           onClick={onTogglePrivacy}
-          className="otl-btn"
-          style={privacyMode ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : undefined}
+          className="otl-btn-ghost"
+          style={privacyMode ? { color: 'var(--accent)' } : undefined}
         >
           {privacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
-          <span>{privacyMode ? t('privacy_show') : t('privacy_hide')}</span>
+          <span className="hidden sm:inline">
+            {privacyMode ? t('privacy_show') : t('privacy_hide')}
+          </span>
         </button>
 
         <button
           type="button"
           data-testid="locale-toggle-btn"
           onClick={onToggleLocale}
-          className="otl-btn"
+          className="otl-btn-ghost"
         >
-          <Languages size={14} />
           <span>{locale === 'zh-CN' ? 'EN' : '中文'}</span>
         </button>
       </div>

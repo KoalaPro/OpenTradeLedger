@@ -266,6 +266,19 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   line-height: 1.15;
 }
 
+.otl-num-frac {
+  opacity: 0.72;
+  font-weight: 550;
+}
+
+.otl-num-unit {
+  font-size: 0.62em;
+  font-weight: 500;
+  color: var(--fg-3);
+  margin-left: 3px;
+  letter-spacing: 0;
+}
+
 .txt-pos,
 .otl-table td.txt-pos {
   color: var(--pos);
@@ -597,6 +610,39 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
     color: var(--fg);
   }
 
+  :root[data-theme="light"] .otl-input,
+  :root[data-theme="light"] .otl-select,
+  :root[data-theme="light"] textarea {
+    background: var(--surface);
+  }
+
+  /* Theme Swatch Dots */
+  .otl-theme-swatches {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 4px;
+  }
+
+  .otl-swatch-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    border: 1.5px solid var(--border-strong);
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+    transition: transform 140ms var(--ease-glide), box-shadow 140ms var(--ease-glide);
+  }
+
+  .otl-swatch-dot:hover {
+    transform: scale(1.1);
+  }
+
+  .otl-swatch-dot.active {
+    box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent);
+  }
+
   /* Segmented Controls + Underline Tabs */
   .otl-seg {
     scrollbar-width: none;
@@ -621,6 +667,28 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
     display: inline-flex;
     align-items: center;
     gap: 20px;
+  }
+
+  .otl-tabs button {
+    position: relative;
+    padding: 8px 0;
+    background: transparent;
+    border: 0;
+    font-size: var(--text-body);
+    font-weight: 500;
+    color: var(--fg-3);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 140ms var(--ease-out-quart);
+  }
+
+  .otl-tabs button:hover {
+    color: var(--fg-2);
+  }
+
+  .otl-tabs button.active {
+    color: var(--fg);
+    font-weight: 600;
   }
 
   .otl-tab-glider {

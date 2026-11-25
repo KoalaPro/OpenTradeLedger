@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronDown, Settings, ShieldCheck } from 'lucide-react'
 import { AnimatedCollapse } from '../components/AnimatedCollapse'
 import { FloatingModal } from '../components/FloatingModal'
+import { formatDisplayKpiValue } from '../components/KpiCard'
 import { SimpleMarkdown } from '../components/SimpleMarkdown'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
@@ -355,7 +356,7 @@ export function FeesAiPage({
                   return (
                     <div
                       key={i}
-                      className={`py-4 flex flex-col gap-1.5 ${
+                      className={`py-5 flex flex-col gap-1.5 ${
                         i === 0 ? 'md:pr-6' : i === 1 ? 'md:px-6' : 'md:pl-6'
                       }`}
                     >
@@ -363,9 +364,15 @@ export function FeesAiPage({
                         {locale === 'en' ? h.title : h.title_zh || h.title}
                       </div>
                       {formattedMetric && (
-                        <div className="t-h1 sensitive">{formattedMetric}</div>
+                        <div
+                          className={`t-kpi sensitive ${
+                            h.kind === 'maker_upside' ? 'txt-pos' : ''
+                          }`}
+                        >
+                          {formatDisplayKpiValue(formattedMetric)}
+                        </div>
                       )}
-                      <p className="m-0 text-[14px] leading-relaxed text-[var(--fg-2)] sensitive">
+                      <p className="m-0 text-[13px] leading-relaxed text-[var(--fg-2)] sensitive">
                         {cur.convertText(rawBody)}
                       </p>
                     </div>
@@ -375,7 +382,7 @@ export function FeesAiPage({
             )}
 
             {(ai.markdown_commentary || ai.markdown_commentary_zh) && (
-              <div className="pl-4 border-l-2 border-[var(--border-strong)] space-y-2">
+              <div className="max-w-[65ch] space-y-2.5">
                 <div className="text-[14px] font-semibold text-[var(--fg)]">{t('ai_commentary_title')}</div>
                 <div className="sensitive">
                   <SimpleMarkdown
@@ -390,7 +397,7 @@ export function FeesAiPage({
             )}
 
             {/* Sanitized Payload Transparency Disclosure */}
-            <div className="pt-1">
+            <div className="pt-4 border-t border-[var(--border)]">
               {aiProvenance.mode === 'zero_trades_local' ? (
                 <div className="inline-flex items-center gap-1.5 text-[13px] text-[var(--fg-3)]">
                   <ShieldCheck size={14} style={{ color: 'var(--ok)' }} className="shrink-0" />
@@ -426,7 +433,7 @@ export function FeesAiPage({
                   </button>
 
                   <AnimatedCollapse open={showAiPayload} innerClassName="pt-3">
-                    <div className="otl-surface-2 p-4 space-y-3 text-[13px]">
+                    <div className="pt-3 border-t border-[var(--border)] space-y-3 text-[13px]">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[var(--fg-2)]">
                         <div>
                           <b className="text-[var(--fg)]">

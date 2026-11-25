@@ -4,12 +4,9 @@ import {
   Check,
   ChevronDown,
   Copy,
-  ExternalLink,
   Info,
   Plus,
   RefreshCw,
-  SlidersHorizontal,
-  Trash2,
 } from 'lucide-react'
 import { useI18n } from '../i18n'
 import { api } from '../lib/api'
@@ -18,7 +15,6 @@ import { fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
 import type { CopyWatcherStatusPayload, CopyWatcherTargetItem } from '../lib/types'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { InstrumentMark } from './InstrumentMark'
-import { VenueBadge } from './VenueBadge'
 
 interface PublicCopyWatcherPanelProps {
   onGoConfigureBark?: () => void
@@ -276,20 +272,15 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
       )}
 
       {/* Control Header & Add Trader Chapter */}
-      <section className="otl-chapter space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
+      <section className="py-5 border-b border-[var(--border)] space-y-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div className="space-y-0.5">
             <div className="flex flex-wrap items-baseline gap-2.5">
               <h2 className="t-h2">
                 {isZh
                   ? '公开带单盯盘雷达'
                   : 'Public Copy-Trade Radar'}
               </h2>
-              <span className="text-[13px] text-[var(--fg-3)]">
-                {isZh
-                  ? `免 API Key 只读 · 名额 ${status?.interval_sec ?? 10}s / 持仓 ${status?.trade_poll_sec ?? 30}s`
-                  : `Keyless Read-Only · Slots ${status?.interval_sec ?? 10}s / Positions ${status?.trade_poll_sec ?? 30}s`}
-              </span>
               {status?.demo_mode && (
                 <span className="text-[13px] text-[var(--fg-3)]">
                   · {isZh ? '演示示例（粘贴真实链接添加后自动切为实盘盯盘）' : 'Demo Preview'}
@@ -298,20 +289,47 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
             </div>
             <p className="m-0 text-[13px] text-[var(--fg-3)]">
               {isZh
-                ? '监控满员交易员空余车位（iOS Bark 响铃 + 点击通知直跳币安 App），并根据公开历史委托推算实时在途持仓。'
-                : 'Monitor full lead traders for open copy slots (Bark alarm + deep link to Binance App) and infer live open positions from public order flow.'}
+                ? '盯紧满员热门交易员空余车位（iOS Bark 持续响铃直跳币安 App 秒抢），并根据公开历史委托推算其实时在途持仓'
+                : 'Monitor full lead traders for open copy slots (Bark alarm + Binance App deep link) and infer live open positions'}
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-4 text-[13px]">
             <button
               type="button"
+              data-no-press="true"
               data-testid="watcher-config-toggle-btn"
               onClick={() => setConfigOpen(v => !v)}
-              className="otl-btn"
+              className="inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline bg-transparent border-0 p-0 cursor-pointer"
             >
-              <SlidersHorizontal size={13} />
-              <span>{isZh ? `频率设置 (${status?.interval_sec ?? 10}s)` : `Frequency (${status?.interval_sec ?? 10}s)`}</span>
+              <span>
+                {isZh
+                  ? `频率设置 (${status?.interval_sec ?? 10}s / ${status?.trade_poll_sec ?? 30}s)`
+                  : `Frequency (${status?.interval_sec ?? 10}s / ${status?.trade_poll_sec ?? 30}s)`}
+              </span>
+              <ChevronDown
+                size={13}
+                className={`transition-transform duration-150 ${configOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+
+            <button
+              type="button"
+              data-no-press="true"
+              data-testid="watcher-toggle-guide-btn"
+              onClick={() => {
+                setUserToggledGuide(true)
+                setGuideOpen(v => !v)
+              }}
+              className="inline-flex items-center gap-1 text-[var(--fg-2)] hover:text-[var(--fg)] hover:underline bg-transparent border-0 p-0 cursor-pointer"
+            >
+              <span>
+                {isZh ? '如何获取带单员链接？' : 'How to get trader link?'}
+              </span>
+              <ChevronDown
+                size={13}
+                className={`transition-transform duration-150 ${guideOpen ? 'rotate-180' : ''}`}
+              />
             </button>
 
             <button
@@ -319,9 +337,9 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
               data-testid="watcher-refresh-btn"
               disabled={refreshing || loading}
               onClick={() => void fetchStatus(true)}
-              className="otl-btn"
+              className="otl-btn h-7 px-2.5"
             >
-              <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+              <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
               <span>{isZh ? '立即刷新' : 'Refresh'}</span>
             </button>
           </div>
@@ -331,11 +349,11 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
         <AnimatedCollapse open={configOpen}>
           <div
             data-testid="watcher-config-panel"
-            className="otl-surface-2 p-4 space-y-3 text-[13px]"
+            className="pt-3 border-t border-[var(--border)] space-y-3 text-[13px]"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="font-semibold text-[var(--fg)]">
-                {isZh ? '自定义监控频率与响铃冷却（保存后立即生效，无需重启）' : 'Custom Polling Intervals & Alarm Cooldown'}
+              <span className="text-[var(--fg-2)]">
+                {isZh ? '快捷频率预设（保存后立即生效，无需重启）' : 'Quick Polling Presets (Applies immediately)'}
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
                 {[
@@ -361,8 +379,8 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
 
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
               <div className="space-y-1">
-                <label className="block text-[13px] text-[var(--fg-2)]">
-                  {isZh ? '名额扫描间隔（3~300 秒）' : 'Slot Scan (3–300s)'}
+                <label className="block text-[13px] text-[var(--fg-3)]">
+                  {isZh ? '名额扫描间隔 (3~300 秒)' : 'Slot Scan (3–300s)'}
                 </label>
                 <input
                   type="number"
@@ -371,13 +389,13 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   data-testid="watcher-interval-input"
                   value={slotIntervalInput}
                   onChange={e => setSlotIntervalInput(e.target.value)}
-                  className="otl-input w-full bg-[var(--surface)]"
+                  className="otl-input w-full"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="block text-[13px] text-[var(--fg-2)]">
-                  {isZh ? '持仓推算间隔（10~600 秒）' : 'Position Poll (10–600s)'}
+                <label className="block text-[13px] text-[var(--fg-3)]">
+                  {isZh ? '持仓推算间隔 (10~600 秒)' : 'Position Poll (10–600s)'}
                 </label>
                 <input
                   type="number"
@@ -386,13 +404,13 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   data-testid="watcher-trade-interval-input"
                   value={tradeIntervalInput}
                   onChange={e => setTradeIntervalInput(e.target.value)}
-                  className="otl-input w-full bg-[var(--surface)]"
+                  className="otl-input w-full"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="block text-[13px] text-[var(--fg-2)]">
-                  {isZh ? '重复响铃冷却（30~3600 秒）' : 'Alarm Cooldown (30–3600s)'}
+                <label className="block text-[13px] text-[var(--fg-3)]">
+                  {isZh ? '重复响铃冷却 (30~3600 秒)' : 'Alarm Cooldown (30–3600s)'}
                 </label>
                 <input
                   type="number"
@@ -401,7 +419,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   data-testid="watcher-cooldown-input"
                   value={cooldownInput}
                   onChange={e => setCooldownInput(e.target.value)}
-                  className="otl-input w-full bg-[var(--surface)]"
+                  className="otl-input w-full"
                 />
               </div>
 
@@ -418,9 +436,50 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
           </div>
         </AnimatedCollapse>
 
+        {/* Collapsible Beginner Guide */}
+        <AnimatedCollapse open={guideOpen}>
+          <div
+            data-testid="watcher-howto-guide"
+            className="pt-3 border-t border-[var(--border)] space-y-2.5 text-[13px]"
+          >
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-[var(--fg-2)]">
+              <div className="space-y-1">
+                <div className="font-semibold text-[var(--fg)]">
+                  {isZh ? '方法一：从手机币安 App 获取' : 'Method 1: Binance Mobile App'}
+                </div>
+                <p className="m-0 leading-relaxed">
+                  {isZh
+                    ? '打开币安 App → 合约 → 跟单广场 → 点进带单员主页右上角分享复制链接，无需删改文字，直接整段粘贴至下方输入框即可。'
+                    : 'Open Binance App → Futures → Copy Trading → Share trader profile → Paste the full copied text below.'}
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="font-semibold text-[var(--fg)]">
+                  {isZh ? '方法二：从电脑浏览器获取' : 'Method 2: Desktop Browser'}
+                </div>
+                <p className="m-0 leading-relaxed">
+                  {isZh ? '复制形如 ' : 'Copy a URL like '}
+                  <code className="font-mono text-[var(--fg)]">binance.com/.../lead-details/398877...</code>
+                  {isZh ? ' 的网址或末尾 15~22 位数字 ID 粘贴添加。' : ' or paste the 15–22 digit portfolio ID.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="inline-flex items-start gap-1.5 text-[var(--fg-3)]">
+              <Info size={14} className="shrink-0 mt-0.5" />
+              <span>
+                {isZh
+                  ? '首次添加交易员时自动静默对齐历史水位（不补发旧单），仅对新开/平仓动作及空余名额触发推送。'
+                  : 'Historical orders are anchored silently upon adding; alerts only fire on newly opened slots or fresh trades.'}
+              </span>
+            </div>
+          </div>
+        </AnimatedCollapse>
+
         {/* Add Lead Trader Form */}
         <form onSubmit={e => void handleAdd(e)} className="space-y-2.5">
-          <div className="flex flex-col sm:flex-row gap-2">
+          <div className="flex flex-col sm:flex-row gap-2.5">
             <input
               type="text"
               data-testid="watcher-add-input"
@@ -428,16 +487,16 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
               onChange={e => setRawInput(e.target.value)}
               placeholder={
                 isZh
-                  ? '直接整段粘贴币安 App 分享文案、带单员网页链接（含 lead-details/数字）或 15~22 位组合 ID…'
+                  ? '直接整段粘贴币安 App 分享文案、带单员网页链接或 15~22 位组合 ID…'
                   : 'Paste Binance share text, lead-details URL, or 15–22 digit portfolio ID…'
               }
-              className="otl-input h-9 flex-1"
+              className="otl-input flex-1"
             />
             <button
               type="submit"
               data-testid="watcher-add-btn"
               disabled={adding || !rawInput.trim()}
-              className="otl-btn otl-btn-primary h-9 px-4"
+              className="otl-btn otl-btn-primary h-[34px] px-4"
             >
               <Plus size={14} />
               <span>
@@ -452,59 +511,33 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[13px] text-[var(--fg-2)]">
-            <div className="flex flex-wrap items-center gap-4">
-              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  disabled={!hasBark}
-                  checked={hasBark && newSlotAlert}
-                  onChange={e => setNewSlotAlert(e.target.checked)}
-                />
-                <span>
-                  {isZh
-                    ? '空出跟单名额时持续响铃（抢车位）'
-                    : 'Urgent alarm when copy slot opens'}
-                </span>
-              </label>
-              <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  disabled={!hasBark}
-                  checked={hasBark && newTradeAlert}
-                  onChange={e => setNewTradeAlert(e.target.checked)}
-                />
-                <span>
-                  {isZh
-                    ? '带单员新开仓 / 平仓时推送信号（盯盘跟单）'
-                    : 'Chime alert on new open / close trades'}
-                </span>
-              </label>
-            </div>
-
-            <button
-              type="button"
-              data-testid="watcher-toggle-guide-btn"
-              onClick={() => {
-                setUserToggledGuide(true)
-                setGuideOpen(v => !v)
-              }}
-              className="otl-btn-ghost"
-            >
-              <span>
-                {guideOpen
-                  ? isZh
-                    ? '收起获取教程'
-                    : 'Hide Guide'
-                  : isZh
-                    ? '如何获取带单员链接？'
-                    : 'How to get trader link?'}
-              </span>
-              <ChevronDown
-                size={13}
-                className={`transition-transform duration-150 ${guideOpen ? 'rotate-180' : ''}`}
+          <div className="flex flex-wrap items-center gap-4 text-[13px] text-[var(--fg-2)]">
+            <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                disabled={!hasBark}
+                checked={hasBark && newSlotAlert}
+                onChange={e => setNewSlotAlert(e.target.checked)}
               />
-            </button>
+              <span>
+                {isZh
+                  ? '空出跟单名额时持续响铃（抢车位）'
+                  : 'Urgent alarm when copy slot opens'}
+              </span>
+            </label>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                disabled={!hasBark}
+                checked={hasBark && newTradeAlert}
+                onChange={e => setNewTradeAlert(e.target.checked)}
+              />
+              <span>
+                {isZh
+                  ? '带单员新开仓 / 平仓时推送信号（盯盘跟单）'
+                  : 'Chime alert on new open / close trades'}
+              </span>
+            </label>
           </div>
         </form>
 
@@ -518,82 +551,6 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
             {feedback.text}
           </div>
         )}
-
-        {/* Collapsible Beginner Guide */}
-        <AnimatedCollapse open={guideOpen}>
-          <div
-            data-testid="watcher-howto-guide"
-            className="otl-surface-2 p-4 space-y-3 text-[13px]"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="font-semibold text-[var(--fg)]">
-                {isZh
-                  ? '新手三步上手：怎么找到想跟单 / 想盯盘的交易员链接？'
-                  : 'Quick Guide: How to get a Lead Trader Link or Portfolio ID'}
-              </div>
-              <span className="text-[var(--fg-3)]">
-                {isZh
-                  ? '可直接整段粘贴 App 分享文字，也支持一次粘贴多条链接/ID'
-                  : 'Supports full share text or multiple URLs/IDs'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-[var(--fg-2)]">
-              <div className="space-y-1.5">
-                <div className="font-semibold text-[var(--fg)]">
-                  {isZh ? '方法一：从手机币安 App 获取（最简单）' : 'Method 1: From Binance Mobile App'}
-                </div>
-                <ol className="m-0 pl-4 space-y-1 list-decimal leading-relaxed">
-                  <li>
-                    {isZh
-                      ? '打开币安 App → 点击底部「合约」→ 顶部切到「跟单」广场；'
-                      : 'Open Binance App → Futures → Copy Trading;'}
-                  </li>
-                  <li>
-                    {isZh
-                      ? '点进你想抢车位或盯盘的带单员主页，点右上角「分享图标」→「复制链接」；'
-                      : 'Open the trader’s profile, tap Share (top-right) → Copy Link;'}
-                  </li>
-                  <li>
-                    {isZh
-                      ? '无需删改任何文字，直接把整段分享内容粘贴到上方输入框，点「添加盯盘目标」即可自动提取。'
-                      : 'Paste the entire copied text into the input box above and click Add Trader.'}
-                  </li>
-                </ol>
-              </div>
-
-              <div className="space-y-1.5">
-                <div className="font-semibold text-[var(--fg)]">
-                  {isZh ? '方法二：从电脑浏览器网页获取' : 'Method 2: From Desktop Browser'}
-                </div>
-                <ol className="m-0 pl-4 space-y-1 list-decimal leading-relaxed">
-                  <li>
-                    {isZh
-                      ? '在浏览器打开币安合约跟单详情页，地址栏格式形如：'
-                      : 'Open any public Binance lead trader page with URL like:'}
-                    <code className="block mt-1 px-2 py-1 rounded bg-[var(--bg)] border border-[var(--border)] text-[13px] font-mono break-all text-[var(--fg)]">
-                      https://www.binance.com/zh-CN/copy-trading/lead-details/3988776655443322110
-                    </code>
-                  </li>
-                  <li>
-                    {isZh
-                      ? '复制整条网址（或只复制末尾那串 15～22 位数字 ID）粘贴至上方即可。'
-                      : 'Copy & paste either the full URL or the 15–22 digit number at the end.'}
-                  </li>
-                </ol>
-              </div>
-            </div>
-
-            <div className="inline-flex items-start gap-1.5 text-[var(--fg-3)]">
-              <Info size={14} className="shrink-0 mt-0.5" />
-              <span>
-                {isZh
-                  ? '首次添加交易员时会自动静默对齐过往订单水位（绝不补发旧单打扰手机），仅从添加后的新开/平仓动作及空余名额开始推送。'
-                  : 'Historical orders are anchored silently upon adding; alerts only fire on newly opened slots or fresh trades.'}
-              </span>
-            </div>
-          </div>
-        </AnimatedCollapse>
       </section>
 
       {/* Watched Lead Traders List */}
@@ -619,15 +576,11 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
               <section
                 key={item.portfolio_id}
                 data-testid={`watcher-card-${item.portfolio_id}`}
-                className="py-5 space-y-3"
+                className="py-5 space-y-3.5"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2.5 min-w-0 text-[13px]">
-                    <VenueBadge venueId={item.venue || 'binance'} name={isZh ? '币安带单' : 'Binance Copy'} />
-                    <span className="text-[16px] font-semibold text-[var(--fg)]">
-                      {item.nickname}
-                    </span>
-                    <span className="font-mono text-[var(--fg-3)]">#{idTail}</span>
+                    <h3 className="t-h2">{item.nickname}</h3>
 
                     {!item.enabled ? (
                       <span className="text-[var(--fg-3)]">
@@ -640,16 +593,17 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                     ) : item.has_open_slot ? (
                       <span
                         data-testid={`slot-open-badge-${item.portfolio_id}`}
-                        className="font-semibold txt-pos"
+                        className="inline-flex items-center gap-1.5 font-semibold txt-pos"
                       >
-                        ·{' '}
-                        {isZh
-                          ? `空出 ${item.available_slots} 个名额！(${item.current_copy_count}/${item.max_copy_count})`
-                          : `${item.available_slots} Slots Open! (${item.current_copy_count}/${item.max_copy_count})`}
+                        <span className="otl-venue-dot" style={{ background: 'var(--pos)' }} />
+                        <span>
+                          {isZh
+                            ? `空出 ${item.available_slots} 个名额 (${item.current_copy_count} / ${item.max_copy_count})`
+                            : `${item.available_slots} Slots Open (${item.current_copy_count} / ${item.max_copy_count})`}
+                        </span>
                       </span>
                     ) : item.max_copy_count > 0 ? (
                       <span className="text-[var(--fg-2)]">
-                        ·{' '}
                         {isZh
                           ? `满员盯盘中 (${item.current_copy_count} / ${item.max_copy_count})`
                           : `Full · Watching (${item.current_copy_count} / ${item.max_copy_count})`}
@@ -660,40 +614,43 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                       </span>
                     )}
 
-                    {item.min_copy_usd > 0 && (
-                      <span className="text-[var(--fg-3)]">
-                        · {isZh ? `起跟 ${item.min_copy_usd.toFixed(0)} U` : `Min ${item.min_copy_usd.toFixed(0)} U`}
-                        {item.profit_sharing_rate
-                          ? isZh
-                            ? ` · 分润 ${Number(item.profit_sharing_rate).toFixed(0)}%`
-                            : ` · Share ${Number(item.profit_sharing_rate).toFixed(0)}%`
-                          : ''}
-                      </span>
-                    )}
+                    <span className="text-[var(--fg-3)]">
+                      {isZh ? '币安带单' : 'Binance Copy'}
+                      {item.min_copy_usd > 0
+                        ? isZh
+                          ? ` · 起跟 ${item.min_copy_usd.toLocaleString()} U`
+                          : ` · Min ${item.min_copy_usd.toLocaleString()} U`
+                        : ''}
+                      {item.profit_sharing_rate
+                        ? isZh
+                          ? ` · 分润 ${Number(item.profit_sharing_rate).toFixed(0)}%`
+                          : ` · Share ${Number(item.profit_sharing_rate).toFixed(0)}%`
+                        : ''}
+                      {` · #${idTail}`}
+                    </span>
 
                     <a
                       href={item.lead_url}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline"
+                      className="font-medium text-[var(--accent)] hover:underline"
                     >
-                      <span>{isZh ? '带单主页' : 'Profile'}</span>
-                      <ExternalLink size={12} />
+                      {isZh ? '带单主页 ↗' : 'Profile ↗'}
                     </a>
 
                     <button
                       type="button"
                       data-testid={`copy-trader-link-${item.portfolio_id}`}
                       onClick={() => void copyLinkSafe(item.portfolio_id, item.lead_url)}
-                      className="otl-btn-ghost h-7 px-2"
+                      className="otl-btn-ghost h-6 px-1.5"
                       title={item.lead_url}
                     >
                       {copiedId === item.portfolio_id ? <Check size={12} /> : <Copy size={12} />}
                       <span>
                         {copiedId === item.portfolio_id
                           ? isZh
-                            ? '已复制链接'
-                            : 'Copied'
+                            ? '已复制 ✓'
+                            : 'Copied ✓'
                           : isZh
                             ? '复制链接'
                             : 'Copy Link'}
@@ -702,7 +659,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   </div>
 
                   {!status?.demo_mode && (
-                    <div className="flex flex-wrap items-center gap-3 text-[13px]">
+                    <div className="flex flex-wrap items-center gap-3.5 text-[13px]">
                       {!hasBark && (
                         <span className="text-[var(--fg-3)]">{isZh ? '手机提醒待配置' : 'Set up Bark for mobile alerts'}</span>
                       )}
@@ -758,42 +715,39 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                         data-testid={`test-ring-${item.portfolio_id}`}
                         disabled={!hasBark || testingId === item.portfolio_id}
                         onClick={() => void handleTestRing(item.portfolio_id)}
-                        className="otl-btn h-7 px-2.5"
+                        className="otl-btn"
                       >
-                        <Bell size={12} />
-                        <span>
-                          {testingId === item.portfolio_id
-                            ? isZh
-                              ? '推送中…'
-                              : 'Sending…'
-                            : isZh
-                              ? '测试响铃'
-                              : 'Test Ring'}
-                        </span>
+                        {testingId === item.portfolio_id
+                          ? isZh
+                            ? '推送中…'
+                            : 'Sending…'
+                          : isZh
+                            ? '测试响铃'
+                            : 'Test Ring'}
                       </button>
 
                       <button
                         type="button"
                         data-testid={`remove-watcher-${item.portfolio_id}`}
                         onClick={() => void handleDelete(item.portfolio_id, item.nickname)}
-                        className="otl-btn h-7 w-7 px-0 text-[var(--fg-3)] hover:text-[var(--err)]"
+                        className="otl-btn text-[var(--fg-3)] hover:text-[var(--err)]"
                         title={isZh ? '移除该盯盘目标' : 'Remove watched trader'}
                       >
-                        <Trash2 size={13} />
+                        {isZh ? '移除' : 'Remove'}
                       </button>
                     </div>
                   )}
                 </div>
 
                 {(item.probe_error || item.probe_error_zh) && (
-                  <div className="otl-status-err px-3 py-2 rounded-md text-[13px]">
+                  <div className="pl-3 border-l-2 border-[var(--err)] text-[13px] text-[var(--err)]">
                     {isZh ? item.probe_error_zh || item.probe_error : item.probe_error}
                     {item.slot_updated_at_ms ? (isZh ? ' · 上次名额数据 ' : ' · Last slot data ') + new Date(item.slot_updated_at_ms).toLocaleString(locale) : ''}
                   </div>
                 )}
 
                 {item.trade_stale && (
-                  <div className="otl-status-err px-3 py-2 rounded-md text-[13px]">
+                  <div className="pl-3 border-l-2 border-[var(--err)] text-[13px] text-[var(--err)]">
                     {isZh ? '公开成交数据暂不可用。' : 'Public trade data unavailable. '}
                     {item.trade_updated_at_ms
                       ? (isZh ? '上次成功读取于 ' : 'Last updated ') + new Date(item.trade_updated_at_ms).toLocaleString(locale)
@@ -807,41 +761,47 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                 )}
 
                 {/* Inferred Live Open Positions Strip */}
-                <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
-                  <div className="flex flex-wrap items-center gap-2.5">
-                    <span className="font-medium text-[var(--fg-2)]">
-                      {isZh ? '推算实时在途持仓：' : 'Inferred Open Positions:'}
+                <div className="pt-3 border-t border-[var(--border)] flex flex-wrap items-center justify-between gap-3 text-[13px]">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <span className="text-[var(--fg-3)]">
+                      {isZh ? '推算实时在途持仓' : 'Inferred Live Position'}
                     </span>
                     {item.inferred_positions.length > 0 ? (
                       item.inferred_positions.map(pos => (
                         <span
                           key={`${item.portfolio_id}-${pos.symbol}-${pos.position_side}`}
-                          className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-[var(--surface-2)] border border-[var(--border)] text-[13px]"
+                          className="inline-flex items-center gap-2 flex-wrap"
                         >
                           <InstrumentMark instrument={pos.symbol} exchange="BINANCE" />
-                          <b className="text-[var(--fg)]">{pos.symbol}</b>
+                          <b className="text-[14px] text-[var(--fg)]">{pos.symbol}</b>
                           <span className={`font-semibold ${pos.position_side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                             {isZh ? pos.side_zh : pos.position_side}
                           </span>
-                          <span>{pos.qty}</span>
-                          <span className="text-[var(--fg-3)]">
+                          <span className="text-[14px] text-[var(--fg)]">{pos.qty}</span>
+                          <span className="text-[var(--fg-3)] sensitive">
                             @{fmtPrice(pos.avg_entry_price)} ({cur.money(pos.notional_usd, 0)})
                           </span>
                           {pos.mark_price > 0 && (
-                            <span className={`font-semibold ${pnlTone(pos.unrealized_pnl_usd)}`}>
+                            <b className={`sensitive ${pnlTone(pos.unrealized_pnl_usd)}`}>
                               {cur.signedMoney(pos.unrealized_pnl_usd)} ({fmtSignedPct(pos.unrealized_roi_pct)})
-                            </span>
+                            </b>
                           )}
                         </span>
                       ))
                     ) : (
-                      <span className="text-[var(--fg-3)]">
-                        {isZh ? '暂无可展示的推算持仓' : 'No inferred positions to display'}
-                        {item.recent_orders[0]
-                          ? isZh
-                            ? ` · 最近动作：${item.recent_orders[0].time_bj} ${item.recent_orders[0].symbol} ${item.recent_orders[0].action_zh} ${item.recent_orders[0].executed_qty} @ ${fmtPrice(item.recent_orders[0].avg_price)}`
-                            : ` · Last: ${item.recent_orders[0].time_bj} ${item.recent_orders[0].symbol} ${item.recent_orders[0].action_en || item.recent_orders[0].action_zh}`
-                          : ''}
+                      <span className="inline-flex items-center gap-2 flex-wrap text-[var(--fg-3)]">
+                        <span>{isZh ? '暂无可展示的推算持仓' : 'No inferred positions to display'}</span>
+                        {item.recent_orders[0] && (
+                          <>
+                            <span>· {isZh ? '最近动作：' : 'Last: '}</span>
+                            <InstrumentMark instrument={item.recent_orders[0].symbol} exchange="BINANCE" />
+                            <span>
+                              {isZh
+                                ? `${item.recent_orders[0].time_bj} ${item.recent_orders[0].symbol} ${item.recent_orders[0].action_zh} ${item.recent_orders[0].executed_qty} @ ${fmtPrice(item.recent_orders[0].avg_price)}`
+                                : `${item.recent_orders[0].time_bj} ${item.recent_orders[0].symbol} ${item.recent_orders[0].action_en || item.recent_orders[0].action_zh}`}
+                            </span>
+                          </>
+                        )}
                       </span>
                     )}
                   </div>
@@ -856,13 +816,14 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   {item.recent_orders.length > 0 && (
                     <button
                       type="button"
+                      data-no-press="true"
                       onClick={() =>
                         setExpandedOrders(prev => ({
                           ...prev,
                           [item.portfolio_id]: !prev[item.portfolio_id],
                         }))
                       }
-                      className="inline-flex items-center gap-1 text-[13px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
+                      className="inline-flex items-center gap-1 text-[13px] text-[var(--fg-2)] hover:text-[var(--fg)] hover:underline bg-transparent border-0 p-0 cursor-pointer"
                     >
                       <span>
                         {showOrders

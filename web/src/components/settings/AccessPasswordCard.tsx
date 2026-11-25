@@ -86,18 +86,11 @@ export function AccessPasswordCard({
   }
 
   return (
-    <div data-testid="security-password-card" className="py-6 space-y-3.5">
+    <div data-testid="security-password-card" className="py-6 space-y-3">
       <div className="flex items-baseline justify-between gap-2">
-        <div>
-          <h3 className="t-h2">
-            {isZh ? '安全与本地访问密码' : 'Security & Local Access Password'}
-          </h3>
-          <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">
-            {isZh
-              ? '部署到 NAS 或局域网时建议开启，密码仅以 scrypt 加盐哈希保存在本地'
-              : 'Recommended on NAS / LAN · salted scrypt hash stored exclusively on disk'}
-          </p>
-        </div>
+        <h3 className="t-h2">
+          {isZh ? '安全与本地访问密码' : 'Security & Local Access Password'}
+        </h3>
         <span
           className={`text-[13px] font-medium shrink-0 ${
             authEnabled ? 'text-[var(--ok)]' : 'text-[var(--fg-3)]'
@@ -113,7 +106,13 @@ export function AccessPasswordCard({
         </span>
       </div>
 
-      <div className="space-y-2 pt-0.5">
+      <p className="m-0 text-[13px] text-[var(--fg-3)]">
+        {isZh
+          ? '部署到 NAS 或局域网时建议开启，密码仅以 scrypt 加盐哈希保存在本地磁盘'
+          : 'Recommended on NAS / LAN · salted scrypt hash stored exclusively on disk'}
+      </p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-0.5">
         {authEnabled && (
           <input
             type="password"
@@ -152,7 +151,7 @@ export function AccessPasswordCard({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
         <div className="flex items-center gap-2">
           {authEnabled && onLockNow && (
             <button

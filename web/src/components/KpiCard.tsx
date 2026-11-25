@@ -12,6 +12,21 @@ interface KpiCardProps {
   active?: boolean
 }
 
+export function formatDisplayKpiValue(raw: ReactNode): ReactNode {
+  if (typeof raw !== 'string') return raw
+  const match = /^([^\d]*)([\d,]+)(\.\d+)?(\s+U)?$/.exec(raw)
+  if (!match) return raw
+  const [, prefix, intPart, fracPart, unitPart] = match
+  return (
+    <>
+      {prefix}
+      {intPart}
+      {fracPart && <span className="otl-num-frac">{fracPart}</span>}
+      {unitPart && <span className="otl-num-unit">{unitPart}</span>}
+    </>
+  )
+}
+
 export function KpiCard({
   label,
   badge,
@@ -47,11 +62,11 @@ export function KpiCard({
         {badge}
       </div>
       <div
-        className={`t-kpi whitespace-nowrap flex items-baseline gap-1 ${valueClass} ${
+        className={`t-kpi whitespace-nowrap ${valueClass} ${
           sensitive ? 'sensitive' : ''
         }`}
       >
-        {value}
+        {formatDisplayKpiValue(value)}
       </div>
       <div className="text-[13px] text-[var(--fg-3)] leading-snug">{sub}</div>
     </div>

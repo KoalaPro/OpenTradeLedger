@@ -439,6 +439,15 @@ export default function App() {
               <TopBar
                 page={page}
                 demoMode={Boolean(data?.demo_mode)}
+                reconciledZero={Boolean(data && Math.abs(data.reconciliation.residual_usd) < 0.01)}
+                theme={settings.theme}
+                onChangeTheme={next => void handleUpdateSettings({ theme: next })}
+                polarity={settings.polarity}
+                onTogglePolarity={() =>
+                  void handleUpdateSettings({
+                    polarity: settings.polarity === 'cn' ? 'global' : 'cn',
+                  })
+                }
                 privacyMode={privacyMode}
                 onTogglePrivacy={() => setPrivacyMode(v => !v)}
                 locale={settings.locale}
@@ -453,7 +462,7 @@ export default function App() {
                 onInspectErrors={() => navigateTo('settings')}
               />
 
-              <main className="flex-1 px-4 sm:px-7 pb-10 max-w-[1440px] w-full mx-auto">
+              <main className="flex-1 px-5 sm:px-8 pb-10 max-w-[1600px] w-full">
                 <AnimatedCollapse open={Boolean(visibleError)} innerClassName="pt-4">
                   <div
                     data-testid="global-error-banner"

@@ -3,8 +3,8 @@ import { EquityChart } from '../components/EquityChart'
 import { FloatingModal } from '../components/FloatingModal'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
-import { SegmentedPills } from '../components/SegmentedPills'
 import { SpotWalletTable, formatWalletType } from '../components/SpotWalletTable'
+import { UnderlineTabs } from '../components/UnderlineTabs'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
@@ -130,10 +130,10 @@ export function OverviewPage({
           }
           active={showEquity}
           onClick={() => setOpenModal(d => (d === 'equity' ? null : 'equity'))}
-          value={cur.plainMoney(s.total_equity_usd)}
+          value={cur.money(s.total_equity_usd)}
           sub={
             <span>
-              {t('kpi_net_principal')} <span className="sensitive">{cur.plainMoney(s.net_principal_usd)}</span>
+              {t('kpi_net_principal')} <span className="sensitive">{cur.money(s.net_principal_usd)}</span>
             </span>
           }
         />
@@ -148,7 +148,7 @@ export function OverviewPage({
           }
           active={showReconcile}
           onClick={() => setOpenModal(d => (d === 'reconcile' ? null : 'reconcile'))}
-          value={cur.signedPlainMoney(s.whole_net_pnl_usd)}
+          value={cur.signedMoney(s.whole_net_pnl_usd)}
           valueClass={pnlTone(s.whole_net_pnl_usd)}
           sub={
             <span>
@@ -169,7 +169,7 @@ export function OverviewPage({
         <KpiCard
           testId="kpi-futures-pnl"
           label={t('kpi_futures_pnl')}
-          value={cur.signedPlainMoney(s.futures_net_pnl_usd)}
+          value={cur.signedMoney(s.futures_net_pnl_usd)}
           valueClass={pnlTone(s.futures_net_pnl_usd)}
           sub={
             <span>
@@ -182,7 +182,7 @@ export function OverviewPage({
         <KpiCard
           testId="kpi-fee-relief"
           label={t('kpi_fee_saved')}
-          value={cur.signedPlainMoney(s.total_rebate_usd + s.total_discount_saved_usd)}
+          value={cur.signedMoney(s.total_rebate_usd + s.total_discount_saved_usd)}
           valueClass="txt-pos"
           sub={
             <span>
@@ -530,16 +530,15 @@ export function OverviewPage({
 
       {/* Flush Unified Open Holdings */}
       <section data-testid="overview-holdings" className="py-6 space-y-3">
-        <div className="pb-2.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-baseline gap-2.5">
+        <div className="border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-baseline gap-2.5 py-2">
             <h2 className="t-h2">{t('ov_open_positions')}</h2>
             <span className="text-[13px] text-[var(--fg-3)]">{totalHoldingsCount}</span>
           </div>
 
-          <div className="flex items-center flex-wrap gap-4">
+          <div className="flex items-center flex-wrap gap-5">
             {activeCategoriesCount > 1 && (
-              <SegmentedPills
-                size="sm"
+              <UnderlineTabs
                 value={holdingTab}
                 onChange={setHoldingTab}
                 options={holdingFilterOptions}
@@ -548,10 +547,10 @@ export function OverviewPage({
             {(spotTotalVal > 0 || wallets.length > 0) && (
               <button
                 type="button"
-                className="text-[13px] font-medium text-[var(--accent)] hover:underline cursor-pointer"
+                className="text-[13px] font-medium text-[var(--accent)] hover:underline cursor-pointer py-2"
                 onClick={() => setOpenModal('wallet')}
               >
-                {locale === 'en' ? 'Wallet balances' : '钱包明细'}
+                {locale === 'en' ? 'Wallet Balances' : '钱包明细'}
               </button>
             )}
           </div>

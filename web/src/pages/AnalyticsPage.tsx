@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { AnimatedCollapse } from '../components/AnimatedCollapse'
 import { EquityChart } from '../components/EquityChart'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
 import { MonthlyCalendar } from '../components/MonthlyCalendar'
-import { SegmentedPills } from '../components/SegmentedPills'
+import { UnderlineTabs } from '../components/UnderlineTabs'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
@@ -93,69 +94,65 @@ export function AnalyticsPage({
 
   return (
     <div data-testid="analytics-page" className="otl-stagger">
-      {/* Custom Equity Goal Strip or Inline Setup Trigger */}
+      {/* Compact Single-Row Custom Equity Goal Strip or Inline Setup Trigger */}
       {data.goal && data.goal.enabled ? (
         <section
           data-testid="custom-goal-banner"
-          className="py-5 border-b border-[var(--border)]"
+          className="py-4 border-b border-[var(--border)]"
         >
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
-            <div className="md:col-span-5">
-              <div className="text-[13px] text-[var(--fg-2)]">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-baseline gap-3 text-[13px]">
+              <span className="text-[14px] font-semibold text-[var(--fg)]">
                 {data.goal.label || t('an_goal_default')}
-              </div>
-              <div className="flex items-baseline gap-3 mt-1 flex-wrap">
-                <span className="t-kpi sensitive">
-                  {data.goal.progress_pct.toFixed(1)}%
-                </span>
-                <span className="text-[13px] text-[var(--fg-2)] whitespace-nowrap sensitive">
-                  {cur.plainMoney(data.goal.current_equity_usd)} / {cur.money(data.goal.target_usd)}
-                </span>
-              </div>
+              </span>
+              <span className="text-[var(--fg-2)] whitespace-nowrap sensitive">
+                {cur.plainMoney(data.goal.current_equity_usd)} / {cur.money(data.goal.target_usd)} (
+                {data.goal.progress_pct.toFixed(1)}%)
+              </span>
+              <span className="text-[var(--fg-3)]">
+                {data.goal.is_reached ? t('an_goal_surplus') : t('an_goal_remaining')}{' '}
+                <b className="text-[var(--fg)] sensitive">
+                  {cur.money(data.goal.is_reached ? data.goal.surplus_usd : data.goal.remaining_usd)}
+                </b>{' '}
+                · {t('an_goal_today')}{' '}
+                <b className={`sensitive ${pnlTone(data.goal.today_delta_usd)}`}>
+                  {cur.signedMoney(data.goal.today_delta_usd)}
+                </b>
+              </span>
             </div>
-            <div className="md:col-span-7 flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2.5">
-                <div className="h-2 flex-1 rounded-full bg-[var(--track)] overflow-hidden">
-                  <div
-                    className="otl-bar-fill h-full rounded-full"
-                    style={{
-                      width: `${barReady ? Math.min(100, Math.max(0, data.goal.progress_pct)) : 0}%`,
-                      background: 'var(--accent)',
-                    }}
+
+            <div className="flex items-center gap-4 flex-1 max-w-[380px] min-w-[220px]">
+              <div className="h-1.5 flex-1 rounded-full bg-[var(--track)] overflow-hidden">
+                <div
+                  className="otl-bar-fill h-full rounded-full"
+                  style={{
+                    width: `${barReady ? Math.min(100, Math.max(0, data.goal.progress_pct)) : 0}%`,
+                    background: 'var(--accent)',
+                  }}
+                />
+              </div>
+              {onUpdateSettings && (
+                <button
+                  type="button"
+                  data-no-press="true"
+                  data-testid="edit-goal-btn"
+                  onClick={() => setEditingGoal(v => !v)}
+                  className="inline-flex items-center gap-1 text-[13px] font-medium text-[var(--accent)] hover:underline bg-transparent border-0 p-0 cursor-pointer shrink-0"
+                >
+                  <span>{locale === 'en' ? 'Edit Goal' : '调整目标'}</span>
+                  <ChevronDown
+                    size={13}
+                    className={`transition-transform duration-150 ${editingGoal ? 'rotate-180' : ''}`}
                   />
-                </div>
-                {onUpdateSettings && (
-                  <button
-                    type="button"
-                    data-testid="edit-goal-btn"
-                    onClick={() => setEditingGoal(v => !v)}
-                    className="otl-btn h-7 px-2.5"
-                  >
-                    {locale === 'en' ? 'Edit Goal' : '调整目标'}
-                  </button>
-                )}
-              </div>
-              <div className="flex items-center justify-between gap-3 text-[13px] text-[var(--fg-2)] flex-wrap">
-                <span className="whitespace-nowrap">
-                  {data.goal.is_reached ? t('an_goal_surplus') : t('an_goal_remaining')}:{' '}
-                  <b className="text-[var(--fg)] sensitive">
-                    {cur.money(data.goal.is_reached ? data.goal.surplus_usd : data.goal.remaining_usd)}
-                  </b>
-                </span>
-                <span className="whitespace-nowrap">
-                  {t('an_goal_today')}:{' '}
-                  <b className={`sensitive ${pnlTone(data.goal.today_delta_usd)}`}>
-                    {cur.signedMoney(data.goal.today_delta_usd)}
-                  </b>
-                </span>
-              </div>
+                </button>
+              )}
             </div>
           </div>
 
           {onUpdateSettings && (
             <AnimatedCollapse
               open={editingGoal}
-              innerClassName="pt-4 mt-4 border-t border-[var(--border)] flex flex-wrap items-center gap-2.5"
+              innerClassName="pt-3.5 flex flex-wrap items-center gap-2.5"
             >
               <input
                 type="text"
@@ -192,8 +189,11 @@ export function AnalyticsPage({
         </section>
       ) : (
         onUpdateSettings && (
-          <div className="py-3 border-b border-[var(--border)]">
-            <div className="flex justify-end">
+          <div className="py-3.5 border-b border-[var(--border)]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-[13px] text-[var(--fg-3)]">
+                {locale === 'en' ? 'Custom equity goal bar is currently hidden' : '自定义净值目标进度条当前已隐藏'}
+              </span>
               <button
                 type="button"
                 data-testid="setup-goal-btn"
@@ -244,13 +244,13 @@ export function AnalyticsPage({
       <section className="otl-ledger-strip otl-kpi-grid">
         <KpiCard
           label={t('kpi_whole_pnl')}
-          value={cur.signedPlainMoney(activeWholePnl)}
+          value={cur.signedMoney(activeWholePnl)}
           valueClass={pnlTone(activeWholePnl)}
           sub={fmtSignedPct(activeWholeRoi)}
         />
         <KpiCard
           label={t('kpi_futures_pnl')}
-          value={cur.signedPlainMoney(s.futures_net_pnl_usd)}
+          value={cur.signedMoney(s.futures_net_pnl_usd)}
           valueClass={pnlTone(s.futures_net_pnl_usd)}
           sub={
             s.trade_count > 0
@@ -266,7 +266,7 @@ export function AnalyticsPage({
         />
         <KpiCard
           label={t('kpi_fee_saved')}
-          value={cur.signedPlainMoney(s.total_rebate_usd + s.total_discount_saved_usd)}
+          value={cur.signedMoney(s.total_rebate_usd + s.total_discount_saved_usd)}
           valueClass="txt-pos"
           sub={`${s.combined_relief_pct.toFixed(1)}%`}
         />
@@ -274,9 +274,17 @@ export function AnalyticsPage({
 
       {/* 7:5 Hairline Split: Equity Curve × Monthly PnL Calendar */}
       <section className="grid grid-cols-1 lg:grid-cols-12 border-b border-[var(--border)]">
-        <div className="lg:col-span-7 py-6 lg:pr-7 lg:border-r border-[var(--border)] flex flex-col gap-4">
-          <h2 className="t-h2">{t('an_curve_title')}</h2>
-          <EquityChart points={data.equity_curve} height={240} />
+        <div className="lg:col-span-7 py-6 lg:pr-7 lg:border-r border-[var(--border)] flex flex-col justify-between gap-4">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <h2 className="t-h2">{t('an_curve_title')}</h2>
+              <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('ov_curve_sub')}</p>
+            </div>
+            <span className={`t-h1 sensitive whitespace-nowrap ${pnlTone(activeWholePnl)}`}>
+              {cur.signedMoney(activeWholePnl)}
+            </span>
+          </div>
+          <EquityChart points={data.equity_curve} height={238} />
         </div>
         <div className="lg:col-span-5 py-6 lg:pl-7 border-t lg:border-t-0 border-[var(--border)]">
           <MonthlyCalendar
@@ -290,9 +298,9 @@ export function AnalyticsPage({
 
       {/* Flush Attribution Table */}
       <section className="py-6 space-y-3">
-        <div className="pb-2.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
-          <h2 className="t-h2">{t('an_attr_title')}</h2>
-          <SegmentedPills
+        <div className="border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
+          <h2 className="t-h2 py-2">{t('an_attr_title')}</h2>
+          <UnderlineTabs
             value={attrMode}
             onChange={setAttrMode}
             options={[

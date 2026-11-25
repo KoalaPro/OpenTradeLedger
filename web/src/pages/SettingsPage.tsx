@@ -3,11 +3,8 @@ import {
   AlertTriangle,
   Check,
   ExternalLink,
-  Pencil,
-  Plus,
   RefreshCw,
   ShieldCheck,
-  Trash2,
 } from 'lucide-react'
 import { AnimatedCollapse } from '../components/AnimatedCollapse'
 import { FloatingModal } from '../components/FloatingModal'
@@ -249,102 +246,116 @@ export function SettingsPage({
         onClearError={() => setErrorMsg('')}
       />
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 items-start">
+      {/* Chapter 1: 7:5 Balanced Top Split — Exchange Adapters × Display Preferences */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 border-b border-[var(--border)]">
         {/* Left 7 Columns: Read-Only Exchange Adapters */}
-        <section className="xl:col-span-7 py-6 xl:pr-7 xl:border-r border-[var(--border)] space-y-4">
-          <div>
+        <section className="xl:col-span-7 py-6 xl:pr-8 xl:border-r border-[var(--border)]">
+          <div className="pb-4 border-b border-[var(--border)]">
             <h2 className="t-h2">{t('set_ex_title')}</h2>
             <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('set_ex_sub')}</p>
           </div>
 
-          <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
+          <div className="divide-y divide-[var(--border)]">
             {adapters.map(ad => {
               const vStatus = getAdapterVisualStatus(ad)
               const errReason = isZh
                 ? ad.health?.error_reason_zh || ad.health?.error_reason || ''
                 : ad.health?.error_reason || ad.health?.error_reason_zh || ''
               const rawErr = ad.health?.raw_error || ''
+              const passLabel = ad.requires_passphrase ? t('set_passphrase_req') : 'GET-Only Signed API'
+              const maskedKey =
+                ad.configured && ad.credential
+                  ? ad.credential.label &&
+                    ad.credential.label.toLowerCase() !== ad.display_name.toLowerCase() &&
+                    ad.credential.label.toLowerCase() !== ad.venue_id.toLowerCase()
+                    ? `${ad.credential.label} · ${ad.credential.masked_api_key}`
+                    : ad.credential.masked_api_key
+                  : ''
 
               return (
                 <div
                   key={ad.venue_id}
                   data-testid={`adapter-card-${ad.venue_id}`}
-                  className="py-4 space-y-2.5"
+                  className="py-3.5 space-y-2"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2.5">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <VenueBadge
-                        venueId={ad.venue_id}
-                        name={locale === 'en' ? ad.display_name : ad.display_name_zh || ad.display_name}
-                      />
-                      <div className="min-w-0">
-                        <div
-                          className={`text-[14px] text-[var(--fg)] truncate ${
-                            ad.configured && ad.credential ? 'font-mono text-[13px]' : 'font-medium'
-                          }`}
-                        >
-                          {ad.configured && ad.credential
-                            ? ad.credential.label &&
-                              ad.credential.label.toLowerCase() !== ad.display_name.toLowerCase() &&
-                              ad.credential.label.toLowerCase() !== ad.venue_id.toLowerCase()
-                              ? `${ad.credential.label} · ${ad.credential.masked_api_key}`
-                              : ad.credential.masked_api_key
-                            : vStatus === 'archived'
-                              ? isZh
-                                ? '本地历史记录已封存（API 已解绑）'
-                                : 'Local history archived (API unbound)'
-                              : ad.api_base_url}
-                        </div>
-                        <div className="text-[13px] text-[var(--fg-3)]">
-                          {ad.requires_passphrase ? t('set_passphrase_req') : 'GET-Only Signed API'}
-                        </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <VenueBadge
+                          strong
+                          venueId={ad.venue_id}
+                          name={locale === 'en' ? ad.display_name : ad.display_name_zh || ad.display_name}
+                        />
+                        {ad.configured && vStatus === 'connected' && (
+                          <span
+                            data-testid={`adapter-status-${ad.venue_id}`}
+                            className="inline-flex items-center gap-1.5 text-[13px] text-[var(--ok)]"
+                          >
+                            <span className="otl-venue-dot" style={{ background: 'var(--ok)' }} />
+                            {t('set_connected')}
+                          </span>
+                        )}
+                        {ad.configured && vStatus === 'error' && (
+                          <span
+                            data-testid={`adapter-status-${ad.venue_id}`}
+                            className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--err)]"
+                          >
+                            <span className="otl-venue-dot" style={{ background: 'var(--err)' }} />
+                            <span>{isZh ? '连接报错' : 'API Error'}</span>
+                          </span>
+                        )}
+                        {ad.configured && vStatus === 'unverified' && (
+                          <span
+                            data-testid={`adapter-status-${ad.venue_id}`}
+                            className="text-[13px] font-medium text-[var(--warn)]"
+                          >
+                            · {isZh ? '待验证' : 'Unverified'}
+                          </span>
+                        )}
+                        {ad.configured && vStatus === 'disabled' && (
+                          <span
+                            data-testid={`adapter-status-${ad.venue_id}`}
+                            className="text-[13px] text-[var(--fg-3)]"
+                          >
+                            · {isZh ? '已停用' : 'Disabled'}
+                          </span>
+                        )}
+                        {!ad.configured && vStatus === 'archived' && (
+                          <span
+                            data-testid={`adapter-status-${ad.venue_id}`}
+                            className="text-[13px] text-[var(--fg-3)]"
+                          >
+                            · {isZh ? '已封存' : 'Archived'}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="text-[13px] text-[var(--fg-3)] mt-0.5 truncate">
+                        {maskedKey ? (
+                          <>
+                            <span className="font-mono text-[var(--fg-2)]">{maskedKey}</span> · {passLabel}
+                          </>
+                        ) : vStatus === 'archived' ? (
+                          isZh ? (
+                            '本地历史记录已封存（API 已解绑）'
+                          ) : (
+                            'Local history archived (API unbound)'
+                          )
+                        ) : (
+                          `${ad.api_base_url} · ${passLabel}`
+                        )}
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2 flex-wrap">
                       {ad.configured ? (
                         <>
-                          {vStatus === 'connected' && (
-                            <span
-                              data-testid={`adapter-status-${ad.venue_id}`}
-                              className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[var(--ok)] mr-1"
-                            >
-                              <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                              {t('set_connected')}
-                            </span>
-                          )}
-                          {vStatus === 'error' && (
-                            <span
-                              data-testid={`adapter-status-${ad.venue_id}`}
-                              className="inline-flex items-center gap-1 text-[13px] font-medium text-[var(--err)] mr-1"
-                            >
-                              <AlertTriangle size={13} />
-                              <span>{isZh ? '连接报错' : 'API Error'}</span>
-                            </span>
-                          )}
-                          {vStatus === 'unverified' && (
-                            <span
-                              data-testid={`adapter-status-${ad.venue_id}`}
-                              className="text-[13px] font-medium text-[var(--warn)] mr-1"
-                            >
-                              {isZh ? '待验证' : 'Unverified'}
-                            </span>
-                          )}
-                          {vStatus === 'disabled' && (
-                            <span
-                              data-testid={`adapter-status-${ad.venue_id}`}
-                              className="text-[13px] text-[var(--fg-3)] mr-1"
-                            >
-                              {isZh ? '已停用' : 'Disabled'}
-                            </span>
-                          )}
-
                           <button
                             type="button"
                             data-testid={`test-adapter-${ad.venue_id}`}
                             disabled={busyVenue === ad.venue_id}
                             onClick={() => void handleTest(ad.venue_id, vStatus === 'error')}
-                            className="otl-btn h-7 px-2.5"
+                            className="otl-btn"
                           >
                             {busyVenue === ad.venue_id
                               ? isZh
@@ -369,10 +380,9 @@ export function SettingsPage({
                               setPassphrase('')
                             }}
                             title={isZh ? '修改或更新 API 密钥' : 'Update API credentials'}
-                            className="otl-btn h-7 px-2.5 text-[var(--fg-2)]"
+                            className="otl-btn"
                           >
-                            <Pencil size={12} />
-                            <span>{isZh ? '改密钥' : 'Edit'}</span>
+                            {isZh ? '改密钥' : 'Edit'}
                           </button>
 
                           <button
@@ -383,20 +393,14 @@ export function SettingsPage({
                               setKeepHistoryOnDelete(true)
                               setDeletingVenue(ad.venue_id)
                             }}
-                            className="otl-btn h-7 w-7 px-0 text-[var(--fg-3)] hover:text-[var(--err)]"
+                            className="otl-btn text-[var(--fg-3)] hover:text-[var(--err)]"
                             aria-label={t('set_remove')}
                           >
-                            <Trash2 size={13} />
+                            {t('set_remove')}
                           </button>
                         </>
                       ) : vStatus === 'archived' ? (
                         <>
-                          <span
-                            data-testid={`adapter-status-${ad.venue_id}`}
-                            className="text-[13px] text-[var(--fg-3)] mr-1"
-                          >
-                            {isZh ? '已封存' : 'Archived'}
-                          </span>
                           <button
                             type="button"
                             data-testid={`configure-adapter-${ad.venue_id}`}
@@ -408,10 +412,9 @@ export function SettingsPage({
                               setApiSecret('')
                               setPassphrase('')
                             }}
-                            className="otl-btn h-7 px-2.5"
+                            className="otl-btn"
                           >
-                            <Plus size={13} />
-                            <span>{isZh ? '重新绑定 API' : 'Re-bind API'}</span>
+                            {isZh ? '重新绑定 API' : 'Rebind API'}
                           </button>
                           <button
                             type="button"
@@ -422,10 +425,10 @@ export function SettingsPage({
                               setKeepHistoryOnDelete(false)
                               setDeletingVenue(ad.venue_id)
                             }}
-                            className="otl-btn h-7 w-7 px-0 text-[var(--fg-3)] hover:text-[var(--err)]"
+                            className="otl-btn text-[var(--fg-3)] hover:text-[var(--err)]"
                             aria-label={isZh ? '清空封存数据' : 'Purge archived data'}
                           >
-                            <Trash2 size={13} />
+                            {isZh ? '清空封存' : 'Purge'}
                           </button>
                         </>
                       ) : (
@@ -440,10 +443,9 @@ export function SettingsPage({
                             setApiSecret('')
                             setPassphrase('')
                           }}
-                          className="otl-btn h-7 px-2.5"
+                          className="otl-btn"
                         >
-                          <Plus size={13} />
-                          <span>{t('set_add_btn')}</span>
+                          {t('set_add_btn')}
                         </button>
                       )}
                     </div>
@@ -452,14 +454,11 @@ export function SettingsPage({
                   {vStatus === 'error' && errReason && (
                     <div
                       data-testid={`adapter-error-box-${ad.venue_id}`}
-                      className="otl-status-err rounded-md px-3 py-2.5 text-[13px] space-y-1"
+                      className="pl-3 border-l-2 border-[var(--err)] text-[13px] text-[var(--err)] space-y-0.5"
                     >
-                      <div className="font-semibold flex items-start gap-1.5">
-                        <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-                        <span>{errReason}</span>
-                      </div>
+                      <div className="font-medium">{errReason}</div>
                       {rawErr && !errReason.includes(rawErr) && (
-                        <div className="opacity-85 font-mono break-all pl-5">
+                        <div className="opacity-85 font-mono break-all">
                           {rawErr}
                         </div>
                       )}
@@ -471,8 +470,238 @@ export function SettingsPage({
           </div>
         </section>
 
-        {/* Right 5 Columns: Security, Version OTA, Preferences, AI & Bark */}
-        <section className="xl:col-span-5 xl:pl-7 border-t xl:border-t-0 border-[var(--border)] divide-y divide-[var(--border)]">
+        {/* Right 5 Columns: Display Preferences & Module Toggles (height-matched with left 7 venues) */}
+        <section className="xl:col-span-5 py-6 xl:pl-8 border-t xl:border-t-0 border-[var(--border)] space-y-3.5">
+          <h2 className="t-h2">{t('set_pref_title')}</h2>
+
+          {/* Language */}
+          <div className="flex items-center justify-between gap-2 text-[14px]">
+            <span className="text-[var(--fg-2)]">{t('set_lang')}</span>
+            <SegmentedPills
+              value={settings.locale}
+              onChange={(l: Locale) => void onUpdateSettings({ locale: l })}
+              options={[
+                { value: 'zh-CN', label: '简体中文' },
+                { value: 'en', label: 'English' },
+              ]}
+            />
+          </div>
+
+          {/* Theme */}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[14px]">
+            <span className="text-[var(--fg-2)]">{t('set_theme')}</span>
+            <SegmentedPills
+              size="sm"
+              value={settings.theme}
+              onChange={(th: Theme) => void onUpdateSettings({ theme: th })}
+              options={[
+                { value: 'obsidian', label: t('theme_obsidian'), testId: 'theme-obsidian' },
+                { value: 'ocean', label: t('theme_ocean'), testId: 'theme-ocean' },
+                { value: 'light', label: t('theme_light'), testId: 'theme-light' },
+              ]}
+            />
+          </div>
+
+          {/* Polarity */}
+          <div className="flex items-center justify-between gap-2 text-[14px]">
+            <span className="text-[var(--fg-2)]">{t('set_polarity')}</span>
+            <SegmentedPills
+              value={settings.polarity}
+              onChange={(p: Polarity) => void onUpdateSettings({ polarity: p })}
+              options={[
+                { value: 'cn', label: t('polarity_cn'), testId: 'polarity-cn' },
+                { value: 'global', label: t('polarity_global'), testId: 'polarity-global' },
+              ]}
+            />
+          </div>
+
+          {/* Display Currency */}
+          <div className="space-y-1 text-[14px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[var(--fg-2)]">{t('set_currency')}</span>
+              <select
+                aria-label={t('set_currency')}
+                data-testid="settings-currency-select"
+                value={settings.display_currency || 'USDT'}
+                onChange={e =>
+                  void onUpdateSettings({ display_currency: e.target.value as CurrencyCode })
+                }
+                className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
+              >
+                {CURRENCY_OPTIONS.map(opt => (
+                  <option key={opt.code} value={opt.code}>
+                    {locale === 'en' ? opt.labelEn : opt.labelZh}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {cur.code !== 'USDT' && cur.code !== 'USD' && (
+              <div className="text-[13px] text-[var(--fg-3)] text-right">
+                {t('set_fx_live')}: 1 USDT ≈ {cur.symbol}
+                {cur.rate.toFixed(cur.code === 'JPY' ? 2 : 4)}
+                {cur.fx.updated_at ? ` · ${cur.fx.updated_at}` : ''}
+              </div>
+            )}
+          </div>
+
+          {/* Optional Modules & Privacy Default */}
+          <div className="space-y-3 pt-1 text-[14px]">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[var(--fg-2)]">{t('set_privacy_default')}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-label={t('set_privacy_default')}
+                aria-checked={Boolean(settings.privacy_mode)}
+                data-testid="privacy-default-switch"
+                onClick={() => void onUpdateSettings({ privacy_mode: !settings.privacy_mode })}
+                className="otl-switch"
+              >
+                <span className="otl-switch-knob" />
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[var(--fg-2)]">{t('set_mod_watcher')}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-label={t('set_mod_watcher')}
+                aria-checked={settings.modules.copy_watcher !== false}
+                onClick={() =>
+                  void onUpdateSettings({
+                    modules: { copy_watcher: !(settings.modules.copy_watcher !== false) },
+                  })
+                }
+                className="otl-switch"
+              >
+                <span className="otl-switch-knob" />
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[var(--fg-2)]">{t('set_mod_copy')}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-label={t('set_mod_copy')}
+                aria-checked={Boolean(settings.modules.copy_trading)}
+                onClick={() =>
+                  void onUpdateSettings({ modules: { copy_trading: !settings.modules.copy_trading } })
+                }
+                className="otl-switch"
+              >
+                <span className="otl-switch-knob" />
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[var(--fg-2)]">{t('set_mod_stock')}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-label={t('set_mod_stock')}
+                aria-checked={Boolean(settings.modules.stocks)}
+                onClick={() =>
+                  void onUpdateSettings({ modules: { stocks: !settings.modules.stocks } })
+                }
+                className="otl-switch"
+              >
+                <span className="otl-switch-knob" />
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[var(--fg-2)]">{t('set_goal_title')}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-label={t('set_goal_title')}
+                aria-checked={Boolean(settings.goal_enabled)}
+                onClick={() => {
+                  const nextOn = !settings.goal_enabled
+                  const patch: Record<string, unknown> = { goal_enabled: nextOn }
+                  if (nextOn && Number(goalInput) > 0) {
+                    patch.goal_target_usd = Number(goalInput)
+                  }
+                  void onUpdateSettings(patch)
+                }}
+                className="otl-switch"
+              >
+                <span className="otl-switch-knob" />
+              </button>
+            </div>
+            <AnimatedCollapse
+              open={Boolean(settings.goal_enabled)}
+              innerClassName="space-y-2 pt-1.5"
+            >
+              <input
+                type="text"
+                value={goalLabel}
+                onChange={e => setGoalLabel(e.target.value)}
+                placeholder={locale === 'en' ? 'Goal name (e.g. 2026 Target)' : '目标名称（如：阶段净值目标）'}
+                className="otl-input w-full"
+              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={goalInput}
+                  onChange={e => setGoalInput(e.target.value)}
+                  placeholder={t('set_goal_target')}
+                  className="otl-input flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const target = Number(goalInput)
+                    if (!Number.isFinite(target) || target <= 0) {
+                      setStatusMsg('')
+                      setErrorMsg(isZh ? '目标净值必须大于 0' : 'Target equity must be greater than zero')
+                      return
+                    }
+                    if (
+                      await onUpdateSettings({
+                        goal_enabled: true,
+                        goal_label: goalLabel.trim(),
+                        goal_target_usd: target,
+                      })
+                    )
+                      flashOk(t('set_save_ok'), 2500)
+                  }}
+                  className="otl-btn otl-btn-primary h-[34px]"
+                >
+                  {t('save_config')}
+                </button>
+              </div>
+            </AnimatedCollapse>
+          </div>
+
+          {/* Demo Mode Toggle */}
+          <div className="pt-3.5 border-t border-[var(--border)] flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[14px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
+              <div className="text-[13px] text-[var(--fg-3)]">
+                {previewFallback
+                  ? isZh
+                    ? '已切换为实盘模式（接入首个只读交易所 API 后自动替换为真实账单）'
+                    : 'Live mode active (sample preview shown until your first read-only API is added)'
+                  : t('set_demo_sub')}
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-label={t('set_demo_title')}
+              aria-checked={demoMode}
+              data-testid="demo-mode-switch"
+              onClick={() => void onToggleDemo(!demoMode)}
+              className="otl-switch"
+            >
+              <span className="otl-switch-knob" />
+            </button>
+          </div>
+        </section>
+      </div>
+
+      {/* Chapter 2: Balanced 50:50 Two-Column System Configuration (Zero Blank Left Void) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 items-start">
+        <div className="lg:pr-8 lg:border-r border-[var(--border)] divide-y divide-[var(--border)]">
           {!demoMode && (
             <AccessPasswordCard
               authStatus={authStatus}
@@ -491,235 +720,9 @@ export function SettingsPage({
             flashOk={flashOk}
             setErrorMsg={setErrorMsg}
           />
+        </div>
 
-          <div className="py-6 space-y-4">
-            <h2 className="t-h2">{t('set_pref_title')}</h2>
-
-            {/* Language */}
-            <div className="flex items-center justify-between gap-2 text-[14px]">
-              <span className="text-[var(--fg-2)]">{t('set_lang')}</span>
-              <SegmentedPills
-                value={settings.locale}
-                onChange={(l: Locale) => void onUpdateSettings({ locale: l })}
-                options={[
-                  { value: 'zh-CN', label: '简体中文' },
-                  { value: 'en', label: 'English' },
-                ]}
-              />
-            </div>
-
-            {/* Theme */}
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[14px] pt-3 border-t border-[var(--border)]">
-              <span className="text-[var(--fg-2)]">{t('set_theme')}</span>
-              <SegmentedPills
-                size="sm"
-                value={settings.theme}
-                onChange={(th: Theme) => void onUpdateSettings({ theme: th })}
-                options={[
-                  { value: 'obsidian', label: t('theme_obsidian'), testId: 'theme-obsidian' },
-                  { value: 'ocean', label: t('theme_ocean'), testId: 'theme-ocean' },
-                  { value: 'light', label: t('theme_light'), testId: 'theme-light' },
-                ]}
-              />
-            </div>
-
-            {/* Polarity */}
-            <div className="flex items-center justify-between gap-2 text-[14px] pt-3 border-t border-[var(--border)]">
-              <span className="text-[var(--fg-2)]">{t('set_polarity')}</span>
-              <SegmentedPills
-                value={settings.polarity}
-                onChange={(p: Polarity) => void onUpdateSettings({ polarity: p })}
-                options={[
-                  { value: 'cn', label: t('polarity_cn'), testId: 'polarity-cn' },
-                  { value: 'global', label: t('polarity_global'), testId: 'polarity-global' },
-                ]}
-              />
-            </div>
-
-            {/* Display Currency */}
-            <div className="space-y-1.5 pt-3 border-t border-[var(--border)] text-[14px]">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[var(--fg-2)]">{t('set_currency')}</span>
-                <select
-                  aria-label={t('set_currency')}
-                  data-testid="settings-currency-select"
-                  value={settings.display_currency || 'USDT'}
-                  onChange={e =>
-                    void onUpdateSettings({ display_currency: e.target.value as CurrencyCode })
-                  }
-                  className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
-                >
-                  {CURRENCY_OPTIONS.map(opt => (
-                    <option key={opt.code} value={opt.code}>
-                      {locale === 'en' ? opt.labelEn : opt.labelZh}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {cur.code !== 'USDT' && cur.code !== 'USD' && (
-                <div className="text-[13px] text-[var(--fg-3)] text-right">
-                  {t('set_fx_live')}: 1 USDT ≈ {cur.symbol}
-                  {cur.rate.toFixed(cur.code === 'JPY' ? 2 : 4)}
-                  {cur.fx.updated_at ? ` · ${cur.fx.updated_at}` : ''}
-                </div>
-              )}
-            </div>
-
-            {/* Optional Modules & Privacy Default */}
-            <div className="space-y-3 pt-3 border-t border-[var(--border)] text-[14px]">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[var(--fg-2)]">{t('set_privacy_default')}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label={t('set_privacy_default')}
-                  aria-checked={Boolean(settings.privacy_mode)}
-                  data-testid="privacy-default-switch"
-                  onClick={() => void onUpdateSettings({ privacy_mode: !settings.privacy_mode })}
-                  className="otl-switch"
-                >
-                  <span className="otl-switch-knob" />
-                </button>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[var(--fg-2)]">{t('set_mod_watcher')}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label={t('set_mod_watcher')}
-                  aria-checked={settings.modules.copy_watcher !== false}
-                  onClick={() =>
-                    void onUpdateSettings({
-                      modules: { copy_watcher: !(settings.modules.copy_watcher !== false) },
-                    })
-                  }
-                  className="otl-switch"
-                >
-                  <span className="otl-switch-knob" />
-                </button>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[var(--fg-2)]">{t('set_mod_copy')}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label={t('set_mod_copy')}
-                  aria-checked={Boolean(settings.modules.copy_trading)}
-                  onClick={() =>
-                    void onUpdateSettings({ modules: { copy_trading: !settings.modules.copy_trading } })
-                  }
-                  className="otl-switch"
-                >
-                  <span className="otl-switch-knob" />
-                </button>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[var(--fg-2)]">{t('set_mod_stock')}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label={t('set_mod_stock')}
-                  aria-checked={Boolean(settings.modules.stocks)}
-                  onClick={() =>
-                    void onUpdateSettings({ modules: { stocks: !settings.modules.stocks } })
-                  }
-                  className="otl-switch"
-                >
-                  <span className="otl-switch-knob" />
-                </button>
-              </div>
-              <p className="m-0 text-[13px] text-[var(--fg-3)]">{t('set_mod_note')}</p>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[var(--fg-2)]">{t('set_goal_title')}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label={t('set_goal_title')}
-                  aria-checked={Boolean(settings.goal_enabled)}
-                  onClick={() => {
-                    const nextOn = !settings.goal_enabled
-                    const patch: Record<string, unknown> = { goal_enabled: nextOn }
-                    if (nextOn && Number(goalInput) > 0) {
-                      patch.goal_target_usd = Number(goalInput)
-                    }
-                    void onUpdateSettings(patch)
-                  }}
-                  className="otl-switch"
-                >
-                  <span className="otl-switch-knob" />
-                </button>
-              </div>
-              <AnimatedCollapse
-                open={Boolean(settings.goal_enabled)}
-                innerClassName="space-y-2 pt-2"
-              >
-                <input
-                  type="text"
-                  value={goalLabel}
-                  onChange={e => setGoalLabel(e.target.value)}
-                  placeholder={locale === 'en' ? 'Goal name (e.g. 2026 Target)' : '目标名称（如：阶段净值目标）'}
-                  className="otl-input w-full"
-                />
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    value={goalInput}
-                    onChange={e => setGoalInput(e.target.value)}
-                    placeholder={t('set_goal_target')}
-                    className="otl-input flex-1"
-                  />
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const target = Number(goalInput)
-                      if (!Number.isFinite(target) || target <= 0) {
-                        setStatusMsg('')
-                        setErrorMsg(isZh ? '目标净值必须大于 0' : 'Target equity must be greater than zero')
-                        return
-                      }
-                      if (
-                        await onUpdateSettings({
-                          goal_enabled: true,
-                          goal_label: goalLabel.trim(),
-                          goal_target_usd: target,
-                        })
-                      )
-                        flashOk(t('set_save_ok'), 2500)
-                    }}
-                    className="otl-btn otl-btn-primary h-[34px]"
-                  >
-                    {t('save_config')}
-                  </button>
-                </div>
-              </AnimatedCollapse>
-            </div>
-
-            {/* Demo Mode Toggle */}
-            <div className="pt-3 border-t border-[var(--border)] flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[14px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
-                <div className="text-[13px] text-[var(--fg-3)]">
-                  {previewFallback
-                    ? isZh
-                      ? '已切换为实盘模式（接入首个只读交易所 API 后，示例预览将自动替换为真实账单）'
-                      : 'Live mode active (sample preview shown until your first read-only exchange API is added)'
-                    : t('set_demo_sub')}
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-label={t('set_demo_title')}
-                aria-checked={demoMode}
-                data-testid="demo-mode-switch"
-                onClick={() => void onToggleDemo(!demoMode)}
-                className="otl-switch"
-              >
-                <span className="otl-switch-knob" />
-              </button>
-            </div>
-          </div>
-
+        <div className="lg:pl-8 border-t lg:border-t-0 border-[var(--border)] divide-y divide-[var(--border)]">
           <AiConfigCard
             settings={settings}
             onUpdateSettings={onUpdateSettings}
@@ -733,7 +736,7 @@ export function SettingsPage({
             flashOk={flashOk}
             setErrorMsg={setErrorMsg}
           />
-        </section>
+        </div>
       </div>
 
       {/* Guided Modal for Adding / Updating Exchange Credentials */}

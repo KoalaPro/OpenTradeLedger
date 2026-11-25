@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
 import { PublicCopyWatcherPanel } from '../components/PublicCopyWatcherPanel'
-import { SegmentedPills } from '../components/SegmentedPills'
+import { UnderlineTabs } from '../components/UnderlineTabs'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
@@ -92,8 +92,8 @@ export function ExtensionsPage({
 
   return (
     <div data-testid="extensions-page" className="otl-stagger">
-      <div className="py-3.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
-        <SegmentedPills
+      <div className="pt-1 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
+        <UnderlineTabs
           value={activeTab}
           onChange={handleSelectTab}
           options={[
@@ -102,7 +102,7 @@ export function ExtensionsPage({
             ...(enableStocks ? [{ value: 'stock' as const, label: t('ext_stock_tab'), testId: 'ext-tab-stock' }] : []),
           ]}
         />
-        <span className="text-[13px] text-[var(--fg-3)]">{t('ext_toggle_hint')}</span>
+        <span className="text-[13px] text-[var(--fg-3)] py-2">{t('ext_toggle_hint')}</span>
       </div>
 
       {activeTab === 'watcher' && enableWatcher && (

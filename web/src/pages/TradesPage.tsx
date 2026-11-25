@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Check } from 'lucide-react'
 import { InstrumentMark } from '../components/InstrumentMark'
+import { formatDisplayKpiValue } from '../components/KpiCard'
 import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
@@ -35,39 +36,39 @@ function LegFeeCard({
   netLabel,
   leg,
   testId,
+  padClass = '',
 }: {
   title: string
   netLabel: string
   leg: TradeLegFee
   testId: string
+  padClass?: string
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
   const feeUnknown = leg.fee_known === false
   return (
-    <div data-testid={testId} className="py-3 border-b border-[var(--border)] flex flex-col gap-2">
-      <div className="flex items-center justify-between gap-2 text-[13px]">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="font-semibold text-[var(--fg-2)] whitespace-nowrap">{title}</span>
-          <span className="text-[var(--fg)] truncate">
-            · {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
-          </span>
+    <div data-testid={testId} className={`space-y-2 ${padClass}`}>
+      <div>
+        <div className="font-semibold text-[14px] text-[var(--fg)]">{title}</div>
+        <div className="text-[13px] text-[var(--fg-2)] truncate">
+          {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
         </div>
-        <span className="text-[var(--fg-3)] whitespace-nowrap">
+        <div className="text-[13px] text-[var(--fg-3)] whitespace-nowrap">
           {leg.time_str} {leg.avg_price > 0 ? `· ${fmtPrice(leg.avg_price)}` : ''}
-        </span>
+        </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 text-[13px]">
-        <div>
-          <div className="text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
-          <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
+      <div className="pt-2 border-t border-[var(--border)] space-y-1 text-[13px]">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[var(--fg-3)]">{t('leg_gross_fee')}</span>
+          <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
             {feeUnknown ? t('leg_fee_unknown') : leg.gross_fee_usd > 0 ? `-${cur.money(leg.gross_fee_usd, 3)}` : cur.money(0, 3)}
-          </div>
+          </span>
         </div>
-        <div>
-          <div className="text-[var(--fg-3)]">{t('leg_rebate_disc')}</div>
-          <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[var(--fg-3)]">{t('leg_rebate_disc')}</span>
+          <span className={`whitespace-nowrap sensitive ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
             {feeUnknown
               ? '—'
               : leg.gross_fee_usd <= 0
@@ -75,20 +76,23 @@ function LegFeeCard({
                 : leg.rebate_usd > 0
                   ? `+${cur.money(leg.rebate_usd, 3)} (${leg.rebate_pct.toFixed(0)}%)`
                   : cur.money(0, 3)}
-          </div>
-          {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
-            <div className="txt-pos mt-0.5 sensitive whitespace-nowrap">
-              {locale === 'en'
-                ? `Pre-disc +${cur.money(leg.discount_saved_usd, 3)}`
-                : `抵扣已省 +${cur.money(leg.discount_saved_usd, 3)}`}
-            </div>
-          )}
+          </span>
         </div>
-        <div className="text-right">
-          <div className="text-[var(--fg-3)]">{netLabel}</div>
-          <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? '—' : leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
+        {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[var(--fg-3)]">
+              {locale === 'en' ? 'Pre-discount' : '抵扣已省'}
+            </span>
+            <span className="txt-pos sensitive whitespace-nowrap">
+              +{cur.money(leg.discount_saved_usd, 3)}
+            </span>
           </div>
+        )}
+        <div className="flex items-center justify-between gap-2 font-semibold pt-1">
+          <span className="text-[var(--fg-2)]">{netLabel}</span>
+          <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
+            {feeUnknown ? '—' : leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
+          </span>
         </div>
       </div>
     </div>
@@ -422,7 +426,7 @@ export function TradesPage({
         {/* Right Settlement Inspector */}
         <aside
           data-testid="trade-detail-panel"
-          className="xl:col-span-5 py-5 xl:pl-6 border-t xl:border-t-0 border-[var(--border)] flex flex-col gap-4 xl:sticky xl:top-4"
+          className="xl:col-span-5 py-5 xl:pl-7 border-t xl:border-t-0 border-[var(--border)] flex flex-col gap-5 xl:sticky xl:top-[68px]"
         >
           <div className="flex items-center justify-between gap-2">
             <h2 className="t-h2">{t('detail_title')}</h2>
@@ -487,27 +491,31 @@ export function TradesPage({
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className={`t-kpi sensitive ${pnlTone(selected.net_pnl_usd)}`}>
-                      {cur.signedMoney(selected.net_pnl_usd)}
+                    <div className={`t-kpi sensitive whitespace-nowrap ${pnlTone(selected.net_pnl_usd)}`}>
+                      {formatDisplayKpiValue(cur.signedMoney(selected.net_pnl_usd))}
                     </div>
-                    <div className="text-[13px] text-[var(--fg-3)] mt-1">
+                    <div className="text-[13px] text-[var(--fg-3)] mt-0.5">
                       {selected.rebate_status === 'PENDING' ? t('detail_net_pending') : t('detail_net_after_rebate')}
                     </div>
                   </div>
                 </div>
 
-                <LegFeeCard
-                  testId="entry-leg-fee-card"
-                  title={t('leg_entry')}
-                  netLabel={t('leg_entry_net')}
-                  leg={selected.entry_leg}
-                />
-                <LegFeeCard
-                  testId="exit-leg-fee-card"
-                  title={t('leg_exit')}
-                  netLabel={t('leg_exit_net')}
-                  leg={selected.exit_leg}
-                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-[var(--border)] py-3.5 border-b border-[var(--border)] gap-3 sm:gap-0">
+                  <LegFeeCard
+                    testId="entry-leg-fee-card"
+                    title={t('leg_entry')}
+                    netLabel={t('leg_entry_net')}
+                    leg={selected.entry_leg}
+                    padClass="sm:pr-4"
+                  />
+                  <LegFeeCard
+                    testId="exit-leg-fee-card"
+                    title={t('leg_exit')}
+                    netLabel={t('leg_exit_net')}
+                    leg={selected.exit_leg}
+                    padClass="pt-3 sm:pt-0 sm:pl-4"
+                  />
+                </div>
 
                 <div className="pt-3.5 space-y-1.5 text-[13px]">
                   <div className="flex justify-between">
