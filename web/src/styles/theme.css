@@ -68,9 +68,9 @@
   /* Brand Logo Adaptive Filter */
   --logo-filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.55));
 
-  /* Critically-Damped Desktop Curves */
-  --ease-glide: cubic-bezier(0.2, 0.9, 0.3, 1);
-  --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1);
+  /* Critically-Damped Spring & Desktop Curves */
+  --ease-glide: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-out-quart: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-exit: cubic-bezier(0.32, 0.72, 0, 1);
   color-scheme: dark;
@@ -108,35 +108,43 @@
   color-scheme: dark;
 }
 
-/* 3. 极简浅色 · Gallery Limestone (WCAG AA >= 5.4:1 contrast across all tiers) */
+/* 3. 极简浅色 · Crisp Gallery Paper & Royal Cobalt */
 :root[data-theme="light"] {
-  --bg: #f8f9fb;
-  --rail: #f1f3f7;
+  --bg: #ffffff;
+  --rail: #f3f5f9;
   --surface: #ffffff;
-  --surface-2: #e9edf3;
-  --surface-hover: rgba(15, 23, 42, 0.032);
-  --border: #e1e5ed;
-  --border-strong: #c8d0de;
-  --fg: #0f131a;
-  --fg-2: #444d5c;
-  --fg-3: #556070;
-  --accent: #183b73;
-  --accent-soft: rgba(24, 59, 115, 0.078);
-  --accent-glow: rgba(24, 59, 115, 0.13);
+  --surface-2: #f4f6fa;
+  --surface-hover: #f6f8fc;
+  --border: #e5e9f1;
+  --border-strong: #cbd5e1;
+  --fg: #0f172a;
+  --fg-2: #334155;
+  --fg-3: #64748b;
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.085);
+  --accent-glow: rgba(37, 99, 235, 0.16);
   --accent-fg: #ffffff;
-  --track: #dce1ea;
-  --ok: #087f5b;
-  --warn: #b45309;
-  --warn-soft: rgba(180, 83, 9, 0.09);
-  --warn-bd: rgba(180, 83, 9, 0.25);
-  --err: #c92a2a;
-  --pos: #c82337;
-  --pos-soft: rgba(200, 35, 55, 0.075);
-  --pos-bd: rgba(200, 35, 55, 0.24);
-  --neg: #087f5b;
-  --neg-soft: rgba(8, 127, 91, 0.075);
-  --neg-bd: rgba(8, 127, 91, 0.24);
-  --logo-filter: drop-shadow(0 1.5px 3px rgba(15, 23, 42, 0.22)) drop-shadow(0 0 0.75px rgba(15, 23, 42, 0.30)) contrast(1.05);
+  --track: #cbd5e1;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --ok: #059669;
+  --warn: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.09);
+  --warn-bd: rgba(217, 119, 6, 0.25);
+  --err: #dc2626;
+  --pos: #dc2626;
+  --pos-soft: rgba(220, 38, 38, 0.075);
+  --pos-bd: rgba(220, 38, 38, 0.24);
+  --neg: #059669;
+  --neg-soft: rgba(5, 150, 105, 0.075);
+  --neg-bd: rgba(5, 150, 105, 0.24);
+  --dot-binance: #d97706;
+  --dot-okx: #7c3aed;
+  --dot-bybit: #ea580c;
+  --dot-gate: #2563eb;
+  --dot-bitget: #0d9488;
+  --dot-mexc: #16a34a;
+  --dot-easicoin: #4f46e5;
+  --logo-filter: drop-shadow(0 2px 4px rgba(15, 23, 42, 0.12));
   color-scheme: light;
 }
 
@@ -151,12 +159,12 @@
 }
 
 :root[data-theme="light"][data-polarity="global"] {
-  --pos: #087f5b;
-  --pos-soft: rgba(8, 127, 91, 0.075);
-  --pos-bd: rgba(8, 127, 91, 0.24);
-  --neg: #c82337;
-  --neg-soft: rgba(200, 35, 55, 0.075);
-  --neg-bd: rgba(200, 35, 55, 0.24);
+  --pos: #059669;
+  --pos-soft: rgba(5, 150, 105, 0.075);
+  --pos-bd: rgba(5, 150, 105, 0.24);
+  --neg: #dc2626;
+  --neg-soft: rgba(220, 38, 38, 0.075);
+  --neg-bd: rgba(220, 38, 38, 0.24);
 }
 
 html {
@@ -221,15 +229,33 @@ option {
 
 button:not(:disabled):not(.otl-switch) {
   transition:
-    transform 100ms var(--ease-out-quart),
-    background-color 130ms var(--ease-out-quart),
-    border-color 130ms var(--ease-out-quart),
-    color 130ms var(--ease-out-quart),
-    opacity 130ms var(--ease-out-quart);
+    transform 140ms var(--ease-spring),
+    background-color 160ms var(--ease-out-quart),
+    border-color 160ms var(--ease-out-quart),
+    color 150ms var(--ease-out-quart),
+    box-shadow 180ms var(--ease-out-quart),
+    opacity 150ms var(--ease-out-quart);
 }
 
 button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
-  transform: scale(0.988);
+  transform: scale(0.978);
+}
+
+/* Refined Thin Scrollbars Across All Themes */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
 }
 
 .no-scrollbar {
@@ -308,6 +334,14 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   flex-shrink: 0;
   filter: var(--logo-filter);
   transition: filter 180ms var(--ease-out-quart);
+}
+
+.otl-brand-logo-ceremony {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: var(--logo-filter);
 }
 
 .instrument-mark {
@@ -511,12 +545,19 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
     overflow: hidden;
     cursor: pointer;
     transition:
-      background-color 140ms var(--ease-out-quart),
-      border-color 150ms var(--ease-out-quart);
+      transform 220ms var(--ease-spring),
+      background-color 180ms var(--ease-out-quart),
+      border-color 180ms var(--ease-out-quart),
+      box-shadow 220ms var(--ease-spring);
   }
 
   .otl-card-interactive:hover {
+    transform: translate3d(0, -1.5px, 0);
     background-color: var(--surface-hover);
+  }
+
+  .otl-card-interactive:active {
+    transform: translate3d(0, 0, 0) scale(0.99);
   }
 
   /* Inline Venue Identity (5.5px Dot + Crisp Text, Zero Rainbow Pill Soup) */
@@ -701,9 +742,9 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
     pointer-events: none;
     will-change: transform, width;
     transition:
-      transform 195ms var(--ease-glide),
-      width 195ms var(--ease-glide),
-      opacity 120ms ease;
+      transform 240ms var(--ease-spring),
+      width 240ms var(--ease-spring),
+      opacity 150ms ease;
   }
 
   /* Clean Architectural Ledger Tables */
@@ -722,15 +763,21 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
     z-index: 2;
     will-change: transform, height;
     transition:
-      transform 185ms var(--ease-glide),
-      height 185ms var(--ease-glide),
-      opacity 120ms ease;
+      transform 240ms var(--ease-spring),
+      height 240ms var(--ease-spring),
+      opacity 150ms ease;
   }
 
   .otl-table {
     width: 100%;
     border-collapse: collapse;
     font-size: var(--text-body);
+  }
+
+  .otl-trades-table th,
+  .otl-trades-table td {
+    padding-left: 10px;
+    padding-right: 10px;
   }
 
   .otl-table th {
@@ -803,59 +850,134 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   }
 }
 
-/* ── Native Desktop Micro-Animations (High-Damping, 2px–3.5px Travel) ── */
+/* ── Light-Theme Tactile Surface & Contrast Enhancements (Unlayered so Utilities Never Override) ── */
+:root[data-theme="light"] header {
+  background: rgba(250, 251, 253, 0.92);
+}
+
+:root[data-theme="light"] .otl-ledger-strip {
+  background: linear-gradient(180deg, #fafbfd 0%, #ffffff 100%);
+}
+
+:root[data-theme="light"] .otl-btn:not(.otl-btn-primary) {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #1e293b;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+:root[data-theme="light"] .otl-btn:not(.otl-btn-primary):hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+:root[data-theme="light"] .otl-btn-primary {
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.24);
+}
+
+:root[data-theme="light"] .otl-btn-primary:disabled {
+  background: #e2e8f0;
+  color: #64748b;
+  box-shadow: none;
+  opacity: 1;
+}
+
+:root[data-theme="light"] .otl-input,
+:root[data-theme="light"] .otl-select,
+:root[data-theme="light"] textarea {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+:root[data-theme="light"] .otl-input::placeholder,
+:root[data-theme="light"] textarea::placeholder {
+  color: #94a3b8;
+}
+
+:root[data-theme="light"] .otl-seg {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+}
+
+:root[data-theme="light"] .otl-seg .otl-glider {
+  border-color: rgba(15, 23, 42, 0.09);
+  box-shadow: 0 1px 2.5px rgba(15, 23, 42, 0.08);
+}
+
+:root[data-theme="light"] .otl-table th {
+  background: #fafbfd;
+  color: #475569;
+  font-weight: 600;
+}
+
+:root[data-theme="light"] .otl-tab-glider {
+  background: var(--accent);
+}
+
+:root[data-theme="light"] .otl-switch:not([aria-checked="true"]) {
+  background: #cbd5e1;
+  border-color: #b8c4d4;
+}
+
+:root[data-theme="light"] .otl-switch-knob {
+  box-shadow: 0 1px 2.5px rgba(15, 23, 42, 0.24);
+}
+
+/* ── Compositor-Accelerated Choreographed Motion System (60/120fps) ── */
 @keyframes otlStageSettle {
   from {
     opacity: 0;
-    transform: translate3d(0, 2.5px, 0);
+    transform: translate3d(0, 9px, 0);
   }
   to {
     opacity: 1;
-    transform: translate3d(0, 0, 0);
+    transform: none;
   }
 }
 
 @keyframes otlSubSettle {
   from {
     opacity: 0;
-    transform: translate3d(0, 2px, 0);
+    transform: translate3d(0, 7px, 0);
   }
   to {
     opacity: 1;
-    transform: translate3d(0, 0, 0);
+    transform: none;
   }
 }
 
 @keyframes otlTitleSwap {
   from {
-    opacity: 0.25;
-    transform: translate3d(0, 2px, 0);
+    opacity: 0;
+    transform: translate3d(0, 5px, 0);
   }
   to {
     opacity: 1;
-    transform: translate3d(0, 0, 0);
+    transform: none;
   }
 }
 
 @keyframes otlSwapNext {
   from {
     opacity: 0;
-    transform: translate3d(0, 3.5px, 0);
+    transform: translate3d(0, 10px, 0);
   }
   to {
     opacity: 1;
-    transform: translate3d(0, 0, 0);
+    transform: none;
   }
 }
 
 @keyframes otlSwapPrev {
   from {
     opacity: 0;
-    transform: translate3d(0, -3.5px, 0);
+    transform: translate3d(0, -10px, 0);
   }
   to {
     opacity: 1;
-    transform: translate3d(0, 0, 0);
+    transform: none;
   }
 }
 
@@ -869,39 +991,44 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 .otl-page-enter {
-  animation: otlStageSettle 160ms var(--ease-out-quart) both;
+  animation: otlStageSettle 260ms var(--ease-spring) backwards;
 }
 
 .otl-stagger > * {
-  animation: otlStageSettle 170ms var(--ease-out-quart) both;
+  animation: otlStageSettle 300ms var(--ease-spring) backwards;
 }
 .otl-stagger > *:nth-child(1) { animation-delay: 0ms; }
-.otl-stagger > *:nth-child(2) { animation-delay: 18ms; }
-.otl-stagger > *:nth-child(3) { animation-delay: 36ms; }
-.otl-stagger > *:nth-child(4) { animation-delay: 54ms; }
+.otl-stagger > *:nth-child(2) { animation-delay: 36ms; }
+.otl-stagger > *:nth-child(3) { animation-delay: 72ms; }
+.otl-stagger > *:nth-child(4) { animation-delay: 108ms; }
+.otl-stagger > *:nth-child(5) { animation-delay: 144ms; }
 
 .otl-kpi-grid > * {
-  animation: otlSubSettle 155ms var(--ease-out-quart) both;
+  animation: otlStageSettle 280ms var(--ease-spring) backwards;
 }
+.otl-kpi-grid > *:nth-child(1) { animation-delay: 0ms; }
+.otl-kpi-grid > *:nth-child(2) { animation-delay: 28ms; }
+.otl-kpi-grid > *:nth-child(3) { animation-delay: 56ms; }
+.otl-kpi-grid > *:nth-child(4) { animation-delay: 84ms; }
 
 .otl-title-swap {
-  animation: otlTitleSwap 145ms var(--ease-out-quart) both;
+  animation: otlTitleSwap 210ms var(--ease-spring) backwards;
 }
 
 .otl-panel-swap {
-  animation: otlSubSettle 145ms var(--ease-out-quart) both;
+  animation: otlSubSettle 220ms var(--ease-spring) backwards;
 }
 
 .otl-swap-next {
-  animation: otlSwapNext 155ms var(--ease-glide) both;
+  animation: otlSwapNext 220ms var(--ease-spring) backwards;
 }
 
 .otl-swap-prev {
-  animation: otlSwapPrev 155ms var(--ease-glide) both;
+  animation: otlSwapPrev 220ms var(--ease-spring) backwards;
 }
 
 .otl-backdrop-in {
-  animation: otlBackdropIn 165ms var(--ease-out-quart) both;
+  animation: otlBackdropIn 220ms ease-out both;
 }
 
 /* Two-Way CSS Grid Height Disclosure (AnimatedCollapse: 0fr <-> 1fr) */
@@ -909,14 +1036,17 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   display: grid;
   grid-template-rows: 0fr;
   opacity: 0;
+  transform: translate3d(0, -4px, 0);
   transition:
-    grid-template-rows 205ms var(--ease-glide),
-    opacity 160ms var(--ease-out-quart);
+    grid-template-rows 250ms var(--ease-spring),
+    opacity 200ms ease,
+    transform 250ms var(--ease-spring);
 }
 
 .otl-collapse-grid.is-open {
   grid-template-rows: 1fr;
   opacity: 1;
+  transform: translate3d(0, 0, 0);
 }
 
 .otl-collapse-inner {
@@ -925,7 +1055,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 .otl-bar-fill {
-  transition: width 380ms var(--ease-out-quart);
+  transition: width 560ms var(--ease-spring);
 }
 
 /* TopBar Range Slot: Zero-Jump Reveal/Hide Left of Pinned Utilities */
@@ -937,15 +1067,15 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   opacity: 1;
   transform: translate3d(0, 0, 0) scale(1);
   transition:
-    max-width 210ms var(--ease-glide),
-    opacity 150ms var(--ease-out-quart),
-    transform 200ms var(--ease-glide);
+    max-width 250ms var(--ease-spring),
+    opacity 190ms ease,
+    transform 240ms var(--ease-spring);
 }
 
 .otl-range-slot.is-hidden {
   max-width: 0;
   opacity: 0;
-  transform: translate3d(4px, 0, 0) scale(0.97);
+  transform: translate3d(6px, 0, 0) scale(0.95);
   pointer-events: none;
 }
 
@@ -987,7 +1117,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 @keyframes otlToastIn {
   from {
     opacity: 0;
-    transform: translate3d(0, 6px, 0) scale(0.985);
+    transform: translate3d(0, 14px, 0) scale(0.96);
   }
   to {
     opacity: 1;
@@ -1002,7 +1132,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   }
   to {
     opacity: 0;
-    transform: translate3d(0, 4px, 0) scale(0.985);
+    transform: translate3d(0, 10px, 0) scale(0.96);
   }
 }
 
@@ -1010,7 +1140,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
-  animation: otlToastIn 175ms var(--ease-glide) both;
+  animation: otlToastIn 260ms var(--ease-spring) both;
 }
 
 .otl-toast-card.otl-status-ok {
@@ -1026,20 +1156,27 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 .otl-toast-card.closing {
-  animation: otlToastOut 140ms var(--ease-exit) both;
+  animation: otlToastOut 185ms var(--ease-exit) both;
   pointer-events: none;
 }
 
-/* AuthGate Unlock Ceremony & Error Shake */
+/* Brand Entrance Curtain & AuthGate Unlock Ceremony */
 @keyframes otlShakeX {
   0%, 100% { transform: translateX(0); }
-  22%      { transform: translateX(-6px); }
-  45%      { transform: translateX(6px); }
-  70%      { transform: translateX(-3px); }
+  20%      { transform: translateX(-7px); }
+  40%      { transform: translateX(7px); }
+  60%      { transform: translateX(-5px); }
+  80%      { transform: translateX(4px); }
 }
 
 .otl-shake {
-  animation: otlShakeX 300ms ease;
+  animation: otlShakeX 360ms ease;
+}
+
+@keyframes otlShimmerSweep {
+  0%   { background-position: 120% 0; opacity: 0.35; transform: translateY(6px); }
+  35%  { opacity: 1; transform: translateY(0); }
+  100% { background-position: -40% 0; opacity: 1; transform: translateY(0); }
 }
 
 @keyframes otlCeremonyBarFill {
@@ -1048,33 +1185,46 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 @keyframes otlLogoFloat {
-  0%   { opacity: 0; transform: scale(0.94) translateY(4px); }
+  0%   { opacity: 0; transform: scale(0.86) translateY(10px); }
+  42%  { opacity: 1; transform: scale(1.04) translateY(-2px); }
   100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
 .otl-ceremony-logo {
-  animation: otlLogoFloat 360ms var(--ease-glide) forwards;
+  animation: otlLogoFloat 620ms var(--ease-spring) forwards;
 }
 
 .otl-ceremony-shimmer {
-  color: var(--fg);
-  animation: otlStageSettle 320ms var(--ease-out-quart) forwards;
+  background: linear-gradient(100deg, #94a3b8 18%, #e2e8f0 42%, #93c5fd 50%, #ffffff 56%, #94a3b8 82%);
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: otlShimmerSweep 1080ms ease-in-out forwards;
+}
+
+:root[data-theme="light"] .otl-ceremony-shimmer {
+  background: linear-gradient(100deg, #475569 18%, #1d4ed8 46%, #0f172a 54%, #475569 82%);
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .otl-ceremony-bar-fill {
   height: 100%;
   width: 0%;
-  background: var(--accent);
-  animation: otlCeremonyBarFill 920ms var(--ease-out-quart) forwards;
+  background: linear-gradient(90deg, var(--accent), var(--ok));
+  animation: otlCeremonyBarFill 960ms var(--ease-spring) forwards;
 }
 
 .otl-ceremony-curtain {
-  transition: opacity 320ms var(--ease-out-quart), transform 360ms var(--ease-glide);
+  transition: opacity 420ms ease, transform 460ms var(--ease-spring);
 }
 
 .otl-ceremony-curtain.lifting {
   opacity: 0;
-  transform: translate3d(0, -10px, 0) scale(1.012);
+  transform: translate3d(0, -20px, 0) scale(1.025);
   pointer-events: none;
 }
 
@@ -1088,13 +1238,13 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   height: 100%;
   border-radius: 9999px;
   background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  animation: otlIndeterminateSlide 1.2s ease-in-out infinite;
+  animation: otlIndeterminateSlide 1.25s ease-in-out infinite;
 }
 
-/* Restrained Theme-Matched Spotlight Ripple */
+/* Theme-Matched Spotlight Ripple */
 @keyframes otlVelvetRipple {
-  0%   { opacity: 0.52; transform: translate(-50%, -50%) scale(0.24); }
-  100% { opacity: 0; transform: translate(-50%, -50%) scale(2.1); }
+  0%   { opacity: 0.72; transform: translate(-50%, -50%) scale(0.16); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(2.35); }
 }
 
 .otl-velvet-ripple {
@@ -1102,40 +1252,40 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   border-radius: 9999px;
   pointer-events: none;
   z-index: 2;
-  background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
-  animation: otlVelvetRipple 360ms var(--ease-out-quart) forwards;
+  background: radial-gradient(circle, var(--accent-glow) 0%, transparent 72%);
+  animation: otlVelvetRipple 480ms var(--ease-out-quart) forwards;
 }
 
 .otl-glider {
   will-change: transform, width, height;
   transition:
-    transform 205ms var(--ease-glide),
-    width 205ms var(--ease-glide),
-    height 205ms var(--ease-glide),
-    opacity 140ms ease;
+    transform 260ms var(--ease-spring),
+    width 260ms var(--ease-spring),
+    height 260ms var(--ease-spring),
+    opacity 170ms ease;
 }
 
 /* Portaled Architectural Modal & Slide-Over Drawer */
 @keyframes otlModalFloatIn {
-  0%   { opacity: 0; transform: translate3d(0, 4px, 0) scale(0.985); }
+  0%   { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.964); }
   100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
 @keyframes otlModalFloatOut {
   0%   { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
-  100% { opacity: 0; transform: translate3d(0, 3px, 0) scale(0.988); }
+  100% { opacity: 0; transform: translate3d(0, 8px, 0) scale(0.974); }
 }
 
 .otl-modal-backdrop {
-  background: rgba(5, 7, 11, 0.62);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  animation: otlBackdropIn 165ms var(--ease-out-quart) both;
-  transition: opacity 150ms var(--ease-exit);
+  background: rgba(5, 7, 11, 0.66);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: otlBackdropIn 210ms ease-out both;
+  transition: opacity 185ms var(--ease-exit);
 }
 
 :root[data-theme="light"] .otl-modal-backdrop {
-  background: rgba(15, 19, 26, 0.28);
+  background: rgba(15, 23, 42, 0.28);
 }
 
 .otl-modal-backdrop.closing {
@@ -1147,18 +1297,18 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   position: relative;
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.44);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.48);
   will-change: transform, opacity;
-  animation: otlModalFloatIn 180ms var(--ease-glide) both;
+  animation: otlModalFloatIn 270ms var(--ease-spring) both;
 }
 
 :root[data-theme="light"] .otl-velvet-window {
-  box-shadow: 0 22px 56px rgba(15, 19, 26, 0.14);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.16);
 }
 
 .otl-modal-backdrop.closing .otl-velvet-window {
-  animation: otlModalFloatOut 140ms var(--ease-exit) both;
+  animation: otlModalFloatOut 185ms var(--ease-exit) both;
 }
 
 @keyframes otlDrawerSlideIn {
@@ -1180,15 +1330,15 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 .otl-drawer-backdrop {
-  background: rgba(5, 7, 11, 0.54);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  animation: otlBackdropIn 175ms var(--ease-out-quart) both;
-  transition: opacity 170ms var(--ease-exit);
+  background: rgba(5, 7, 11, 0.58);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: otlBackdropIn 230ms ease-out both;
+  transition: opacity 210ms var(--ease-exit);
 }
 
 :root[data-theme="light"] .otl-drawer-backdrop {
-  background: rgba(15, 19, 26, 0.24);
+  background: rgba(15, 23, 42, 0.24);
 }
 
 .otl-drawer-backdrop.closing {
@@ -1200,17 +1350,17 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   position: relative;
   background: var(--surface);
   border-left: 1px solid var(--border-strong);
-  box-shadow: -20px 0 56px rgba(0, 0, 0, 0.38);
+  box-shadow: -20px 0 56px rgba(0, 0, 0, 0.42);
   will-change: transform;
-  animation: otlDrawerSlideIn 225ms var(--ease-glide) both;
+  animation: otlDrawerSlideIn 310ms var(--ease-spring) both;
 }
 
 :root[data-theme="light"] .otl-drawer-panel {
-  box-shadow: -18px 0 48px rgba(15, 19, 26, 0.12);
+  box-shadow: -18px 0 52px rgba(15, 23, 42, 0.14);
 }
 
 .otl-drawer-backdrop.closing .otl-drawer-panel {
-  animation: otlDrawerSlideOut 175ms var(--ease-exit) both;
+  animation: otlDrawerSlideOut 215ms var(--ease-exit) both;
 }
 
 /* Tactile Switch */

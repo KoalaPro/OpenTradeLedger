@@ -50,14 +50,18 @@ export function EquityChart({ points, height = 220 }: { points: CurvePoint[]; he
     )
   }
 
+  const lastNet = points[points.length - 1]?.cum_net_usd ?? 0
+  const strokeColor = lastNet >= 0 ? 'var(--pos)' : 'var(--neg)'
+  const gradId = lastNet >= 0 ? 'otlAreaPos' : 'otlAreaNeg'
+
   return (
     <div style={{ width: '100%', height }} className="sensitive">
       <ResponsiveContainer width="100%" height="100%" minWidth={0}>
         <AreaChart data={points} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <defs>
-            <linearGradient id="otlAccentArea" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.22} />
-              <stop offset="100%" stopColor="var(--accent)" stopOpacity={0.0} />
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={strokeColor} stopOpacity={0.20} />
+              <stop offset="100%" stopColor={strokeColor} stopOpacity={0.0} />
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
@@ -80,7 +84,7 @@ export function EquityChart({ points, height = 220 }: { points: CurvePoint[]; he
             contentStyle={{
               background: 'var(--surface)',
               border: '1px solid var(--border-strong)',
-              borderRadius: 6,
+              borderRadius: 8,
               fontSize: 13,
               color: 'var(--fg)',
             }}
@@ -94,11 +98,12 @@ export function EquityChart({ points, height = 220 }: { points: CurvePoint[]; he
           <Area
             type="monotone"
             dataKey="cum_net_usd"
-            stroke="var(--accent)"
-            strokeWidth={1.85}
-            fill="url(#otlAccentArea)"
+            baseValue="dataMin"
+            stroke={strokeColor}
+            strokeWidth={1.9}
+            fill={`url(#${gradId})`}
             isAnimationActive={shouldAnimate}
-            animationDuration={360}
+            animationDuration={520}
             animationEasing="ease-out"
           />
         </AreaChart>

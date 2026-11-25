@@ -113,6 +113,8 @@ export default function App() {
 
   const [authStatus, setAuthStatus] = useState<AuthStatusPayload>({ authenticated: true, require_setup: false })
   const [authChecked, setAuthChecked] = useState(false)
+  const [stageRevealSeq, setStageRevealSeq] = useState(0)
+  const bumpStageReveal = useCallback(() => setStageRevealSeq(s => s + 1), [])
 
   useLayoutEffect(() => {
     document.documentElement.lang = settings.locale
@@ -393,6 +395,7 @@ export default function App() {
         {authChecked && (
           <AuthGate
             auth={authStatus}
+            authChecked={authChecked}
             locale={settings.locale}
             onToggleLocale={() =>
               setSettings(prev => ({ ...prev, locale: prev.locale === 'zh-CN' ? 'en' : 'zh-CN' }))
@@ -400,6 +403,7 @@ export default function App() {
             onUnlocked={nextAuth => {
               setAuthStatus(nextAuth)
             }}
+            onCeremonyLiftStart={bumpStageReveal}
           />
         )}
 
@@ -478,7 +482,11 @@ export default function App() {
                   </div>
                 )}
                 {data && (
-                  <div key={page + (data.demo_mode ? '-demo' : '-live')} hidden={data.range_key !== rangeKey} className="otl-page-enter">
+                  <div
+                    key={`${page}-${data.demo_mode ? 'demo' : 'live'}-${stageRevealSeq}`}
+                    hidden={data.range_key !== rangeKey}
+                    className="otl-page-enter"
+                  >
                     {page === 'overview' && (
                       <OverviewPage
                         data={data}

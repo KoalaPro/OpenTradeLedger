@@ -51,7 +51,7 @@ export function attachVelvetRippleListener(): () => void {
       if (!host.querySelector('.otl-velvet-ripple') && prevOverflow === '') {
         host.style.overflow = ''
       }
-    }, 390)
+    }, 500)
   }
 
   document.addEventListener('pointerdown', onPointerDown, { passive: true })

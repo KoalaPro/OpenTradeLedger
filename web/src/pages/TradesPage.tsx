@@ -312,7 +312,7 @@ export function TradesPage({
       {/* 7:5 Master-Detail Hairline Split */}
       <div className="grid grid-cols-1 xl:grid-cols-12 border-b border-[var(--border)] items-start">
         <div
-          className="xl:col-span-7 xl:pr-5 xl:border-r border-[var(--border)]"
+          className="xl:col-span-7 xl:pr-4 xl:border-r border-[var(--border)]"
           tabIndex={0}
           onKeyDown={e => {
             if (e.key === 'ArrowDown') {
@@ -327,7 +327,7 @@ export function TradesPage({
           {sortedTrades.length === 0 ? (
             <div className="py-16 text-center text-[14px] text-[var(--fg-3)]">{t('empty_trades')}</div>
           ) : (
-            <div ref={tableWrapRef} className="otl-table-wrap max-h-[72vh] overflow-y-auto">
+            <div ref={tableWrapRef} className="otl-table-wrap max-h-[72vh] overflow-y-auto overflow-x-auto">
               <div
                 aria-hidden="true"
                 className="otl-row-glider"
@@ -337,7 +337,7 @@ export function TradesPage({
                   transform: `translate3d(0, ${rowGlider.top}px, 0)`,
                 }}
               />
-              <table className={`otl-table ${detailed ? '' : 'compact'}`}>
+              <table className={`otl-table otl-trades-table ${detailed ? '' : 'compact'}`}>
                 <thead className="sticky top-0 z-10">
                   <tr>
                     <th>{t('th_symbol_time')}</th>
@@ -612,7 +612,7 @@ export function TradesPage({
                     }))
                   }}
                   placeholder={t('journal_placeholder')}
-                  className="w-full rounded-md border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-[14px] text-[var(--fg)] placeholder:text-[var(--fg-3)]"
+                  className="otl-input w-full h-auto py-2 placeholder:text-[var(--fg-3)]"
                 />
               </div>
             </>

@@ -363,4 +363,37 @@ describe('Motion Engine, Zero-Jump Layout & Add-Account Ceremony', () => {
     expect(toastViewport.parentElement).toBe(document.body)
     expect(toastViewport.contains(screen.getByTestId('settings-ok-banner'))).toBe(true)
   })
+
+  it('plays the Brand Entrance Curtain once per newly opened tab even when already authenticated', async () => {
+    window.sessionStorage.clear()
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.startsWith('/api/v1/auth/status')) {
+        return new Response(
+          JSON.stringify({ initialized: true, enabled: true, authenticated: true, require_setup: false }),
+          { status: 200 },
+        )
+      }
+      if (url.startsWith('/api/v1/dashboard')) {
+        return new Response(JSON.stringify(sampleDash), { status: 200 })
+      }
+      if (url.startsWith('/api/v1/settings')) {
+        return new Response(JSON.stringify(baseSettings), { status: 200 })
+      }
+      if (url.startsWith('/api/v1/exchanges')) {
+        return new Response(JSON.stringify({ adapters: [], error_count: 0 }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: true, rates: DEFAULT_FX.rates }), { status: 200 })
+    })
+
+    const firstMount = render(<App />)
+    expect(await screen.findByTestId('auth-ceremony-overlay')).toBeTruthy()
+    expect(window.sessionStorage.getItem('otl.tab_boot_ceremony')).toBe('1')
+    firstMount.unmount()
+
+    // Reloading in the same tab does not replay the curtain
+    render(<App />)
+    await waitFor(() => expect(screen.getByTestId('overview-page')).toBeTruthy())
+    expect(screen.queryByTestId('auth-ceremony-overlay')).toBeNull()
+  })
 })

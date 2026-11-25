@@ -124,7 +124,7 @@ export function OverviewPage({
           testId="kpi-equity"
           label={t('kpi_total_equity')}
           badge={
-            <span className="text-[13px] text-[var(--fg-3)]">
+            <span className="text-[13px] font-medium text-[var(--accent)]">
               {locale === 'en' ? 'Breakdown ↗' : '资产构成 ↗'}
             </span>
           }
@@ -142,7 +142,7 @@ export function OverviewPage({
           testId="kpi-whole-pnl"
           label={t('kpi_whole_pnl')}
           badge={
-            <span className="text-[13px] text-[var(--fg-3)]">
+            <span className="text-[13px] font-medium text-[var(--accent)]">
               {t('kpi_reconcile_btn')} ↗
             </span>
           }

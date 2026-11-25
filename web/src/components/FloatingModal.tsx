@@ -50,7 +50,7 @@ export function FloatingModal({
         setRendered(false)
         setClosing(false)
         timerRef.current = null
-      }, 150)
+      }, 185)
     }
   }, [open, rendered])
 

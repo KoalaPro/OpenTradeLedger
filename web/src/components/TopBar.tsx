@@ -123,7 +123,7 @@ export function TopBar({
               [
                 ['obsidian', '#141820', t('theme_obsidian')],
                 ['ocean', '#0f283d', t('theme_ocean')],
-                ['light', '#f3f5f8', t('theme_light')],
+                ['light', '#eef2f7', t('theme_light')],
               ] as const
             ).map(([th, hex, lbl]) => (
               <button

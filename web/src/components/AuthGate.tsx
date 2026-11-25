@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { KeyRound, Languages, Lock, ShieldCheck } from 'lucide-react'
 import ledgerLogo from '../assets/ledger-logo.png'
 import { api, ApiError } from '../lib/api'
@@ -7,12 +7,23 @@ import { AnimatedCollapse } from './AnimatedCollapse'
 
 interface AuthGateProps {
   auth: AuthStatusPayload
+  authChecked?: boolean
   locale: Locale
   onToggleLocale: () => void
   onUnlocked: (nextAuth: AuthStatusPayload) => void
+  onCeremonyLiftStart?: () => void
 }
 
-export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateProps) {
+const TAB_CEREMONY_KEY = 'otl.tab_boot_ceremony'
+
+export function AuthGate({
+  auth,
+  authChecked = true,
+  locale,
+  onToggleLocale,
+  onUnlocked,
+  onCeremonyLiftStart,
+}: AuthGateProps) {
   const isZh = locale === 'zh-CN'
   const isSetup = Boolean(auth.require_setup)
   const isLocked = isSetup || auth.authenticated === false
@@ -25,7 +36,74 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
   const [shakeKey, setShakeKey] = useState(0)
   const [cooldownSec, setCooldownSec] = useState(0)
   const [showResetHelp, setShowResetHelp] = useState(false)
+  const [ceremonyMode, setCeremonyMode] = useState<'boot' | 'unlock'>('unlock')
   const [ceremonyPhase, setCeremonyPhase] = useState<'idle' | 'active' | 'lifting'>('idle')
+  const checkedBootRef = useRef(false)
+  const liftTimerRef = useRef<number | null>(null)
+  const idleTimerRef = useRef<number | null>(null)
+
+  const clearCeremonyTimers = () => {
+    if (liftTimerRef.current !== null) {
+      window.clearTimeout(liftTimerRef.current)
+      liftTimerRef.current = null
+    }
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current)
+      idleTimerRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    return () => clearCeremonyTimers()
+  }, [])
+
+  // Play the Brand Entrance Curtain once per newly opened browser tab when already unlocked
+  useEffect(() => {
+    if (!authChecked || checkedBootRef.current) return
+    checkedBootRef.current = true
+
+    if (isLocked) {
+      return
+    }
+
+    const reduced =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduced) return
+
+    let alreadyPlayedInTab = false
+    try {
+      alreadyPlayedInTab = window.sessionStorage.getItem(TAB_CEREMONY_KEY) === '1'
+      if (!alreadyPlayedInTab) {
+        window.sessionStorage.setItem(TAB_CEREMONY_KEY, '1')
+      }
+    } catch {
+      alreadyPlayedInTab = true
+    }
+
+    if (alreadyPlayedInTab) return
+
+    setCeremonyMode('boot')
+    setCeremonyPhase('active')
+    liftTimerRef.current = window.setTimeout(() => {
+      setCeremonyPhase('lifting')
+      onCeremonyLiftStart?.()
+      liftTimerRef.current = null
+    }, 960)
+    idleTimerRef.current = window.setTimeout(() => {
+      setCeremonyPhase('idle')
+      idleTimerRef.current = null
+    }, 1420)
+  }, [authChecked, isLocked, onCeremonyLiftStart])
+
+  // If an API 401 flips isLocked to true while boot curtain is up, yield immediately to login form
+  useEffect(() => {
+    if (isLocked && ceremonyMode === 'boot' && ceremonyPhase !== 'idle') {
+      clearCeremonyTimers()
+      setCeremonyPhase('idle')
+    }
+  }, [isLocked, ceremonyMode, ceremonyPhase])
 
   useEffect(() => {
     if (cooldownSec <= 0) return
@@ -46,6 +124,10 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+    try {
+      window.sessionStorage.setItem(TAB_CEREMONY_KEY, '1')
+    } catch { /* ignore storage errors */ }
+
     onUnlocked(nextAuth)
     setPassword('')
     setConfirmPwd('')
@@ -56,13 +138,18 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
       return
     }
 
+    clearCeremonyTimers()
+    setCeremonyMode('unlock')
     setCeremonyPhase('active')
-    window.setTimeout(() => {
+    liftTimerRef.current = window.setTimeout(() => {
       setCeremonyPhase('lifting')
-    }, 950)
-    window.setTimeout(() => {
+      onCeremonyLiftStart?.()
+      liftTimerRef.current = null
+    }, 1020)
+    idleTimerRef.current = window.setTimeout(() => {
       setCeremonyPhase('idle')
-    }, 1320)
+      idleTimerRef.current = null
+    }, 1480)
   }
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -120,6 +207,9 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
     setErrorText('')
     try {
       const res = await api.authSkip()
+      try {
+        window.sessionStorage.setItem(TAB_CEREMONY_KEY, '1')
+      } catch { /* ignore */ }
       setPassword('')
       setConfirmPwd('')
       onUnlocked(res)
@@ -136,7 +226,7 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
 
   return (
     <>
-      {/* Brand Unlock Curtain */}
+      {/* Brand Entrance & Unlock Shimmer Curtain */}
       {ceremonyPhase !== 'idle' && (
         <div
           data-testid="auth-ceremony-overlay"
@@ -148,20 +238,24 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
             src={ledgerLogo}
             alt="OpenTradeLedger"
             draggable={false}
-            className="otl-brand-logo-lg select-none mb-4 otl-ceremony-logo"
+            className="otl-brand-logo-ceremony select-none mb-4 otl-ceremony-logo"
           />
-          <div className="t-h1 otl-ceremony-shimmer">
+          <div className="text-[20px] font-semibold tracking-wide otl-ceremony-shimmer">
             OpenTradeLedger · 交易账本
           </div>
           <div className="mt-1.5 inline-flex items-center gap-1.5 text-[13px] text-[var(--fg-2)]">
             <ShieldCheck size={14} style={{ color: 'var(--ok)' }} />
             <span>
-              {isZh
-                ? '本地只读账本已验证解锁'
-                : 'Local Read-Only Ledger Verified & Unlocked'}
+              {ceremonyMode === 'boot'
+                ? isZh
+                  ? '本地只读核账账本已就绪'
+                  : 'Local Read-Only Ledger Ready'
+                : isZh
+                  ? '本地只读账本已验证解锁'
+                  : 'Local Read-Only Ledger Verified & Unlocked'}
             </span>
           </div>
-          <div className="w-40 h-[2px] rounded-full bg-[var(--track)] overflow-hidden mt-4">
+          <div className="w-44 h-[2.5px] rounded-full bg-[var(--track)] overflow-hidden mt-4">
             <div className="otl-ceremony-bar-fill" />
           </div>
         </div>
