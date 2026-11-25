@@ -163,12 +163,12 @@ export function Sidebar({
           />
           <span
             data-testid="brand-title"
-            className="text-[17px] font-semibold tracking-[-0.02em] text-[var(--fg)] truncate"
+            className="text-[16px] font-semibold tracking-[-0.02em] text-[var(--fg)] truncate"
           >
             {t('brand')}
           </span>
         </div>
-        <span className="md:hidden inline-flex items-center gap-1.5 text-[13px] text-[var(--fg-3)] shrink-0">
+        <span className="md:hidden inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)] shrink-0">
           <span
             className="h-1.5 w-1.5 rounded-full"
             style={{ background: syncFailed ? 'var(--warn)' : 'var(--ok)' }}
@@ -230,7 +230,7 @@ export function Sidebar({
           {versionStatus?.update_available && (
             <span
               data-testid="sidebar-update-badge"
-              className="inline-flex items-center gap-1.5 text-[13px] font-medium tabular-nums"
+              className="inline-flex items-center gap-1.5 text-[12px] font-medium tabular-nums"
               style={{ color: 'var(--accent)' }}
             >
               <span className="h-1.5 w-1.5 rounded-full bg-current" />
@@ -239,7 +239,7 @@ export function Sidebar({
           )}
         </button>
 
-        <div className="hidden md:flex items-center justify-between px-3 pt-0.5 text-[13px] text-[var(--fg-3)]">
+        <div className="hidden md:flex items-center justify-between px-3 pt-0.5 text-[12px] text-[var(--fg-3)]">
           <span className="inline-flex items-center gap-1.5">
             <span
               className="h-1.5 w-1.5 rounded-full"

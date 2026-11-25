@@ -92,7 +92,7 @@ export function AccessPasswordCard({
           {isZh ? '安全与本地访问密码' : 'Security & Local Access Password'}
         </h3>
         <span
-          className={`text-[13px] font-medium shrink-0 ${
+          className={`text-[12px] font-medium shrink-0 ${
             authEnabled ? 'text-[var(--ok)]' : 'text-[var(--fg-3)]'
           }`}
         >
@@ -106,7 +106,7 @@ export function AccessPasswordCard({
         </span>
       </div>
 
-      <p className="m-0 text-[13px] text-[var(--fg-3)]">
+      <p className="m-0 text-[12px] text-[var(--fg-3)]">
         {isZh
           ? '部署到 NAS 或局域网时建议开启，密码仅以 scrypt 加盐哈希保存在本地磁盘'
           : 'Recommended on NAS / LAN · salted scrypt hash stored exclusively on disk'}

@@ -11,15 +11,15 @@
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 
-  /* Exempt Display Scale */
-  --text-kpi: 1.75rem;       /* 28px — Unified 4-Cell Ledger Baseline */
-  --text-h1: 1.25rem;        /* 20px — Page Title */
-  --text-brand: 1.0625rem;   /* 17px — Sidebar Wordmark */
+  /* Refined Native Desktop Display Scale */
+  --text-kpi: 1.5rem;        /* 24px — Balanced 4-Cell Ledger Baseline */
+  --text-h1: 1.125rem;       /* 18px — Page Title */
+  --text-brand: 1rem;        /* 16px — Sidebar Wordmark */
 
-  /* Strict 3-Size Body Scale */
-  --text-lg: 1rem;           /* 16px — Section Headings (h2) */
-  --text-body: 0.875rem;     /* 14px — Primary Body, Table Cells, Controls */
-  --text-sm: 0.8125rem;      /* 13px — Labels, Table Headers, Secondary Meta */
+  /* Native Desktop 3-Size Body Scale */
+  --text-lg: 0.9375rem;      /* 15px — Section Headings (h2) */
+  --text-body: 0.8125rem;    /* 13px — Primary Body, Table Cells, Controls */
+  --text-sm: 0.75rem;        /* 12px — Labels, Table Headers, Secondary Meta */
 
   /* Carbon Ink Dark Surfaces */
   --bg: #0b0c0f;
@@ -463,11 +463,11 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   .otl-ledger-cell {
     position: relative;
     overflow: hidden;
-    padding: 18px 22px;
+    padding: 18px 20px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    gap: 8px;
+    gap: 7px;
     border-bottom: 1px solid var(--border);
     background: transparent;
     border-top: 0;
@@ -480,8 +480,8 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 
   @media (max-width: 639px) {
     .otl-ledger-cell {
-      padding-left: 0;
-      padding-right: 0;
+      padding-left: 12px;
+      padding-right: 12px;
     }
     .otl-ledger-cell:last-child {
       border-bottom: 0;
@@ -490,11 +490,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 
   @media (min-width: 640px) and (max-width: 1099px) {
     .otl-ledger-cell:nth-child(odd) {
-      padding-left: 0;
       border-right: 1px solid var(--border);
-    }
-    .otl-ledger-cell:nth-child(even) {
-      padding-right: 0;
     }
     .otl-ledger-cell:nth-last-child(-n+2) {
       border-bottom: 0;
@@ -506,12 +502,8 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
       border-bottom: 0;
       border-right: 1px solid var(--border);
     }
-    .otl-ledger-cell:first-child {
-      padding-left: 2px;
-    }
     .otl-ledger-cell:last-child {
       border-right: 0;
-      padding-right: 2px;
     }
   }
 
@@ -782,7 +774,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 
   .otl-table th {
     text-align: left;
-    padding: 10px 14px;
+    padding: 10px 16px;
     font-size: var(--text-sm);
     font-weight: 500;
     color: var(--fg-3);
@@ -800,12 +792,36 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 
   .otl-table th:first-child,
   .otl-table td:first-child {
-    padding-left: 10px;
+    padding-left: 20px;
   }
 
   .otl-table th:last-child,
   .otl-table td:last-child {
-    padding-right: 10px;
+    padding-right: 20px;
+  }
+
+  .otl-trades-table th:first-child,
+  .otl-trades-table td:first-child {
+    padding-left: 16px;
+  }
+
+  .otl-trades-table th:last-child,
+  .otl-trades-table td:last-child {
+    padding-right: 16px;
+  }
+
+  .otl-modal-table th:first-child,
+  .otl-modal-table td:first-child {
+    padding-left: 24px;
+  }
+
+  .otl-modal-table th:last-child,
+  .otl-modal-table td:last-child {
+    padding-right: 24px;
+  }
+
+  .otl-modal-table tbody tr:last-child td {
+    padding-bottom: 16px;
   }
 
   .otl-table th.text-right,
@@ -814,7 +830,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   }
 
   .otl-table td {
-    padding: 12px 14px;
+    padding: 12px 16px;
     border-bottom: 1px solid var(--border);
     vertical-align: middle;
     transition:
@@ -852,11 +868,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 
 /* ── Light-Theme Tactile Surface & Contrast Enhancements (Unlayered so Utilities Never Override) ── */
 :root[data-theme="light"] header {
-  background: rgba(250, 251, 253, 0.92);
-}
-
-:root[data-theme="light"] .otl-ledger-strip {
-  background: linear-gradient(180deg, #fafbfd 0%, #ffffff 100%);
+  background: rgba(255, 255, 255, 0.92);
 }
 
 :root[data-theme="light"] .otl-btn:not(.otl-btn-primary) {

@@ -59,41 +59,42 @@ export function TopBar({
   const showRange = page !== 'settings' && page !== 'extensions'
 
   return (
-    <header className="sticky top-0 z-20 min-h-[54px] py-2 px-5 sm:px-8 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm flex flex-wrap items-center justify-between gap-3 shrink-0">
-      <div className="flex items-baseline gap-3 shrink-0">
-        <h1 key={page} className="t-h1 otl-title-swap whitespace-nowrap">
-          {t(pageTitleKeys[page])}
-        </h1>
-        {demoMode && (
-          <span
-            data-testid="demo-mode-badge"
-            className="text-[13px] text-[var(--fg-3)] whitespace-nowrap"
-          >
-            {t('demo_badge')}
-            {reconciledZero ? ` · ${t('kpi_reconciled_zero')}` : ''}
-          </span>
-        )}
-        {!demoMode && exchangeErrorCount > 0 && (
-          <button
-            type="button"
-            data-testid="topbar-exchange-error-badge"
-            onClick={onInspectErrors}
-            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[var(--err)] hover:underline bg-transparent border-0 p-0 cursor-pointer whitespace-nowrap self-center"
-          >
-            <span className="otl-venue-dot" style={{ background: 'var(--err)' }} />
-            <span>
-              {locale === 'en'
-                ? `${exchangeErrorCount} Exchange API ${exchangeErrorCount > 1 ? 'Errors' : 'Error'} · View →`
-                : `${exchangeErrorCount} 个交易所 API 报错 · 查看原因 →`}
+    <header className="sticky top-0 z-20 min-h-[54px] py-2 px-6 sm:px-8 lg:px-10 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm shrink-0">
+      <div className="max-w-[1400px] w-full mx-auto sm:px-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-baseline gap-3 shrink-0">
+          <h1 key={page} className="t-h1 otl-title-swap whitespace-nowrap">
+            {t(pageTitleKeys[page])}
+          </h1>
+          {demoMode && (
+            <span
+              data-testid="demo-mode-badge"
+              className="text-[12px] text-[var(--fg-3)] whitespace-nowrap"
+            >
+              {t('demo_badge')}
+              {reconciledZero ? ` · ${t('kpi_reconciled_zero')}` : ''}
             </span>
-          </button>
-        )}
-        {!demoMode && exchangeErrorCount === 0 && reconciledZero && (
-          <span className="text-[13px] text-[var(--fg-3)] hidden sm:inline whitespace-nowrap">
-            {t('kpi_reconciled_zero')}
-          </span>
-        )}
-      </div>
+          )}
+          {!demoMode && exchangeErrorCount > 0 && (
+            <button
+              type="button"
+              data-testid="topbar-exchange-error-badge"
+              onClick={onInspectErrors}
+              className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--err)] hover:underline bg-transparent border-0 p-0 cursor-pointer whitespace-nowrap self-center"
+            >
+              <span className="otl-venue-dot" style={{ background: 'var(--err)' }} />
+              <span>
+                {locale === 'en'
+                  ? `${exchangeErrorCount} Exchange API ${exchangeErrorCount > 1 ? 'Errors' : 'Error'} · View →`
+                  : `${exchangeErrorCount} 个交易所 API 报错 · 查看原因 →`}
+              </span>
+            </button>
+          )}
+          {!demoMode && exchangeErrorCount === 0 && reconciledZero && (
+            <span className="text-[12px] text-[var(--fg-3)] hidden sm:inline whitespace-nowrap">
+              {t('kpi_reconciled_zero')}
+            </span>
+          )}
+        </div>
 
       {/* Range slot stays LEFT of utility controls so Currency / Privacy / Locale stay pinned */}
       <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap justify-end">
@@ -194,6 +195,7 @@ export function TopBar({
         >
           <span>{locale === 'zh-CN' ? 'EN' : '中文'}</span>
         </button>
+      </div>
       </div>
     </header>
   )

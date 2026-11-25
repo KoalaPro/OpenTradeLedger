@@ -100,7 +100,7 @@ export function VersionUpgradeCard({
           <h3 className="t-h2 truncate">
             {isZh ? '版本与更新' : 'Version & Updates'}
           </h3>
-          <span className="font-mono text-[13px] text-[var(--fg-2)]">
+          <span className="font-mono text-[12px] text-[var(--fg-2)]">
             v{versionStatus?.current_version || '1.3.7'}
           </span>
         </div>
@@ -108,7 +108,7 @@ export function VersionUpgradeCard({
         {versionStatus?.update_available ? (
           <span
             data-testid="version-status-badge"
-            className="text-[13px] font-semibold text-[var(--warn)] shrink-0"
+            className="text-[12px] font-semibold text-[var(--warn)] shrink-0"
           >
             {isZh
               ? `新版本 v${versionStatus.latest_version}`
@@ -117,21 +117,21 @@ export function VersionUpgradeCard({
         ) : versionStatus?.error && !versionStatus.checked_sec ? (
           <span
             data-testid="version-status-badge"
-            className="text-[13px] font-semibold text-[var(--err)] shrink-0"
+            className="text-[12px] font-semibold text-[var(--err)] shrink-0"
           >
             {isZh ? '检测失败' : 'Check Error'}
           </span>
         ) : versionStatus?.checked_sec ? (
           <span
             data-testid="version-status-badge"
-            className="text-[13px] font-medium text-[var(--ok)] shrink-0"
+            className="text-[12px] font-medium text-[var(--ok)] shrink-0"
           >
             {isZh ? '已是最新' : 'Up to Date'}
           </span>
         ) : (
           <span
             data-testid="version-status-badge"
-            className="text-[13px] text-[var(--fg-3)] shrink-0"
+            className="text-[12px] text-[var(--fg-3)] shrink-0"
           >
             {settings.update_check_enabled === false
               ? isZh
@@ -233,7 +233,7 @@ export function VersionUpgradeCard({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[12px]">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -252,7 +252,7 @@ export function VersionUpgradeCard({
           </button>
           <span className="text-[var(--fg-2)]">{isZh ? '自动检查更新' : 'Auto-check updates'}</span>
           {versionStatus?.checked_at && (
-            <span className="text-[13px] text-[var(--fg-3)] hidden sm:inline">
+            <span className="text-[12px] text-[var(--fg-3)] hidden sm:inline">
               · {versionStatus.checked_at}
             </span>
           )}
@@ -311,7 +311,7 @@ export function VersionUpgradeCard({
           data-no-press="true"
           data-testid="manual-upgrade-guide-toggle"
           onClick={() => setManualGuideOpen(v => !v)}
-          className="inline-flex items-center gap-1 text-[13px] text-[var(--fg-3)] hover:text-[var(--fg)] hover:underline bg-transparent border-0 p-0 cursor-pointer text-left"
+          className="inline-flex items-center gap-1 text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] hover:underline bg-transparent border-0 p-0 cursor-pointer text-left"
         >
           <span>
             {isZh
@@ -325,14 +325,14 @@ export function VersionUpgradeCard({
         </button>
 
         <AnimatedCollapse open={manualGuideOpen} innerClassName="pt-2.5">
-          <div className="pt-2.5 border-t border-[var(--border)] space-y-2 text-[13px] text-[var(--fg-2)]">
+          <div className="pt-2.5 border-t border-[var(--border)] space-y-2 text-[12px] text-[var(--fg-2)]">
             <p className="m-0 leading-relaxed">
               {isZh
                 ? '日常小版本直接点上方「一键在线升级」即可。若需更新底层基础镜像：打开 NAS 的 Docker 应用进入 Compose 项目点击「重新构建 / 更新」（保持 ./data 挂载目录不变，数据零丢失）。'
                 : 'For routine updates, use One-Click Upgrade above. To refresh the base Docker image via NAS GUI: open Docker -> Compose -> Rebuild/Update while keeping ./data mounted.'}
             </p>
             <div className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--surface-2)] px-3 py-1.5">
-              <code className="flex-1 font-mono text-[13px] text-[var(--fg)] truncate select-all">
+              <code className="flex-1 font-mono text-[12px] text-[var(--fg)] truncate select-all">
                 docker compose pull &amp;&amp; docker compose up -d
               </code>
               <button

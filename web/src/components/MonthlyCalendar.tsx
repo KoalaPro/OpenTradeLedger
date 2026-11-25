@@ -76,7 +76,7 @@ export function MonthlyCalendar({
           <div className="flex items-baseline gap-2">
             <h2 className="t-h2 whitespace-nowrap">{t('an_cal_title')}</h2>
           </div>
-          <div className="text-[13px] text-[var(--fg-3)] whitespace-nowrap mt-0.5">
+          <div className="text-[12px] text-[var(--fg-3)] whitespace-nowrap mt-0.5">
             {winDays} {t('an_cal_win_days')} · {lossDays} {t('an_cal_loss_days')} · {t('an_cal_month_sum')}{' '}
             <b className={`sensitive ${pnlTone(monthSum)}`}>{cur.signedMoney(monthSum, 2)}</b>
           </div>
@@ -88,7 +88,7 @@ export function MonthlyCalendar({
             setSelectedDay(null)
             onSelectMonth(e.target.value)
           }}
-          className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
+          className="otl-select h-8 px-2.5 text-[12px] cursor-pointer"
         >
           {months.map(m => (
             <option key={m} value={m}>
@@ -105,7 +105,7 @@ export function MonthlyCalendar({
         {weekdays.map((w, i) => (
           <div
             key={i}
-            className="py-1.5 text-center text-[13px] text-[var(--fg-3)] border-r border-b border-[var(--border)]"
+            className="py-1.5 text-center text-[12px] text-[var(--fg-3)] border-r border-b border-[var(--border)]"
           >
             {w}
           </div>
@@ -141,7 +141,7 @@ export function MonthlyCalendar({
               type="button"
               data-no-press="true"
               onClick={() => setSelectedDay(prev => (prev === c.day ? null : c.day))}
-              className="h-[50px] p-1.5 flex flex-col justify-between text-left border-0 border-r border-b border-[var(--border)] cursor-pointer text-[13px]"
+              className="h-[50px] p-1.5 flex flex-col justify-between text-left border-0 border-r border-b border-[var(--border)] cursor-pointer text-[12px]"
               style={{
                 background: isSignificant
                   ? isPos
@@ -151,7 +151,7 @@ export function MonthlyCalendar({
                 boxShadow: activeRing,
               }}
             >
-              <span className="text-[var(--fg-3)] leading-none">{c.day}</span>
+              <span className="text-[11.5px] text-[var(--fg-3)] leading-none">{c.day}</span>
               {has && !isZeroNoise ? (
                 <span
                   className={`sensitive leading-none whitespace-nowrap font-medium ${
@@ -169,7 +169,7 @@ export function MonthlyCalendar({
       </div>
 
       {selectedDay !== null && (
-        <div className="otl-panel-swap flex items-center justify-between text-[13px] text-[var(--fg-2)]">
+        <div className="otl-panel-swap flex items-center justify-between text-[12px] text-[var(--fg-2)]">
           <span>
             {selectedKey}{' '}
             {locale === 'en' ? 'Daily Portfolio Net Change' : '单日全账户净值变动'}

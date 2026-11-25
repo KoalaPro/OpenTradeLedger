@@ -92,11 +92,11 @@ export function FloatingModal({
       <div
         className={`otl-velvet-window w-full ${maxWidthClass} max-h-[88vh] flex flex-col overflow-hidden`}
       >
-        <div className="px-5 py-4 border-b border-[var(--border)] bg-[var(--surface)] flex items-center justify-between gap-3 shrink-0">
+        <div className="px-6 py-4 border-b border-[var(--border)] bg-[var(--surface)] flex items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
             <div className="t-h2 truncate">{title}</div>
             {subtitle && (
-              <div className="text-[13px] text-[var(--fg-3)] mt-0.5 truncate">{subtitle}</div>
+              <div className="text-[12.5px] text-[var(--fg-3)] mt-0.5 truncate">{subtitle}</div>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">

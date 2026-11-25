@@ -39,13 +39,13 @@ export function BarkNotifyCard({
         <div className="flex items-baseline justify-between gap-2">
           <div>
             <h3 className="t-h2">{t('set_notify_title')}</h3>
-            <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('set_notify_sub')}</p>
+            <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('set_notify_sub')}</p>
           </div>
           <button
             type="button"
             data-no-press="true"
             onClick={() => setShowBarkGuide(v => !v)}
-            className="inline-flex items-center gap-1 text-[13px] text-[var(--fg-2)] hover:text-[var(--fg)] hover:underline bg-transparent border-0 p-0 cursor-pointer shrink-0"
+            className="inline-flex items-center gap-1 text-[12px] text-[var(--fg-2)] hover:text-[var(--fg)] hover:underline bg-transparent border-0 p-0 cursor-pointer shrink-0"
           >
             <span>{isZh ? '配置教程' : 'Setup Guide'}</span>
             <ChevronDown
@@ -61,7 +61,7 @@ export function BarkNotifyCard({
           className={`otl-collapse-grid ${showBarkGuide ? 'is-open' : ''}`}
         >
           <div className="otl-collapse-inner">
-            <ol className="m-0 pt-1 pb-2 pl-4 space-y-1 list-decimal text-[13px] text-[var(--fg-2)] leading-relaxed">
+            <ol className="m-0 pt-1 pb-2 pl-4 space-y-1 list-decimal text-[12px] text-[var(--fg-2)] leading-relaxed">
               <li>
                 {isZh
                   ? '在苹果 App Store 搜索并安装免费开源应用「Bark」；'
@@ -169,10 +169,10 @@ export function BarkNotifyCard({
       {/* Optional Outbound Network Proxy */}
       <div data-testid="outbound-proxy-card" className="pt-4 border-t border-[var(--border)] space-y-2">
         <div>
-          <div className="text-[14px] font-semibold text-[var(--fg)]">
+          <div className="text-[13px] font-semibold text-[var(--fg)]">
             {isZh ? '网络代理配置（国内 NAS 连币安可选）' : 'Outbound Network Proxy (Optional)'}
           </div>
-          <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">
+          <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">
             {isZh
               ? '若 NAS 直连币安超时，可填局域网代理地址（Docker 容器内请填宿主机局域网 IP，勿填 127.0.0.1），留空直连'
               : 'Optional HTTP/HTTPS/SOCKS5 proxy. In Docker on NAS, use LAN IP rather than 127.0.0.1.'}

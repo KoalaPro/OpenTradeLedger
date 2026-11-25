@@ -98,11 +98,11 @@ export function AnalyticsPage({
       {data.goal && data.goal.enabled ? (
         <section
           data-testid="custom-goal-banner"
-          className="py-4 border-b border-[var(--border)]"
+          className="py-4 px-5 border-b border-[var(--border)]"
         >
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex flex-wrap items-baseline gap-3 text-[13px]">
-              <span className="text-[14px] font-semibold text-[var(--fg)]">
+            <div className="flex flex-wrap items-baseline gap-3 text-[12px]">
+              <span className="text-[13px] font-semibold text-[var(--fg)]">
                 {data.goal.label || t('an_goal_default')}
               </span>
               <span className="text-[var(--fg-2)] whitespace-nowrap sensitive">
@@ -137,7 +137,7 @@ export function AnalyticsPage({
                   data-no-press="true"
                   data-testid="edit-goal-btn"
                   onClick={() => setEditingGoal(v => !v)}
-                  className="inline-flex items-center gap-1 text-[13px] font-medium text-[var(--accent)] hover:underline bg-transparent border-0 p-0 cursor-pointer shrink-0"
+                  className="inline-flex items-center gap-1 text-[12px] font-medium text-[var(--accent)] hover:underline bg-transparent border-0 p-0 cursor-pointer shrink-0"
                 >
                   <span>{locale === 'en' ? 'Edit Goal' : '调整目标'}</span>
                   <ChevronDown
@@ -189,9 +189,9 @@ export function AnalyticsPage({
         </section>
       ) : (
         onUpdateSettings && (
-          <div className="py-3.5 border-b border-[var(--border)]">
+          <div className="py-3.5 px-5 border-b border-[var(--border)]">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-[13px] text-[var(--fg-3)]">
+              <span className="text-[12px] text-[var(--fg-3)]">
                 {locale === 'en' ? 'Custom equity goal bar is currently hidden' : '自定义净值目标进度条当前已隐藏'}
               </span>
               <button
@@ -274,11 +274,11 @@ export function AnalyticsPage({
 
       {/* 7:5 Hairline Split: Equity Curve × Monthly PnL Calendar */}
       <section className="grid grid-cols-1 lg:grid-cols-12 border-b border-[var(--border)]">
-        <div className="lg:col-span-7 py-6 lg:pr-7 lg:border-r border-[var(--border)] flex flex-col justify-between gap-4">
+        <div className="lg:col-span-7 py-6 px-5 lg:pl-5 lg:pr-7 lg:border-r border-[var(--border)] flex flex-col justify-between gap-4">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <div>
               <h2 className="t-h2">{t('an_curve_title')}</h2>
-              <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('ov_curve_sub')}</p>
+              <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('ov_curve_sub')}</p>
             </div>
             <span className={`t-h1 sensitive whitespace-nowrap ${pnlTone(activeWholePnl)}`}>
               {cur.signedMoney(activeWholePnl)}
@@ -286,7 +286,7 @@ export function AnalyticsPage({
           </div>
           <EquityChart points={data.equity_curve} height={238} />
         </div>
-        <div className="lg:col-span-5 py-6 lg:pl-7 border-t lg:border-t-0 border-[var(--border)]">
+        <div className="lg:col-span-5 py-6 px-5 lg:pl-7 lg:pr-5 border-t lg:border-t-0 border-[var(--border)]">
           <MonthlyCalendar
             days={data.calendar_days}
             availableMonths={data.available_months}
@@ -298,7 +298,7 @@ export function AnalyticsPage({
 
       {/* Flush Attribution Table */}
       <section className="py-6 space-y-3">
-        <div className="border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
+        <div className="px-5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
           <h2 className="t-h2 py-2">{t('an_attr_title')}</h2>
           <UnderlineTabs
             value={attrMode}

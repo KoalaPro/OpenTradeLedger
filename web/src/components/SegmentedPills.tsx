@@ -60,7 +60,7 @@ export function SegmentedPills<T extends string>({
     }
   }, [value, options])
 
-  const padClass = size === 'sm' ? 'px-2.5 py-1 text-[13px]' : 'px-3 py-1 text-[13px]'
+  const padClass = size === 'sm' ? 'px-2.5 py-1 text-[12px]' : 'px-3 py-1 text-[12px]'
 
   return (
     <div

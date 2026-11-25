@@ -92,7 +92,7 @@ export function ExtensionsPage({
 
   return (
     <div data-testid="extensions-page" className="otl-stagger">
-      <div className="pt-1 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
+      <div className="pt-1 px-5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
         <UnderlineTabs
           value={activeTab}
           onChange={handleSelectTab}
@@ -102,7 +102,7 @@ export function ExtensionsPage({
             ...(enableStocks ? [{ value: 'stock' as const, label: t('ext_stock_tab'), testId: 'ext-tab-stock' }] : []),
           ]}
         />
-        <span className="text-[13px] text-[var(--fg-3)] py-2">{t('ext_toggle_hint')}</span>
+        <span className="text-[12px] text-[var(--fg-3)] py-2">{t('ext_toggle_hint')}</span>
       </div>
 
       {activeTab === 'watcher' && enableWatcher && (
@@ -137,7 +137,7 @@ export function ExtensionsPage({
 
           <section className="grid grid-cols-1 lg:grid-cols-2 border-b border-[var(--border)]">
             <div className="py-6 lg:pr-6 lg:border-r border-[var(--border)] space-y-3">
-              <h2 className="t-h2">{t('cp_transfers')}</h2>
+              <h2 className="t-h2 px-5">{t('cp_transfers')}</h2>
               <div className="overflow-x-auto">
                 <table className="otl-table">
                   <thead>
@@ -169,7 +169,7 @@ export function ExtensionsPage({
             </div>
 
             <div className="py-6 lg:pl-6 border-t lg:border-t-0 border-[var(--border)] space-y-3">
-              <h2 className="t-h2">{t('cp_platforms')}</h2>
+              <h2 className="t-h2 px-5">{t('cp_platforms')}</h2>
               <div className="overflow-x-auto">
                 <table className="otl-table">
                   <thead>
@@ -202,7 +202,7 @@ export function ExtensionsPage({
           </section>
 
           <section data-testid="copy-rebates-fullwidth" className="py-6 space-y-3">
-            <h2 className="t-h2 pb-2 border-b border-[var(--border)]">{t('cp_rebate_stream')}</h2>
+            <h2 className="t-h2 px-5 pb-2 border-b border-[var(--border)]">{t('cp_rebate_stream')}</h2>
             <div className="overflow-x-auto">
               <table className="otl-table">
                 <thead>
@@ -274,9 +274,9 @@ export function ExtensionsPage({
 
           <section className="grid grid-cols-1 lg:grid-cols-12">
             <div className="lg:col-span-7 py-6 lg:pr-6 lg:border-r border-[var(--border)] space-y-3">
-              <h2 className="t-h2">{t('st_holdings')}</h2>
+              <h2 className="t-h2 px-5">{t('st_holdings')}</h2>
               {st.holdings.length === 0 ? (
-                <div className="py-10 text-center text-[14px] text-[var(--fg-3)]">{t('st_empty_holdings')}</div>
+                <div className="py-10 text-center text-[13px] text-[var(--fg-3)]">{t('st_empty_holdings')}</div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="otl-table">
@@ -297,7 +297,7 @@ export function ExtensionsPage({
                               <InstrumentMark instrument={h.symbol} exchange="US" stock />
                               {h.symbol}
                             </div>
-                            <div className="pl-7 text-[13px] text-[var(--fg-3)]">
+                            <div className="pl-7 text-[12px] text-[var(--fg-3)]">
                               {locale === 'en' ? h.channel : h.channel_zh}
                             </div>
                           </td>
@@ -320,7 +320,7 @@ export function ExtensionsPage({
             </div>
 
             <div className="lg:col-span-5 py-6 lg:pl-6 border-t lg:border-t-0 border-[var(--border)] space-y-3">
-              <h2 className="t-h2">{t('st_cash')}</h2>
+              <h2 className="t-h2 px-5">{t('st_cash')}</h2>
               <div className="overflow-x-auto">
                 <table className="otl-table">
                   <thead>

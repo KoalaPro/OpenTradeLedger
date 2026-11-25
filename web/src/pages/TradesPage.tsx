@@ -50,16 +50,16 @@ function LegFeeCard({
   return (
     <div data-testid={testId} className={`space-y-2 ${padClass}`}>
       <div>
-        <div className="font-semibold text-[14px] text-[var(--fg)]">{title}</div>
-        <div className="text-[13px] text-[var(--fg-2)] truncate">
+        <div className="font-semibold text-[13px] text-[var(--fg)]">{title}</div>
+        <div className="text-[12px] text-[var(--fg-2)] truncate">
           {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
         </div>
-        <div className="text-[13px] text-[var(--fg-3)] whitespace-nowrap">
+        <div className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
           {leg.time_str} {leg.avg_price > 0 ? `· ${fmtPrice(leg.avg_price)}` : ''}
         </div>
       </div>
 
-      <div className="pt-2 border-t border-[var(--border)] space-y-1 text-[13px]">
+      <div className="pt-2 border-t border-[var(--border)] space-y-1 text-[12px]">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[var(--fg-3)]">{t('leg_gross_fee')}</span>
           <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
@@ -245,7 +245,7 @@ export function TradesPage({
   return (
     <div data-testid="trades-page" className="otl-stagger">
       {/* Flush Filter Toolbar */}
-      <div className="py-3.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2.5">
+      <div className="py-3.5 px-4 sm:px-5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <SegmentedPills
             wrap
@@ -258,7 +258,7 @@ export function TradesPage({
             aria-label={t('all_symbols')}
             value={symbolFilter}
             onChange={e => onSymbolChange(e.target.value)}
-            className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
+            className="otl-select h-8 px-2.5 text-[12px] cursor-pointer"
           >
             <option value="ALL">{t('all_symbols')}</option>
             {symbolFilter !== 'ALL' && !data.available_symbols.includes(symbolFilter) && (
@@ -299,7 +299,7 @@ export function TradesPage({
             aria-label="Sort"
             value={sortBy}
             onChange={e => setSortBy(e.target.value as typeof sortBy)}
-            className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
+            className="otl-select h-8 px-2.5 text-[12px] cursor-pointer"
           >
             <option value="CLOSE_DESC">{t('sort_close_desc')}</option>
             <option value="OPEN_DESC">{t('sort_open_desc')}</option>
@@ -325,7 +325,7 @@ export function TradesPage({
           }}
         >
           {sortedTrades.length === 0 ? (
-            <div className="py-16 text-center text-[14px] text-[var(--fg-3)]">{t('empty_trades')}</div>
+            <div className="py-16 text-center text-[13px] text-[var(--fg-3)]">{t('empty_trades')}</div>
           ) : (
             <div ref={tableWrapRef} className="otl-table-wrap max-h-[72vh] overflow-y-auto overflow-x-auto">
               <div
@@ -363,21 +363,21 @@ export function TradesPage({
                         <td>
                           <div className="flex items-center gap-2">
                             <InstrumentMark instrument={tr.symbol} exchange={tr.venue_id.toUpperCase()} />
-                            <strong className="text-[14px] font-semibold whitespace-nowrap">{tr.symbol}</strong>
+                            <strong className="text-[13px] font-semibold whitespace-nowrap">{tr.symbol}</strong>
                             <span
-                              className={`text-[13px] font-semibold whitespace-nowrap ${
+                              className={`text-[12px] font-semibold whitespace-nowrap ${
                                 tr.side === 'LONG' ? 'txt-pos' : 'txt-neg'
                               }`}
                             >
                               {tr.side === 'LONG' ? t('side_long') : t('side_short')}
                             </span>
                             {tr.is_partial_close && (
-                              <span className="text-[13px] text-[var(--fg-3)] whitespace-nowrap">
+                              <span className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
                                 · {t('partial_badge')}
                               </span>
                             )}
                           </div>
-                          <div className="text-[13px] text-[var(--fg-3)] mt-0.5 whitespace-nowrap">
+                          <div className="text-[12px] text-[var(--fg-3)] mt-0.5 whitespace-nowrap">
                             {tr.close_time_str} · {fmtDuration(tr.holding_sec, locale)}
                           </div>
                         </td>
@@ -389,7 +389,7 @@ export function TradesPage({
                         </td>
                         {detailed && (
                           <td className="hidden sm:table-cell text-right whitespace-nowrap">
-                            <div className="text-[13px] font-medium sensitive">
+                            <div className="text-[12.5px] font-medium sensitive">
                               {t('fee_net_short')}{' '}
                               {tr.net_fee_usd > 0 ? `-${cur.money(tr.net_fee_usd, 2)}` : cur.money(0, 2)}
                               {tr.effective_relief_pct > 0 && (
@@ -398,7 +398,7 @@ export function TradesPage({
                                 </span>
                               )}
                             </div>
-                            <div className="text-[13px] text-[var(--fg-3)] sensitive">
+                            <div className="text-[12px] text-[var(--fg-3)] sensitive">
                               {tr.entry_leg.fee_known === false || tr.exit_leg.fee_known === false
                                 ? t('leg_fee_unknown')
                                 : `${t('fee_entry_short')} -${cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)} · ${t('fee_exit_short')} -${cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}`}
@@ -406,10 +406,10 @@ export function TradesPage({
                           </td>
                         )}
                         <td className="text-right whitespace-nowrap">
-                          <div className={`text-[14px] font-semibold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
+                          <div className={`text-[13px] font-semibold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
                             {cur.signedPlainMoney(tr.net_pnl_usd)}
                           </div>
-                          <div className="text-[13px] text-[var(--fg-3)] sensitive">
+                          <div className="text-[12px] text-[var(--fg-3)] sensitive">
                             {locale === 'en' ? 'Pre-rebate ' : '返佣前 '}
                             {cur.signedPlainMoney(tr.book_pnl_usd)}
                           </div>
@@ -426,12 +426,12 @@ export function TradesPage({
         {/* Right Settlement Inspector */}
         <aside
           data-testid="trade-detail-panel"
-          className="xl:col-span-5 py-5 xl:pl-7 border-t xl:border-t-0 border-[var(--border)] flex flex-col gap-5 xl:sticky xl:top-[68px]"
+          className="xl:col-span-5 py-5 px-5 xl:pl-7 xl:pr-5 border-t xl:border-t-0 border-[var(--border)] flex flex-col gap-5 xl:sticky xl:top-[68px]"
         >
           <div className="flex items-center justify-between gap-2">
             <h2 className="t-h2">{t('detail_title')}</h2>
             {sortedTrades.length > 0 && (
-              <div className="flex items-center gap-1.5 text-[13px] text-[var(--fg-3)]">
+              <div className="flex items-center gap-1.5 text-[12px] text-[var(--fg-3)]">
                 <span className="tabular-nums mr-1">
                   {selectedIndex + 1} / {sortedTrades.length}
                 </span>
@@ -458,7 +458,7 @@ export function TradesPage({
           </div>
 
           {!selected ? (
-            <div className="py-12 text-center text-[14px] text-[var(--fg-3)]">{t('empty_trades')}</div>
+            <div className="py-12 text-center text-[13px] text-[var(--fg-3)]">{t('empty_trades')}</div>
           ) : (
             <>
               <div
@@ -469,9 +469,9 @@ export function TradesPage({
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <InstrumentMark instrument={selected.symbol} exchange={selected.venue_id.toUpperCase()} />
-                      <strong className="text-[16px] font-semibold">{selected.symbol}</strong>
+                      <strong className="text-[15px] font-semibold">{selected.symbol}</strong>
                       <span
-                        className={`text-[13px] font-semibold ${
+                        className={`text-[12px] font-semibold ${
                           selected.side === 'LONG' ? 'txt-pos' : 'txt-neg'
                         }`}
                       >
@@ -482,7 +482,7 @@ export function TradesPage({
                         name={locale === 'en' ? selected.venue_name : selected.venue_name_zh || selected.venue_name}
                       />
                     </div>
-                    <div className="text-[13px] text-[var(--fg-3)] mt-1">
+                    <div className="text-[12px] text-[var(--fg-3)] mt-1">
                       {selected.qty > 0 ? `${selected.qty} ${selected.symbol.split(/[_/-]/)[0]} · ` : ''}
                       {fmtDuration(selected.holding_sec, locale)}
                       {selected.effective_relief_pct > 0
@@ -494,7 +494,7 @@ export function TradesPage({
                     <div className={`t-kpi sensitive whitespace-nowrap ${pnlTone(selected.net_pnl_usd)}`}>
                       {formatDisplayKpiValue(cur.signedMoney(selected.net_pnl_usd))}
                     </div>
-                    <div className="text-[13px] text-[var(--fg-3)] mt-0.5">
+                    <div className="text-[12px] text-[var(--fg-3)] mt-0.5">
                       {selected.rebate_status === 'PENDING' ? t('detail_net_pending') : t('detail_net_after_rebate')}
                     </div>
                   </div>
@@ -517,7 +517,7 @@ export function TradesPage({
                   />
                 </div>
 
-                <div className="pt-3.5 space-y-1.5 text-[13px]">
+                <div className="pt-3.5 space-y-1.5 text-[12.5px]">
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
                     <span className={`font-medium sensitive ${pnlTone(selected.gross_pnl_usd)}`}>
@@ -540,14 +540,14 @@ export function TradesPage({
                     <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
                     <span className="txt-pos sensitive">+{cur.money(selected.total_rebate_usd, 3)}</span>
                   </div>
-                  <div className="flex justify-between pt-2 border-t border-[var(--border)] text-[14px] font-semibold">
+                  <div className="flex justify-between pt-2 border-t border-[var(--border)] text-[13px] font-semibold">
                     <span>{t('wf_final_net')}</span>
                     <span className={`sensitive ${pnlTone(selected.net_pnl_usd)}`}>
                       {cur.signedMoney(selected.net_pnl_usd)}
                     </span>
                   </div>
                   {selected.total_discount_saved_usd > 0.0001 && (
-                    <div className="flex justify-between text-[var(--fg-3)]">
+                    <div className="flex justify-between text-[12px] text-[var(--fg-3)]">
                       <span>
                         {locale === 'en'
                           ? 'Pre-deduction token fee discount already saved'
@@ -562,7 +562,7 @@ export function TradesPage({
               {/* Journal Tags & Notes (kept outside key={selected.trade_id} to preserve synchronous drafts) */}
               <div className="pt-3.5 border-t border-[var(--border)] space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-[13px] font-medium text-[var(--fg-2)]">{t('journal_title')}</span>
+                  <span className="text-[12px] font-medium text-[var(--fg-2)]">{t('journal_title')}</span>
                   <button
                     type="button"
                     disabled={saving}
@@ -589,7 +589,7 @@ export function TradesPage({
                             [selected.trade_id]: { tags: nextTags, note: draftNote },
                           }))
                         }}
-                        className="px-2.5 py-1 rounded-[5px] text-[13px] font-medium border cursor-pointer"
+                        className="px-2.5 py-1 rounded-[5px] text-[12px] font-medium border cursor-pointer"
                         style={{
                           background: on ? 'var(--accent-soft)' : 'transparent',
                           borderColor: on ? 'var(--accent)' : 'var(--border)',
@@ -622,11 +622,11 @@ export function TradesPage({
 
       {/* All-Time Equity & Commodity Perps Fee History */}
       <section className="py-6 space-y-3">
-        <h2 id="perp-history-title" className="t-h2 pb-2.5 border-b border-[var(--border)]">
+        <h2 id="perp-history-title" className="t-h2 px-5 pb-2.5 border-b border-[var(--border)]">
           {t('st_perps')} · {locale === 'en' ? 'All time' : '全部历史'}
         </h2>
         {perpHistory.length === 0 ? (
-          <p className="m-0 py-8 text-center text-[14px] text-[var(--fg-3)]">
+          <p className="m-0 py-8 text-center text-[13px] text-[var(--fg-3)]">
             {locale === 'en'
               ? 'No equity or commodity perpetual records match these filters.'
               : '当前筛选下没有股票或商品永续合约记录。'}
@@ -666,7 +666,7 @@ export function TradesPage({
                             row.symbol
                           )}
                         </div>
-                        <div className="pl-7 text-[13px] text-[var(--fg-3)]">
+                        <div className="pl-7 text-[12px] text-[var(--fg-3)]">
                           {locale === 'en' ? row.category : row.category_zh || row.category}
                         </div>
                       </td>

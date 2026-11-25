@@ -478,7 +478,7 @@ export default function App() {
                 onInspectErrors={() => navigateTo('settings')}
               />
 
-              <main className="flex-1 px-5 sm:px-8 pb-10 max-w-[1600px] w-full">
+              <main className="flex-1 px-6 sm:px-8 lg:px-10 pb-12 max-w-[1400px] w-full mx-auto">
                 <AnimatedCollapse open={Boolean(visibleError)} innerClassName="pt-4">
                   <div
                     data-testid="global-error-banner"

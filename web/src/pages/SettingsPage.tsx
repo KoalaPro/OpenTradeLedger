@@ -249,10 +249,10 @@ export function SettingsPage({
       {/* Chapter 1: 7:5 Balanced Top Split — Exchange Adapters × Display Preferences */}
       <div className="grid grid-cols-1 xl:grid-cols-12 border-b border-[var(--border)]">
         {/* Left 7 Columns: Read-Only Exchange Adapters */}
-        <section className="xl:col-span-7 py-6 xl:pr-8 xl:border-r border-[var(--border)]">
+        <section className="xl:col-span-7 py-6 px-5 xl:pl-5 xl:pr-8 xl:border-r border-[var(--border)]">
           <div className="pb-4 border-b border-[var(--border)]">
             <h2 className="t-h2">{t('set_ex_title')}</h2>
-            <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('set_ex_sub')}</p>
+            <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('set_ex_sub')}</p>
           </div>
 
           <div className="divide-y divide-[var(--border)]">
@@ -289,7 +289,7 @@ export function SettingsPage({
                         {ad.configured && vStatus === 'connected' && (
                           <span
                             data-testid={`adapter-status-${ad.venue_id}`}
-                            className="inline-flex items-center gap-1.5 text-[13px] text-[var(--ok)]"
+                            className="inline-flex items-center gap-1.5 text-[12px] text-[var(--ok)]"
                           >
                             <span className="otl-venue-dot" style={{ background: 'var(--ok)' }} />
                             {t('set_connected')}
@@ -298,7 +298,7 @@ export function SettingsPage({
                         {ad.configured && vStatus === 'error' && (
                           <span
                             data-testid={`adapter-status-${ad.venue_id}`}
-                            className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-[var(--err)]"
+                            className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[var(--err)]"
                           >
                             <span className="otl-venue-dot" style={{ background: 'var(--err)' }} />
                             <span>{isZh ? '连接报错' : 'API Error'}</span>
@@ -307,7 +307,7 @@ export function SettingsPage({
                         {ad.configured && vStatus === 'unverified' && (
                           <span
                             data-testid={`adapter-status-${ad.venue_id}`}
-                            className="text-[13px] font-medium text-[var(--warn)]"
+                            className="text-[12px] font-medium text-[var(--warn)]"
                           >
                             · {isZh ? '待验证' : 'Unverified'}
                           </span>
@@ -315,7 +315,7 @@ export function SettingsPage({
                         {ad.configured && vStatus === 'disabled' && (
                           <span
                             data-testid={`adapter-status-${ad.venue_id}`}
-                            className="text-[13px] text-[var(--fg-3)]"
+                            className="text-[12px] text-[var(--fg-3)]"
                           >
                             · {isZh ? '已停用' : 'Disabled'}
                           </span>
@@ -323,14 +323,14 @@ export function SettingsPage({
                         {!ad.configured && vStatus === 'archived' && (
                           <span
                             data-testid={`adapter-status-${ad.venue_id}`}
-                            className="text-[13px] text-[var(--fg-3)]"
+                            className="text-[12px] text-[var(--fg-3)]"
                           >
                             · {isZh ? '已封存' : 'Archived'}
                           </span>
                         )}
                       </div>
 
-                      <div className="text-[13px] text-[var(--fg-3)] mt-0.5 truncate">
+                      <div className="text-[12px] text-[var(--fg-3)] mt-0.5 truncate">
                         {maskedKey ? (
                           <>
                             <span className="font-mono text-[var(--fg-2)]">{maskedKey}</span> · {passLabel}
@@ -454,7 +454,7 @@ export function SettingsPage({
                   {vStatus === 'error' && errReason && (
                     <div
                       data-testid={`adapter-error-box-${ad.venue_id}`}
-                      className="pl-3 border-l-2 border-[var(--err)] text-[13px] text-[var(--err)] space-y-0.5"
+                      className="pl-3 border-l-2 border-[var(--err)] text-[12px] text-[var(--err)] space-y-0.5"
                     >
                       <div className="font-medium">{errReason}</div>
                       {rawErr && !errReason.includes(rawErr) && (
@@ -471,11 +471,11 @@ export function SettingsPage({
         </section>
 
         {/* Right 5 Columns: Display Preferences & Module Toggles (height-matched with left 7 venues) */}
-        <section className="xl:col-span-5 py-6 xl:pl-8 border-t xl:border-t-0 border-[var(--border)] space-y-3.5">
+        <section className="xl:col-span-5 py-6 px-5 xl:pl-8 xl:pr-5 border-t xl:border-t-0 border-[var(--border)] space-y-3.5">
           <h2 className="t-h2">{t('set_pref_title')}</h2>
 
           {/* Language */}
-          <div className="flex items-center justify-between gap-2 text-[14px]">
+          <div className="flex items-center justify-between gap-2 text-[13px]">
             <span className="text-[var(--fg-2)]">{t('set_lang')}</span>
             <SegmentedPills
               value={settings.locale}
@@ -488,7 +488,7 @@ export function SettingsPage({
           </div>
 
           {/* Theme */}
-          <div className="flex flex-wrap items-center justify-between gap-2 text-[14px]">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
             <span className="text-[var(--fg-2)]">{t('set_theme')}</span>
             <SegmentedPills
               size="sm"
@@ -503,7 +503,7 @@ export function SettingsPage({
           </div>
 
           {/* Polarity */}
-          <div className="flex items-center justify-between gap-2 text-[14px]">
+          <div className="flex items-center justify-between gap-2 text-[13px]">
             <span className="text-[var(--fg-2)]">{t('set_polarity')}</span>
             <SegmentedPills
               value={settings.polarity}
@@ -516,7 +516,7 @@ export function SettingsPage({
           </div>
 
           {/* Display Currency */}
-          <div className="space-y-1 text-[14px]">
+          <div className="space-y-1 text-[13px]">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[var(--fg-2)]">{t('set_currency')}</span>
               <select
@@ -526,7 +526,7 @@ export function SettingsPage({
                 onChange={e =>
                   void onUpdateSettings({ display_currency: e.target.value as CurrencyCode })
                 }
-                className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
+                className="otl-select h-8 px-2.5 text-[12px] cursor-pointer"
               >
                 {CURRENCY_OPTIONS.map(opt => (
                   <option key={opt.code} value={opt.code}>
@@ -536,7 +536,7 @@ export function SettingsPage({
               </select>
             </div>
             {cur.code !== 'USDT' && cur.code !== 'USD' && (
-              <div className="text-[13px] text-[var(--fg-3)] text-right">
+              <div className="text-[12px] text-[var(--fg-3)] text-right">
                 {t('set_fx_live')}: 1 USDT ≈ {cur.symbol}
                 {cur.rate.toFixed(cur.code === 'JPY' ? 2 : 4)}
                 {cur.fx.updated_at ? ` · ${cur.fx.updated_at}` : ''}
@@ -545,7 +545,7 @@ export function SettingsPage({
           </div>
 
           {/* Optional Modules & Privacy Default */}
-          <div className="space-y-3 pt-1 text-[14px]">
+          <div className="space-y-3 pt-1 text-[13px]">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[var(--fg-2)]">{t('set_privacy_default')}</span>
               <button
@@ -675,8 +675,8 @@ export function SettingsPage({
           {/* Demo Mode Toggle */}
           <div className="pt-3.5 border-t border-[var(--border)] flex items-center justify-between gap-3">
             <div>
-              <div className="text-[14px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
-              <div className="text-[13px] text-[var(--fg-3)]">
+              <div className="text-[13px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
+              <div className="text-[12px] text-[var(--fg-3)]">
                 {previewFallback
                   ? isZh
                     ? '已切换为实盘模式（接入首个只读交易所 API 后自动替换为真实账单）'
@@ -701,7 +701,7 @@ export function SettingsPage({
 
       {/* Chapter 2: Balanced 50:50 Two-Column System Configuration (Zero Blank Left Void) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 items-start">
-        <div className="lg:pr-8 lg:border-r border-[var(--border)] divide-y divide-[var(--border)]">
+        <div className="px-5 lg:pl-5 lg:pr-8 lg:border-r border-[var(--border)] divide-y divide-[var(--border)]">
           {!demoMode && (
             <AccessPasswordCard
               authStatus={authStatus}
@@ -722,7 +722,7 @@ export function SettingsPage({
           />
         </div>
 
-        <div className="lg:pl-8 border-t lg:border-t-0 border-[var(--border)] divide-y divide-[var(--border)]">
+        <div className="px-5 lg:pl-8 lg:pr-5 border-t lg:border-t-0 border-[var(--border)] divide-y divide-[var(--border)]">
           <AiConfigCard
             settings={settings}
             onUpdateSettings={onUpdateSettings}
@@ -776,7 +776,7 @@ export function SettingsPage({
               href={selectedAdapter.docs_url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-[13px] font-medium text-[var(--accent)] hover:underline"
+              className="inline-flex items-center gap-1 text-[12px] font-medium text-[var(--accent)] hover:underline"
             >
               <span>{isZh ? 'API 文档' : 'API Docs'}</span>
               <ExternalLink size={12} />
@@ -785,7 +785,7 @@ export function SettingsPage({
         }
       >
         {selectedAdapter && (
-          <div className={`p-5 space-y-3.5 text-[13px] ${modalShake ? 'otl-shake' : ''}`}>
+          <div className={`p-6 space-y-3.5 text-[12.5px] ${modalShake ? 'otl-shake' : ''}`}>
             <div
               data-testid="exchange-ceremony-stepper"
               data-stage={ceremonyStage}
@@ -1040,7 +1040,7 @@ export function SettingsPage({
         }
       >
         {deletingAdapter && (
-          <div className="p-5 space-y-4 text-[13px]">
+          <div className="p-6 space-y-4 text-[12.5px]">
             {deleteMode === 'choice' ? (
               <>
                 <p className="m-0 text-[var(--fg-2)] leading-relaxed">

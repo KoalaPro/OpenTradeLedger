@@ -57,7 +57,7 @@ export function KpiCard({
       className={`otl-ledger-cell ${onClick ? 'otl-card-interactive' : ''}`}
       style={active ? { boxShadow: 'inset 0 -2px 0 var(--accent)' } : undefined}
     >
-      <div className="flex items-center justify-between gap-2 text-[13px] text-[var(--fg-2)] whitespace-nowrap">
+      <div className="flex items-center justify-between gap-2 text-[12px] text-[var(--fg-2)] whitespace-nowrap">
         <span className="truncate">{label}</span>
         {badge}
       </div>
@@ -68,7 +68,7 @@ export function KpiCard({
       >
         {formatDisplayKpiValue(value)}
       </div>
-      <div className="text-[13px] text-[var(--fg-3)] leading-snug">{sub}</div>
+      <div className="text-[12px] text-[var(--fg-3)] leading-snug">{sub}</div>
     </div>
   )
 }

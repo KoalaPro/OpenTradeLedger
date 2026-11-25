@@ -38,7 +38,7 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
   const cur = useCurrency()
   const feeUnknown = leg.fee_known === false
   return (
-    <div className="py-2.5 border-t border-[var(--border)] space-y-1.5 text-[13px]">
+    <div className="py-2.5 border-t border-[var(--border)] space-y-1.5 text-[12px]">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-semibold text-[var(--fg-2)]">{title}</span>
@@ -215,7 +215,7 @@ export function TradeDrilldownDrawer({
       }`}
     >
       <div className="otl-drawer-panel w-full max-w-[520px] h-full flex flex-col overflow-hidden">
-        <div className="px-5 py-4 border-b border-[var(--border)] flex items-center justify-between gap-3 shrink-0">
+        <div className="px-6 py-4 border-b border-[var(--border)] flex items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
             <div className="t-h2 inline-flex items-center gap-2.5 flex-wrap">
               <InstrumentMark instrument={symbol} exchange={venueId.toUpperCase()} />
@@ -223,7 +223,7 @@ export function TradeDrilldownDrawer({
               <VenueBadge venueId={venueId} name={venueName || venueId.toUpperCase()} />
             </div>
             {trades.length > 0 && (
-              <div className="text-[13px] text-[var(--fg-3)] mt-0.5 truncate">
+              <div className="text-[12px] text-[var(--fg-3)] mt-0.5 truncate">
                 {trades.length} {locale === 'en' ? 'trades' : '笔交割'} · {t('kpi_winrate')}{' '}
                 {winRate.toFixed(1)}%
               </div>
@@ -255,7 +255,7 @@ export function TradeDrilldownDrawer({
 
         <div className="flex-1 overflow-y-auto">
           {livePos && (
-            <div className="px-5 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3 text-[13px]">
+            <div className="px-6 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3 text-[12.5px]">
               <div className="flex items-center gap-2">
                 <span className={`font-semibold ${livePos.side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                   {livePos.side === 'LONG' ? t('side_long') : t('side_short')} {livePos.leverage}x
@@ -277,22 +277,22 @@ export function TradeDrilldownDrawer({
           )}
 
           {trades.length > 0 && (
-            <div className="px-5 py-3.5 border-b border-[var(--border)] bg-[var(--surface-2)] grid grid-cols-3 gap-3 text-[13px]">
+            <div className="px-6 py-3.5 border-b border-[var(--border)] bg-[var(--surface-2)] grid grid-cols-3 gap-3 text-[12px]">
               <div>
                 <div className="text-[var(--fg-3)]">{t('th_net_pnl')}</div>
-                <div className={`text-[16px] font-semibold mt-0.5 sensitive ${pnlTone(totalNet)}`}>
+                <div className={`text-[15px] font-semibold mt-0.5 sensitive ${pnlTone(totalNet)}`}>
                   {cur.signedMoney(totalNet)}
                 </div>
               </div>
               <div>
                 <div className="text-[var(--fg-3)]">{t('wf_total_fee')}</div>
-                <div className="text-[15px] font-semibold mt-0.5 sensitive text-[var(--fg)]">
+                <div className="text-[14px] font-semibold mt-0.5 sensitive text-[var(--fg)]">
                   -{cur.money(totalFee)}
                 </div>
               </div>
               <div className="text-right">
                 <div className="text-[var(--fg-3)]">{t('wf_total_rebate')}</div>
-                <div className="text-[15px] font-semibold mt-0.5 sensitive txt-pos">
+                <div className="text-[14px] font-semibold mt-0.5 sensitive txt-pos">
                   +{cur.money(totalReb)}
                 </div>
               </div>
@@ -301,8 +301,8 @@ export function TradeDrilldownDrawer({
 
           <div className="divide-y divide-[var(--border)]">
             {loading ? (
-              <div className="p-5 space-y-3">
-                <div className="text-center text-[13px] text-[var(--fg-3)]">
+              <div className="p-6 space-y-3">
+                <div className="text-center text-[12.5px] text-[var(--fg-3)]">
                   {locale === 'en' ? 'Loading…' : '正在加载明细…'}
                 </div>
                 {[0, 1, 2].map(idx => (
@@ -313,7 +313,7 @@ export function TradeDrilldownDrawer({
                 ))}
               </div>
             ) : trades.length === 0 ? (
-              <div className="py-12 text-center text-[14px] text-[var(--fg-3)]">{t('empty_trades')}</div>
+              <div className="py-12 text-center text-[13px] text-[var(--fg-3)]">{t('empty_trades')}</div>
             ) : (
               trades.map(tr => {
                 const isExp = expandedId === tr.trade_id
@@ -323,21 +323,21 @@ export function TradeDrilldownDrawer({
                       type="button"
                       data-no-press="true"
                       onClick={() => setExpandedId(isExp ? '' : tr.trade_id)}
-                      className="w-full px-5 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-[var(--surface-hover)] cursor-pointer"
+                      className="w-full px-6 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-[var(--surface-hover)] cursor-pointer"
                     >
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-[14px]">
+                        <div className="flex items-center gap-2 text-[13px]">
                           <span className={`font-semibold ${tr.side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                             {tr.side === 'LONG' ? t('side_long') : t('side_short')}
                           </span>
                           <span className="font-medium text-[var(--fg)] whitespace-nowrap">
                             {tr.close_time_str}
                           </span>
-                          <span className="text-[13px] text-[var(--fg-3)] whitespace-nowrap">
+                          <span className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
                             · {fmtDuration(tr.holding_sec, locale)}
                           </span>
                         </div>
-                        <div className="text-[13px] text-[var(--fg-3)] mt-0.5 sensitive">
+                        <div className="text-[12px] text-[var(--fg-3)] mt-0.5 sensitive">
                           {t('fee_entry_short')} {tr.entry_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)}`} ·{' '}
                           {t('fee_exit_short')} {tr.exit_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}`} ·{' '}
                           {t('fee_net_short')} -{cur.money(tr.net_fee_usd, 2)}
@@ -346,10 +346,10 @@ export function TradeDrilldownDrawer({
 
                       <div className="flex items-center gap-2.5 shrink-0">
                         <div className="text-right">
-                          <div className={`text-[14px] font-semibold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
+                          <div className={`text-[13px] font-semibold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
                             {cur.signedMoney(tr.net_pnl_usd)}
                           </div>
-                          <div className="text-[13px] text-[var(--fg-3)] sensitive">
+                          <div className="text-[12px] text-[var(--fg-3)] sensitive">
                             {locale === 'en' ? 'Pre-rebate ' : '返佣前 '}
                             {cur.signedPlainMoney(tr.book_pnl_usd)}
                           </div>
@@ -365,7 +365,7 @@ export function TradeDrilldownDrawer({
 
                     <AnimatedCollapse
                       open={isExp}
-                      innerClassName="px-5 pb-4 bg-[var(--surface-2)]"
+                      innerClassName="px-6 pb-4 bg-[var(--surface-2)]"
                     >
                       <CompactLegRow
                         title={t('leg_entry')}
@@ -377,7 +377,7 @@ export function TradeDrilldownDrawer({
                         netLabel={t('leg_exit_net')}
                         leg={tr.exit_leg}
                       />
-                      <div className="pt-2.5 border-t border-[var(--border)] space-y-1 text-[13px]">
+                      <div className="pt-2.5 border-t border-[var(--border)] space-y-1 text-[12px]">
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
                           <span className={`font-medium sensitive ${pnlTone(tr.gross_pnl_usd)}`}>

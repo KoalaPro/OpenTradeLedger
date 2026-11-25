@@ -23,7 +23,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       return (
         <code
           key={key}
-          className="px-1.5 py-0.5 rounded bg-[var(--surface-2)] text-[13px] font-mono text-[var(--fg)]"
+          className="px-1.5 py-0.5 rounded bg-[var(--surface-2)] text-[12px] font-mono text-[var(--fg)]"
         >
           {part.slice(1, -1)}
         </code>
@@ -46,7 +46,7 @@ export function SimpleMarkdown({ content }: { content: string }) {
       blocks.push(
         <ol
           key={`ol-${idx}`}
-          className="list-decimal pl-5 space-y-2 text-[14px] leading-relaxed text-[var(--fg-2)]"
+          className="list-decimal pl-5 space-y-2 text-[13px] leading-relaxed text-[var(--fg-2)]"
         >
           {orderedItems.map((item, i) => (
             <li key={i}>{renderInline(item, `oli-${idx}-${i}`)}</li>
@@ -59,7 +59,7 @@ export function SimpleMarkdown({ content }: { content: string }) {
       blocks.push(
         <ul
           key={`ul-${idx}`}
-          className="list-disc pl-5 space-y-1.5 text-[14px] leading-relaxed text-[var(--fg-2)]"
+          className="list-disc pl-5 space-y-1.5 text-[13px] leading-relaxed text-[var(--fg-2)]"
         >
           {bulletItems.map((item, i) => (
             <li key={i}>{renderInline(item, `uli-${idx}-${i}`)}</li>
@@ -85,7 +85,7 @@ export function SimpleMarkdown({ content }: { content: string }) {
     }
     flushLists(idx)
     blocks.push(
-      <p key={`p-${idx}`} className="m-0 text-[14px] leading-relaxed text-[var(--fg-2)]">
+      <p key={`p-${idx}`} className="m-0 text-[13px] leading-relaxed text-[var(--fg-2)]">
         {renderInline(line, `p-${idx}`)}
       </p>,
     )

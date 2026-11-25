@@ -34,7 +34,7 @@ export function AiConfigCard({
     <div className="py-6 space-y-3">
       <div>
         <h3 className="t-h2">{t('set_ai_title')}</h3>
-        <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('set_ai_sub')}</p>
+        <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('set_ai_sub')}</p>
       </div>
       <input
         type="text"

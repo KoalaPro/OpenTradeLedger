@@ -240,10 +240,10 @@ export function AuthGate({
             draggable={false}
             className="otl-brand-logo-ceremony select-none mb-4 otl-ceremony-logo"
           />
-          <div className="text-[20px] font-semibold tracking-wide otl-ceremony-shimmer">
+          <div className="text-[18px] font-semibold tracking-wide otl-ceremony-shimmer">
             OpenTradeLedger · 交易账本
           </div>
-          <div className="mt-1.5 inline-flex items-center gap-1.5 text-[13px] text-[var(--fg-2)]">
+          <div className="mt-1.5 inline-flex items-center gap-1.5 text-[12.5px] text-[var(--fg-2)]">
             <ShieldCheck size={14} style={{ color: 'var(--ok)' }} />
             <span>
               {ceremonyMode === 'boot'

@@ -248,7 +248,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
       {status && !hasBark && (
         <div
           data-testid="watcher-bark-unconfigured-banner"
-          className="otl-status-warn mt-4 px-4 py-3 rounded-md flex flex-wrap items-center justify-between gap-3 text-[13px]"
+          className="otl-status-warn mt-4 mx-5 px-4 py-3 rounded-md flex flex-wrap items-center justify-between gap-3 text-[12.5px]"
         >
           <div className="flex items-center gap-2 text-[var(--fg)]">
             <Bell size={14} className="text-[var(--warn)] shrink-0" />
@@ -272,7 +272,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
       )}
 
       {/* Control Header & Add Trader Chapter */}
-      <section className="py-5 border-b border-[var(--border)] space-y-4">
+      <section className="py-5 px-5 border-b border-[var(--border)] space-y-4">
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <div className="space-y-0.5">
             <div className="flex flex-wrap items-baseline gap-2.5">
@@ -282,19 +282,19 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   : 'Public Copy-Trade Radar'}
               </h2>
               {status?.demo_mode && (
-                <span className="text-[13px] text-[var(--fg-3)]">
+                <span className="text-[12px] text-[var(--fg-3)]">
                   · {isZh ? '演示示例（粘贴真实链接添加后自动切为实盘盯盘）' : 'Demo Preview'}
                 </span>
               )}
             </div>
-            <p className="m-0 text-[13px] text-[var(--fg-3)]">
+            <p className="m-0 text-[12px] text-[var(--fg-3)]">
               {isZh
                 ? '盯紧满员热门交易员空余车位（iOS Bark 持续响铃直跳币安 App 秒抢），并根据公开历史委托推算其实时在途持仓'
                 : 'Monitor full lead traders for open copy slots (Bark alarm + Binance App deep link) and infer live open positions'}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-4 text-[13px]">
+          <div className="flex flex-wrap items-center gap-4 text-[12px]">
             <button
               type="button"
               data-no-press="true"
@@ -555,13 +555,13 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
 
       {/* Watched Lead Traders List */}
       {loading ? (
-        <div className="py-12 text-center text-[14px] text-[var(--fg-3)]">
+        <div className="py-12 text-center text-[13px] text-[var(--fg-3)]">
           {isZh ? '正在读取盯盘雷达状态…' : 'Loading radar…'}
         </div>
       ) : items.length === 0 ? (
         <div
           data-testid="watcher-empty-state"
-          className="py-10 text-center text-[14px] text-[var(--fg-3)] border-b border-[var(--border)]"
+          className="py-10 px-5 text-center text-[13px] text-[var(--fg-3)] border-b border-[var(--border)]"
         >
           {isZh
             ? '当前监控列表为空 · 请按上方方法复制任意币安带单员分享链接粘贴至输入框，即可开启 24 小时空位抢单与持仓追踪。'
@@ -576,10 +576,10 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
               <section
                 key={item.portfolio_id}
                 data-testid={`watcher-card-${item.portfolio_id}`}
-                className="py-5 space-y-3.5"
+                className="py-5 px-5 space-y-3.5"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex flex-wrap items-center gap-2.5 min-w-0 text-[13px]">
+                  <div className="flex flex-wrap items-center gap-2.5 min-w-0 text-[12px]">
                     <h3 className="t-h2">{item.nickname}</h3>
 
                     {!item.enabled ? (
@@ -659,7 +659,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   </div>
 
                   {!status?.demo_mode && (
-                    <div className="flex flex-wrap items-center gap-3.5 text-[13px]">
+                    <div className="flex flex-wrap items-center gap-3.5 text-[12px]">
                       {!hasBark && (
                         <span className="text-[var(--fg-3)]">{isZh ? '手机提醒待配置' : 'Set up Bark for mobile alerts'}</span>
                       )}
@@ -761,7 +761,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                 )}
 
                 {/* Inferred Live Open Positions Strip */}
-                <div className="pt-3 border-t border-[var(--border)] flex flex-wrap items-center justify-between gap-3 text-[13px]">
+                <div className="pt-3 border-t border-[var(--border)] flex flex-wrap items-center justify-between gap-3 text-[12.5px]">
                   <div className="flex flex-wrap items-center gap-4">
                     <span className="text-[var(--fg-3)]">
                       {isZh ? '推算实时在途持仓' : 'Inferred Live Position'}
@@ -773,11 +773,11 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                           className="inline-flex items-center gap-2 flex-wrap"
                         >
                           <InstrumentMark instrument={pos.symbol} exchange="BINANCE" />
-                          <b className="text-[14px] text-[var(--fg)]">{pos.symbol}</b>
+                          <b className="text-[13px] text-[var(--fg)]">{pos.symbol}</b>
                           <span className={`font-semibold ${pos.position_side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                             {isZh ? pos.side_zh : pos.position_side}
                           </span>
-                          <span className="text-[14px] text-[var(--fg)]">{pos.qty}</span>
+                          <span className="text-[13px] text-[var(--fg)]">{pos.qty}</span>
                           <span className="text-[var(--fg-3)] sensitive">
                             @{fmtPrice(pos.avg_entry_price)} ({cur.money(pos.notional_usd, 0)})
                           </span>
@@ -844,7 +844,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
 
                 {/* Expandable Recent Public Orders Table */}
                 <AnimatedCollapse open={showOrders && item.recent_orders.length > 0}>
-                  <div className="overflow-x-auto border-t border-[var(--border)] mt-1">
+                  <div className="overflow-x-auto border-t border-[var(--border)] mt-1 -mx-5">
                     <table className="otl-table">
                       <thead>
                         <tr>

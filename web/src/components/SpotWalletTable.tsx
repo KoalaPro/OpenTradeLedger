@@ -28,16 +28,16 @@ export function SpotWalletTable({ balances, spotTotal, selected }: {
   const en = locale === 'en'
   return (
     <section className="border-t border-[var(--border)] pt-3">
-      <div className="pb-2.5 flex items-center justify-between gap-2 text-[13px]">
+      <div className="pb-2.5 flex items-center justify-between gap-2 text-[12px]">
         <span className="text-[var(--fg-2)]">
           {en ? 'Portfolio allocation · Spot, Earn & Dust' : '账本归入现货、理财与尾仓的净值'}
         </span>
-        <strong className="text-[14px] text-[var(--fg)] sensitive">{cur.money(spotTotal)}</strong>
+        <strong className="text-[13px] text-[var(--fg)] sensitive">{cur.money(spotTotal)}</strong>
       </div>
       {balances.length > 0 ? (
         <div className="overflow-auto max-h-72 border-t border-[var(--border)]">
           <table className="otl-table">
-            <caption className="text-left px-2.5 pt-2.5 pb-1 text-[13px] text-[var(--fg-3)]">
+            <caption className="text-left px-5 pt-2.5 pb-1 text-[12px] text-[var(--fg-3)]">
               {en ? 'Synced wallet balances' : '交易所钱包余额'}
             </caption>
             <thead>
@@ -71,12 +71,12 @@ export function SpotWalletTable({ balances, spotTotal, selected }: {
           </table>
         </div>
       ) : (
-        <p className="py-4 text-[13px] text-[var(--fg-3)]">
+        <p className="py-4 text-[12px] text-[var(--fg-3)]">
           {en ? 'This snapshot contains no itemized wallet balances.' : '当前快照没有逐币钱包余额。'}
         </p>
       )}
       {balances.some(b => b.wallet_type === 'UNIFIED' || b.wallet_type === 'UTA') && (
-        <p className="pt-2.5 m-0 text-[13px] text-[var(--fg-3)]">
+        <p className="pt-2.5 m-0 text-[12px] text-[var(--fg-3)]">
           {en ? 'Unified wallet balances can also back futures margin.' : '统一账户余额可能同时用于合约保证金。'}
         </p>
       )}
