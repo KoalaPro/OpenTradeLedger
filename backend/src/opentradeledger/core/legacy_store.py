@@ -93,6 +93,17 @@ class GateManualStore:
                     note TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS otl_trade_journals (
+                    ledger_mode TEXT NOT NULL,
+                    record_key TEXT NOT NULL,
+                    tags_json TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (ledger_mode, record_key)
+                );
+                INSERT OR IGNORE INTO otl_trade_journals(ledger_mode, record_key, tags_json, note, updated_at)
+                    SELECT CASE WHEN substr(record_key, 1, 5) = 'demo_' THEN 'demo' ELSE 'live' END,
+                           record_key, tags_json, note, updated_at FROM trade_journals;
 
                 CREATE TABLE IF NOT EXISTS equity_snapshots (
                     bucket_sec INTEGER PRIMARY KEY,
@@ -506,27 +517,30 @@ class GateManualStore:
             txs = [json.loads(r["payload_json"]) for r in conn.execute("SELECT payload_json FROM stock_transactions ORDER BY tx_time DESC").fetchall()]
             return orders, deals, txs
 
-    def save_journal(self, record_key: str, *, tags: Sequence[str], note: str) -> dict[str, Any]:
+    def save_journal(self, record_key: str, *, tags: Sequence[str], note: str, demo_mode: bool = False) -> dict[str, Any]:
         clean_tags = [str(t).strip() for t in tags if str(t).strip()][:12]
         clean_note = str(note or "").strip()[:1000]
         now = int(time.time())
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO trade_journals(record_key, tags_json, note, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(record_key) DO UPDATE SET
+                INSERT INTO otl_trade_journals(ledger_mode, record_key, tags_json, note, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(ledger_mode, record_key) DO UPDATE SET
                     tags_json=excluded.tags_json,
                     note=excluded.note,
                     updated_at=excluded.updated_at
                 """,
-                (record_key, json.dumps(clean_tags, ensure_ascii=False), clean_note, now),
+                ("demo" if demo_mode else "live", record_key, json.dumps(clean_tags, ensure_ascii=False), clean_note, now),
             )
         return {"record_key": record_key, "tags": clean_tags, "note": clean_note, "updated_at": now}
 
-    def load_journals(self) -> dict[str, dict[str, Any]]:
+    def load_journals(self, *, demo_mode: bool = False) -> dict[str, dict[str, Any]]:
         with self._lock, self._connect() as conn:
-            rows = conn.execute("SELECT record_key, tags_json, note, updated_at FROM trade_journals").fetchall()
+            rows = conn.execute(
+                "SELECT record_key, tags_json, note, updated_at FROM otl_trade_journals WHERE ledger_mode=?",
+                ("demo" if demo_mode else "live",),
+            ).fetchall()
             out: dict[str, dict[str, Any]] = {}
             for r in rows:
                 out[r["record_key"]] = {

@@ -294,6 +294,10 @@ class LedgerStore:
                     equity_snapshot_usd REAL NOT NULL,
                     payload_json TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS idx_otl_review_mode_range
+                    ON otl_ai_reviews(json_extract(payload_json, '$.ledger_mode'),
+                                      json_extract(payload_json, '$.range_key'), id DESC)
+                    WHERE json_valid(payload_json);
                 CREATE TABLE IF NOT EXISTS otl_venue_kv (
                     venue_id TEXT NOT NULL,
                     key TEXT NOT NULL,
@@ -580,13 +584,18 @@ class LedgerStore:
                 continue
         return out
 
-    def save_journal(self, trade_id: str, tags: list[str], note: str) -> None:
-        self.legacy.save_journal(trade_id, tags=tags, note=note)
+    def save_journal(self, trade_id: str, tags: list[str], note: str, *, demo_mode: bool = False) -> None:
+        self.legacy.save_journal(trade_id, tags=tags, note=note, demo_mode=demo_mode)
 
-    def load_journals(self) -> dict[str, dict[str, Any]]:
-        return self.legacy.load_journals()
+    def load_journals(self, *, demo_mode: bool = False) -> dict[str, dict[str, Any]]:
+        return self.legacy.load_journals(demo_mode=demo_mode)
 
-    def save_ai_review(self, review: dict[str, Any], equity_usd: float) -> None:
+    def save_ai_review(self, review: dict[str, Any], equity_usd: float, *, demo_mode: bool = False) -> None:
+        review = {
+            **review,
+            "ledger_mode": "demo" if demo_mode else "live",
+            "range_key": str(review.get("range_key") or "all").strip().lower(),
+        }
         now_ms = int(time.time() * 1000)
         with self._connect() as conn:
             conn.execute(
@@ -603,34 +612,22 @@ class LedgerStore:
                 ),
             )
 
-    def load_latest_ai_review(self, range_key: str | None = None) -> dict[str, Any] | None:
+    def load_latest_ai_review(self, range_key: str | None = None, *, demo_mode: bool = False) -> dict[str, Any] | None:
+        # Unscoped historical reports can contain either ledger's notes. Leave them archived.
+        query = """SELECT payload_json, generated_ms, equity_snapshot_usd FROM otl_ai_reviews
+                   WHERE json_valid(payload_json) AND json_extract(payload_json, '$.ledger_mode') = ?"""
+        params = ["demo" if demo_mode else "live"]
+        if range_key is not None:
+            query += " AND json_extract(payload_json, '$.range_key') = ?"
+            params.append((range_key or "all").strip().lower())
         with self._connect() as conn:
-            if range_key is None:
-                rows = conn.execute(
-                    "SELECT payload_json, generated_ms, equity_snapshot_usd FROM otl_ai_reviews ORDER BY id DESC LIMIT 1"
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT payload_json, generated_ms, equity_snapshot_usd FROM otl_ai_reviews ORDER BY id DESC LIMIT 100"
-                ).fetchall()
-        if not rows:
+            row = conn.execute(query + " ORDER BY id DESC LIMIT 1", params).fetchone()
+        if row is None:
             return None
-        target_rk = (range_key or "all").strip().lower() if range_key is not None else None
-        for row in rows:
-            try:
-                data = json.loads(row["payload_json"])
-                if not isinstance(data, dict):
-                    continue
-                row_rk = str(data.get("range_key") or "all").strip().lower()
-                if target_rk is not None and row_rk != target_rk:
-                    continue
-                data.setdefault("range_key", row_rk)
-                data.setdefault("generated_ms", int(row["generated_ms"]))
-                data.setdefault("equity_snapshot_usd", float(row["equity_snapshot_usd"]))
-                return data
-            except Exception:
-                continue
-        return None
+        data = json.loads(row["payload_json"])
+        data.setdefault("generated_ms", row["generated_ms"])
+        data.setdefault("equity_snapshot_usd", row["equity_snapshot_usd"])
+        return data
 
     def get_meta(self, key: str, default: Any = None) -> Any:
         return self.legacy.get_meta(key, default)

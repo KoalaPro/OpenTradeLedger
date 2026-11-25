@@ -46,6 +46,7 @@ from opentradeledger.security.vault import CredentialVault, ExchangeCredentialRe
 
 
 class JournalUpdateRequest(BaseModel):
+    demo_mode: bool | None = None
     tags: list[str] = Field(default_factory=list)
     note: str = ""
 
@@ -70,6 +71,7 @@ class SyncRequest(BaseModel):
 
 
 class AiReviewRequest(BaseModel):
+    demo_mode: bool | None = None
     range_key: str = "all"
     mode: str = "auto"
 
@@ -297,8 +299,8 @@ def create_app(
         return request.client.host if request.client and request.client.host else "local"
 
     @app.get("/api/v1/health")
-    async def health() -> dict[str, Any]:
-        return {
+    async def health(request: Request) -> dict[str, Any]:
+        summary = {
             "status": "ok",
             "app": __app_name__,
             "app_zh": __app_name_zh__,
@@ -307,10 +309,14 @@ def create_app(
             "ota_active": os.environ.get("OTL_OTA_ACTIVE") == "1",
             "read_only": True,
             "trading_enabled": False,
-            "demo_mode": ledger_service.is_demo_active(),
-            "has_live_data": ledger_service.has_live_data(),
-            "adaptive_polling": sync_manager.get_schedule_summary(),
         }
+        if auth_manager.verify_session_token(request.cookies.get(AUTH_COOKIE_NAME)):
+            summary.update(
+                demo_mode=ledger_service.is_demo_active(),
+                has_live_data=ledger_service.has_live_data(),
+                adaptive_polling=sync_manager.get_schedule_summary(),
+            )
+        return summary
 
     # ── Local NAS Password Authentication Endpoints ──────────────────────────
 
@@ -511,6 +517,8 @@ def create_app(
 
     @app.put("/api/v1/journal/{trade_id}")
     async def save_journal(trade_id: str, body: JournalUpdateRequest) -> dict[str, Any]:
+        if body.demo_mode is not None and body.demo_mode != ledger_service.is_demo_active():
+            raise HTTPException(status_code=409, detail="Ledger mode changed. Refresh this page.")
         ledger_service.save_journal(trade_id, body.tags, body.note)
         return {"ok": True, "trade_id": trade_id}
 
@@ -716,8 +724,11 @@ def create_app(
         mode = (body.mode if body else "auto").strip().lower()
         prefs = ledger_service.get_preferences()
         dash = ledger_service.get_dashboard(range_key=rk)
+        use_demo = bool(dash["demo_mode"])
+        if body and body.demo_mode is not None and body.demo_mode != use_demo:
+            raise HTTPException(status_code=409, detail="Ledger mode changed. Refresh this page.")
         review = await generate_ai_review(dash, prefs, force_local=(mode == "local_rules"))
-        store.save_ai_review(review, float((dash.get("summary") or {}).get("total_equity_usd") or 0.0))
+        store.save_ai_review(review, float(dash["summary"]["total_equity_usd"]), demo_mode=use_demo)
         return review
 
     @app.post("/api/v1/ai-models")

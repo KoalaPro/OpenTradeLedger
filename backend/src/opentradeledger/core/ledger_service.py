@@ -261,7 +261,7 @@ class LedgerService:
         return self.store.save_preferences(updated)
 
     def save_journal(self, trade_id: str, tags: list[str], note: str) -> None:
-        self.store.save_journal(trade_id, tags, note)
+        self.store.save_journal(trade_id, tags, note, demo_mode=self.is_demo_active())
 
     def get_dashboard(
         self,
@@ -272,9 +272,9 @@ class LedgerService:
         force_demo: bool | None = None,
     ) -> dict[str, Any]:
         prefs = self.get_preferences()
-        journals = self.store.load_journals()
-        latest_ai = self.store.load_latest_ai_review(range_key=range_key)
         use_demo = force_demo if force_demo is not None else self.is_demo_active()
+        journals = self.store.load_journals(demo_mode=use_demo)
+        latest_ai = self.store.load_latest_ai_review(range_key, demo_mode=use_demo)
         if use_demo:
             payload = build_demo_dashboard(
                 range_key=range_key,
@@ -672,33 +672,7 @@ class LedgerService:
             }
 
         ai_out = latest_ai_review
-        if ai_out is None and rk_norm == "all":
-            legacy_ai = self.store.legacy.load_latest_ai_diagnostic()
-            if isinstance(legacy_ai, dict):
-                ai_out = {
-                    "generated_at": str(legacy_ai.get("generated_at_bj") or ""),
-                    "generated_ms": int(legacy_ai.get("created_ms") or 0),
-                    "model": str(legacy_ai.get("model") or "local-actuarial"),
-                    "range_key": "all",
-                    "range_label": "All-Time",
-                    "range_label_zh": "全部历史",
-                    "equity_snapshot_usd": total_equity,
-                    "stale": True,
-                    "stale_reason": "Imported from legacy ledger snapshot — regenerate to refresh.",
-                    "stale_reason_zh": "该报告导入自早期快照，建议点击右上角重新生成。",
-                    "highlights": [
-                        {
-                            "title": str(h.get("title") or ""),
-                            "title_zh": str(h.get("title") or ""),
-                            "metric": "",
-                            "body": str(h.get("body") or ""),
-                            "body_zh": str(h.get("body") or ""),
-                        }
-                        for h in (legacy_ai.get("highlights") or [])
-                    ],
-                    "markdown_commentary": str(legacy_ai.get("ai_commentary") or ""),
-                }
-        elif ai_out is not None:
+        if ai_out is not None:
             rk_lbl_en = str(
                 ai_out.get("range_label")
                 or ("Last 7 Days" if rk_norm == "7d" else ("Last 30 Days" if rk_norm == "30d" else (rk_norm if rk_norm != "all" else "All-Time")))

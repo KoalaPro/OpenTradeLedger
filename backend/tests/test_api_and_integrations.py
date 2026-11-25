@@ -14,12 +14,13 @@ def test_full_api_lifecycle_demo_exchanges_settings_and_ai(tmp_path: Path):
     assert h.status_code == 200
     assert h.json()["read_only"] is True
     assert h.json()["trading_enabled"] is False
-    assert h.json()["demo_mode"] is True
+    assert "adaptive_polling" not in h.json()
 
     # 2. Dashboard returns dynamic 6-venue demo payload with OKX & Bybit
     d = client.get("/api/v1/dashboard")
     assert d.status_code == 200
     payload = d.json()
+    assert payload["demo_mode"] is True
     vids = {e["venue_id"] for e in payload["exchanges"]}
     assert {"binance", "okx", "bybit", "gate", "bitget", "mexc"}.issubset(vids)
     assert payload["trades"][0]["entry_leg"]["gross_fee_usd"] > 0
