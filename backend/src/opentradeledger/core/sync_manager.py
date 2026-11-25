@@ -6,17 +6,19 @@ Orchestrates all registered `BaseExchangeAdapter` modules uniformly with zero ve
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 import time
 from typing import Any
 
+from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.notifier import bark_configured, dispatch_notification
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.venue_health import VenueHealthTracker
 from opentradeledger.core.venue_primitives import STABLECOINS
-from opentradeledger.security.vault import CredentialVault
+from opentradeledger.security.vault import CredentialEditConflict, CredentialVault
 
 logger = logging.getLogger("opentradeledger.sync")
 
@@ -359,7 +361,17 @@ class SyncManager:
             finally:
                 self.ledger_service.syncing = False
 
-    async def sync_candidate_and_commit(self, cred: Any) -> dict[str, Any]:
+    @asynccontextmanager
+    async def credential_change(self, venue_id: str, expected_revision: str | None):
+        # Old clients omit a revision. At least detect changes while they queue
+        # behind another sync, even though their form-open version is unknown.
+        expected = self.vault.revision(venue_id) if expected_revision is None else expected_revision
+        async with self._sync_lock:
+            if self.vault.revision(venue_id) != expected:
+                raise CredentialEditConflict()
+            yield
+
+    async def sync_candidate_and_commit(self, cred: Any, expected_revision: str | None = None) -> dict[str, Any]:
         """Atomically sync a candidate API credential BEFORE committing it to CredentialVault.
 
         If historical backfill times out or fails mid-way, restores the venue's SQLite
@@ -370,7 +382,7 @@ class SyncManager:
         if adapter is None:
             raise ValueError(f"Unsupported exchange adapter: {vid}")
 
-        async with self._sync_lock:
+        async with self.credential_change(vid, expected_revision):
             now_s = int(time.time())
             base_iv = max(1, int(round(self.poll_interval_sec)))
             partition_snap = self.store.snapshot_venue_partition(vid)
@@ -427,6 +439,9 @@ class SyncManager:
                 result["credential"] = self.vault.upsert(cred)
                 self.ledger_service.last_sync_ms = now_ms
                 return result
+            except EasiCoinIdentityError:
+                # The adapter checks identity before its first partition write.
+                raise
             except Exception as exc:
                 try:
                     self.store.restore_venue_partition(vid, partition_snap)

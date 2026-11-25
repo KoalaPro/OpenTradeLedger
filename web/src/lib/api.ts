@@ -42,8 +42,19 @@ export class ApiError extends Error {
   }
 }
 
+export const AUTH_REQUIRED_EVENT = 'otl:auth-required'
+let accessGeneration = 0
+let accessController = new AbortController()
+
+export function invalidateAccessRequests() {
+  accessGeneration++
+  accessController.abort()
+  accessController = new AbortController()
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { credentials: 'same-origin', ...init })
+  const generation = accessGeneration
+  const res = await fetch(url, { credentials: 'same-origin', signal: accessController.signal, ...init })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     const isZh =
@@ -53,7 +64,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
       (isZh && typeof body.detail_zh === 'string' && body.detail_zh) ||
       (typeof body.detail === 'string' && body.detail) ||
       `Request failed (${res.status})`
-    throw new ApiError(msg, {
+    const error = new ApiError(msg, {
       status: res.status,
       authRequired: Boolean(body.auth_required),
       requireSetup: Boolean(body.require_setup),
@@ -62,13 +73,19 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
       rawError: String(body.raw_error || ''),
       committed: typeof body.committed === 'boolean' ? body.committed : undefined,
     })
+    if (generation === accessGeneration && error.status === 401 && error.authRequired) {
+      window.dispatchEvent(new CustomEvent(AUTH_REQUIRED_EVENT, { detail: error }))
+    }
+    throw error
   }
-  return (await res.json()) as T
+  const result = await res.json() as T
+  if (generation !== accessGeneration) throw new DOMException('Ledger changed', 'AbortError')
+  return result
 }
 
 export const api = {
-  authStatus(): Promise<AuthStatusPayload> {
-    return req('/api/v1/auth/status')
+  authStatus(signal?: AbortSignal): Promise<AuthStatusPayload> {
+    return req('/api/v1/auth/status', { signal })
   },
   authSetup(password: string, remember = true): Promise<AuthStatusPayload & { ok: boolean }> {
     return req('/api/v1/auth/setup', {
@@ -87,8 +104,8 @@ export const api = {
       body: JSON.stringify({ password, remember }),
     })
   },
-  authLogout(): Promise<AuthStatusPayload & { ok: boolean }> {
-    return req('/api/v1/auth/logout', { method: 'POST' })
+  authLogout(signal?: AbortSignal): Promise<AuthStatusPayload & { ok: boolean }> {
+    return req('/api/v1/auth/logout', { method: 'POST', signal })
   },
   authChangePassword(
     currentPassword: string,
@@ -147,6 +164,7 @@ export const api = {
     api_key: string
     api_secret: string
     passphrase?: string
+    expected_revision?: string
   }): Promise<{ ok: boolean; verified?: boolean; permission_warning?: string; permission_warning_zh?: string }> {
     return req('/api/v1/exchanges/verify', {
       method: 'POST',
@@ -160,6 +178,7 @@ export const api = {
     api_key: string
     api_secret: string
     passphrase?: string
+    expected_revision?: string
   }): Promise<{ ok: boolean; health?: VenueHealthState }> {
     return req('/api/v1/exchanges', {
       method: 'POST',
@@ -170,9 +189,11 @@ export const api = {
   deleteExchange(
     venueId: string,
     keepData = false,
+    expectedRevision?: string,
   ): Promise<{ ok: boolean; kept_data?: boolean; has_archived_data?: boolean }> {
-    const qs = `?keep_data=${keepData ? 'true' : 'false'}`
-    return req(`/api/v1/exchanges/${encodeURIComponent(venueId)}${qs}`, { method: 'DELETE' })
+    const qs = new URLSearchParams({ keep_data: String(keepData) })
+    if (expectedRevision !== undefined) qs.set('expected_revision', expectedRevision)
+    return req(`/api/v1/exchanges/${encodeURIComponent(venueId)}?${qs}`, { method: 'DELETE' })
   },
   testExchange(
     venueId: string,
@@ -187,6 +208,7 @@ export const api = {
       api_key: string
       api_secret: string
       passphrase?: string
+      expected_revision?: string
     },
   ): Promise<{
     ok: boolean

@@ -10,13 +10,14 @@ from pydantic import BaseModel, Field
 class TradeLegFee(BaseModel):
     """Per-leg fee & rebate breakdown (mandatory for both entry_leg and exit_leg)."""
 
-    role: Literal["MAKER", "TAKER"] = "TAKER"
+    role: Literal["MAKER", "TAKER", "UNKNOWN"] = "TAKER"
     mode_code: str = "MARKET_TAKER"
-    fee_bps: float = 0.0
+    fee_known: bool = True
+    fee_bps: float | None = 0.0
     time_ms: int = 0
     time_str: str = ""
     avg_price: float = 0.0
-    notional_usd: float = 0.0
+    notional_usd: float | None = 0.0
     gross_fee_usd: float = 0.0
     discount_saved_usd: float = 0.0
     discount_asset: str = ""
@@ -34,7 +35,8 @@ class ClosedTrade(BaseModel):
     color_token: str
     symbol: str
     side: Literal["LONG", "SHORT"]
-    qty: float = 0.0
+    qty: float | None = 0.0
+    contract_count: float | None = None
     open_time_ms: int = 0
     close_time_ms: int = 0
     open_time_str: str = ""
@@ -65,7 +67,8 @@ class OpenPosition(BaseModel):
     symbol: str
     side: Literal["LONG", "SHORT"]
     leverage: float = 1.0
-    qty: float = 0.0
+    qty: float | None = 0.0
+    contract_count: float | None = None
     notional_usd: float = 0.0
     entry_price: float = 0.0
     mark_price: float = 0.0

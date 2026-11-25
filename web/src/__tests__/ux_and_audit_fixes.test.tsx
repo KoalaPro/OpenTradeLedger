@@ -624,7 +624,7 @@ describe('Audit Bugfixes: Calendar, Add-Account Modal, Privacy, Currency, Drafts
     fireEvent.click(screen.getByTestId('purge-archived-gate'))
     expect(screen.getByTestId('delete-exchange-modal')).toBeTruthy()
     fireEvent.click(screen.getByTestId('confirm-delete-exchange-btn'))
-    await waitFor(() => expect(deleteCalls).toContain('/api/v1/exchanges/gate?keep_data=false'))
+    await waitFor(() => expect(deleteCalls).toContain('/api/v1/exchanges/gate?keep_data=false&expected_revision=absent'))
   })
 
   it('prompts before generating review when AI is unconfigured, displays period scope badge, and prevents false green Synced state on sync error', async () => {
@@ -716,12 +716,16 @@ describe('Audit Bugfixes: Calendar, Add-Account Modal, Privacy, Currency, Drafts
 })
 
 describe('Settings persistence and login preferences', () => {
-  function settingsServer(editEasicoin = false) {
+  function settingsServer(editEasicoin = false, editConflict = false) {
     let locked = false
     let settings = { ...baseSettings, goal_enabled: true, goal_target_usd: 12345 } as UserSettings
     const updates: Record<string, unknown>[] = []
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const path = String(input).split('?')[0]
+      if (init?.method === 'DELETE' && editConflict) {
+        updates.push({ expected_revision: new URL(String(input), 'http://localhost').searchParams.get('expected_revision') })
+        return Response.json({ detail_zh: '配置已变更，请刷新后重新确认。', error_code: 'CREDENTIAL_EDIT_CONFLICT' }, { status: 409 })
+      }
       if (path === '/api/v1/auth/status') return Response.json({ authenticated: !locked, enabled: true })
       if (path === '/api/v1/auth/logout') {
         locked = true
@@ -738,6 +742,13 @@ describe('Settings persistence and login preferences', () => {
       }
       if (path === '/api/v1/dashboard') return Response.json(twoTradeDashboard)
       if (path === '/api/v1/exchanges/verify') return Response.json({ ok: true, verified: true })
+      if (path === '/api/v1/sync' && editConflict) {
+        updates.push(JSON.parse(String(init?.body)).candidate_credential)
+        return Response.json({
+          detail_zh: '账户配置已更新，请刷新后重新编辑。', detail: 'The account configuration changed. Refresh before editing again.',
+          error_code: 'CREDENTIAL_EDIT_CONFLICT', committed: false,
+        }, { status: 409 })
+      }
       if (path === '/api/v1/sync') return Response.json({
         detail_zh: '历史数据请求超时', committed: false,
       }, { status: 502 })
@@ -745,7 +756,7 @@ describe('Settings persistence and login preferences', () => {
         adapters: editEasicoin ? [{
           venue_id: 'easicoin', display_name: 'EasiCoin', display_name_zh: '易币',
           configured: true, capabilities: {}, health: { status: 'connected' },
-          credential: { label: '旧账户', masked_api_key: 'FAKE...1111', enabled: true },
+          credential: { revision: 'original-form-revision', label: '旧账户', masked_api_key: 'FAKE...1111', enabled: true },
         }] : [],
       })
       return Response.json({ ok: true, rates: DEFAULT_FX.rates })
@@ -788,6 +799,35 @@ describe('Settings persistence and login preferences', () => {
     const modal = screen.getByTestId('add-exchange-modal')
     await waitFor(() => expect(modal.textContent).toContain('历史数据请求超时'))
     expect(modal.textContent).toContain('原账户凭据和记录已保留')
+    expect(screen.queryByTestId('settings-ok-banner')).toBeNull()
+  })
+
+  it.each(['zh-CN', 'en'])('sends the edit version and shows its conflict in %s', async locale => {
+    const updates = settingsServer(true, true)
+    render(<App />)
+    await screen.findByTestId('edit-adapter-easicoin')
+    if (locale === 'en') {
+      fireEvent.click(screen.getByRole('button', { name: 'English' }))
+      await waitFor(() => expect(document.documentElement.lang).toBe('en'))
+    }
+    fireEvent.click(screen.getByTestId('edit-adapter-easicoin'))
+    fireEvent.change(screen.getByTestId('exchange-key-input'), { target: { value: 'fixture-key' } })
+    fireEvent.change(screen.getByTestId('exchange-secret-input'), { target: { value: 'fixture-secret' } })
+    fireEvent.click(screen.getByTestId('save-exchange-btn'))
+    const modal = screen.getByTestId('add-exchange-modal')
+    await waitFor(() => expect(modal.textContent).toContain(locale === 'en' ? 'Refresh before editing again' : '请刷新后重新编辑'))
+    expect(updates.at(-1)?.expected_revision).toBe('original-form-revision')
+    expect(modal.textContent).not.toContain(locale === 'en' ? 'Historical sync failed' : '历史同步失败')
+    expect(screen.queryByTestId('settings-ok-banner')).toBeNull()
+  })
+
+  it('preserves the newer credentials when a removal dialog has become stale', async () => {
+    const updates = settingsServer(true, true)
+    render(<App />)
+    fireEvent.click(await screen.findByTestId('remove-adapter-easicoin'))
+    fireEvent.click(screen.getByTestId('confirm-delete-exchange-btn'))
+    await screen.findByText('配置已变更，请刷新后重新确认。')
+    expect(updates.at(-1)?.expected_revision).toBe('original-form-revision')
     expect(screen.queryByTestId('settings-ok-banner')).toBeNull()
   })
 

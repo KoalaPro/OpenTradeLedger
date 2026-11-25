@@ -136,7 +136,7 @@ export function Sidebar({
         data-testid="sidebar-glider"
         data-active-page={page}
         aria-hidden="true"
-        className="otl-glider absolute left-0 top-0 rounded-[7px] pointer-events-none z-0"
+        className="otl-glider hidden md:block absolute left-0 top-0 rounded-[7px] pointer-events-none z-0"
         style={{
           width: `${glider.width}px`,
           height: `${glider.height}px`,

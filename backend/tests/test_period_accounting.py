@@ -147,8 +147,8 @@ def test_missing_maker_samples_do_not_promise_zero_cost_maker_fills(tmp_path):
         "balances": [{"totalEq": "1090"}],
         "positions_history": [trade],
         "fills": [
-            {"instId": trade["instId"], "side": "buy", "execType": "T", "fee": "-2", "ts": trade["cTime"]},
-            {"instId": trade["instId"], "side": "sell", "execType": "T", "fee": "-8", "ts": trade["uTime"]},
+            {"instId": trade["instId"], "side": "buy", "execType": "T", "fee": "-2", "fillNotionalUsd": "10000", "ts": trade["cTime"]},
+            {"instId": trade["instId"], "side": "sell", "execType": "T", "fee": "-8", "fillNotionalUsd": "10100", "ts": trade["uTime"]},
         ],
     })
     service = LedgerService(store, CredentialVault(tmp_path), build_default_registry())

@@ -404,7 +404,10 @@ class EasiCoinAdapter(BaseExchangeAdapter):
 
     def has_venue_data(self, store: "LedgerStore") -> bool:
         sc = store.venue_scope("easicoin")
-        return bool(sc.get_kv("live_bundle") or sc.count_records("closed_pnl") > 0 or sc.count_records("transfers") > 0)
+        return bool(
+            sc.get_kv("live_bundle") or sc.get_kv("account_uid")
+            or any(sc.count_records(stream) for stream in ("closed_pnl", "fills", "orders", "transfers"))
+        )
 
     def extract_spot_prices(self, store: "LedgerStore") -> dict[str, float]:
         return extract_easicoin_spot_prices(store)

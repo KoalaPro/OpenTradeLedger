@@ -17,6 +17,7 @@ def test_local_auth_lifecycle_rate_limit_session_rotation_and_reset(tmp_path: Pa
     assert client.get("/api/v1/health").status_code == 200
     st0 = client.get("/api/v1/auth/status").json()
     assert st0["require_setup"] is True
+    assert "explicit_demo_mode" not in st0
     assert st0["authenticated"] is False
     assert st0["can_skip"] is True
 
@@ -30,6 +31,10 @@ def test_local_auth_lifecycle_rate_limit_session_rotation_and_reset(tmp_path: Pa
     # 2. Skip setup allows local passwordless access
     skip_res = client.post("/api/v1/auth/skip")
     assert skip_res.status_code == 200
+    assert client.get("/api/v1/auth/status").json()["explicit_demo_mode"] is False
+    assert client.post("/api/v1/demo", json={"enabled": True}).status_code == 200
+    assert client.get("/api/v1/auth/status").json()["explicit_demo_mode"] is True
+    assert client.post("/api/v1/demo", json={"enabled": False}).status_code == 200
     assert client.get("/api/v1/settings").status_code == 200
 
     # 3. Enable password from Settings via change-password when currently skipped

@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 import httpx
 
 from opentradeledger.adapters.compat_creds import EasiCoinCredentials
+from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError, account_uid
 from opentradeledger.adapters.stock_channels import classify_spot_stock_token
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 
@@ -188,12 +189,16 @@ class EasiCoinReadOnlyClient:
             return default
 
     async def fetch_live_overview_bundle(self) -> dict[str, Any]:
+        uid_response = await self.raw_get("/asset-api/account/private/v1/userid")
+        uid_data = uid_response.get("data") if isinstance(uid_response, dict) else None
+        uid = account_uid(uid_data.get("userid")) if isinstance(uid_data, dict) else ""
+        if not uid:
+            raise EasiCoinIdentityError("ACCOUNT_UID_UNAVAILABLE")
         fut_bal_res = await self.raw_get("/futures/private/v1/account/balance")
         pos_res = await self._safe_get("/futures/private/v1/position/list", [("coin", "USDT")], default={})
         open_ord_res = await self._safe_get(
             "/futures/private/v1/trade/activity-orders", [("coin", "USDT")], default={}
         )
-        uid_res = await self._safe_get("/asset-api/account/private/v1/userid", default={})
         fund_res = await self._safe_get(
             "/asset-api/account/private/v1/get-funding-account-balance", default={}
         )
@@ -265,7 +270,7 @@ class EasiCoinReadOnlyClient:
                         spot_stock_fills.setdefault(c_b, []).append(dict(br))
 
         return {
-            "userid": str(((uid_res or {}).get("data") or {}).get("userid") or ""),
+            "userid": uid,
             "futures_balances": list(((fut_bal_res or {}).get("data") or {}).get("list") or []),
             "funding_balances": funding_list,
             "spot_balances": spot_list,

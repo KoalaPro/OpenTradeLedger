@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from '../App'
+import { api } from '../lib/api'
 import type { DashboardData, ExchangeAdapterInfo, UserSettings } from '../lib/types'
 
 // ResizeObserver polyfill for Recharts inside jsdom
@@ -535,5 +536,198 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
     expect(screen.getByTestId('one-click-upgrade-btn')).toBeTruthy()
     fireEvent.click(screen.getByTestId('manual-upgrade-guide-toggle'))
     expect(screen.getByTestId('copy-nas-upgrade-cmd')).toBeTruthy()
+  })
+})
+
+describe('ledger access and settings races', () => {
+  function pause() {
+    let resume!: () => void
+    const pending = new Promise<void>(resolve => { resume = resolve })
+    return { pending, resume }
+  }
+
+  function serve(overrides: (path: string, init?: RequestInit) => Promise<Response | void>) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const path = String(input).split('?')[0]
+      const custom = await overrides(path, init)
+      if (custom) return custom
+      if (path === '/api/v1/auth/status') return Response.json({ authenticated: true, enabled: true, explicit_demo_mode: false })
+      if (path === '/api/v1/settings') return Response.json(mockSettings)
+      if (path === '/api/v1/exchanges') return Response.json({ adapters: mockAdapters })
+      if (path === '/api/v1/fx-rates') return Response.json({ rates: { EUR: 0.9, CNY: 7, USDT: 1 } })
+      if (path === '/api/v1/dashboard') return Response.json({ ...mockDashboard, demo_mode: false })
+      return Response.json({ ok: true })
+    })
+    render(<App />)
+  }
+
+  it('withholds ledger details until the saved privacy preference arrives', async () => {
+    const settings = pause()
+    const dashboard = pause()
+    serve(async path => {
+      if (path === '/api/v1/settings') {
+        await settings.pending
+        return Response.json({ ...mockSettings, privacy_mode: true })
+      }
+      if (path === '/api/v1/dashboard') dashboard.resume()
+    })
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/api/v1/dashboard'), expect.anything()))
+    await dashboard.pending
+    await act(async () => {})
+    expect(screen.queryByTestId('kpi-equity')).toBeNull()
+    settings.resume()
+    await screen.findByTestId('kpi-equity')
+    expect(document.documentElement.dataset.privacy).toBe('on')
+  })
+
+  it('closes a private portal on an auth-required response from a directly invoked API', async () => {
+    serve(async path => {
+      if (path === '/api/v1/exchanges/verify') return Response.json({ auth_required: true }, { status: 401 })
+    })
+    fireEvent.click(await screen.findByTestId('kpi-whole-pnl'))
+    expect(screen.getByTestId('reconcile-drawer')).toBeTruthy()
+    await act(async () => {
+      await expect(api.verifyExchange({ venue_id:'okx', label:'fixture', api_key:'mock', api_secret:'mock' })).rejects.toThrow()
+    })
+    expect(screen.queryByTestId('reconcile-drawer')).toBeNull()
+    expect(screen.queryByTestId('otl-root')).toBeNull()
+    expect(screen.getByTestId('auth-login-card')).toBeTruthy()
+  })
+
+  it('revalidates on resume when a tab missed a mode or logout announcement', async () => {
+    let demo = false
+    let locked = false
+    serve(async path => {
+      if (path === '/api/v1/auth/status') return Response.json({ authenticated: !locked, enabled: true, explicit_demo_mode: demo })
+      if (path === '/api/v1/dashboard') return Response.json({ ...mockDashboard, demo_mode: demo })
+    })
+    fireEvent.click(await screen.findByTestId('kpi-whole-pnl'))
+    demo = true
+    fireEvent(window, new Event('focus'))
+    await screen.findByTestId('demo-mode-badge')
+    expect(screen.queryByTestId('reconcile-drawer')).toBeNull()
+    locked = true
+    fireEvent(document, new Event('visibilitychange'))
+    await screen.findByTestId('auth-login-card')
+    expect(screen.queryByTestId('kpi-equity')).toBeNull()
+  })
+
+  it('keeps a requested lock through focus and reload if logout could not reach the server', async () => {
+    serve(async path => {
+      if (path === '/api/v1/auth/logout') throw new Error('Offline')
+      if (path === '/api/v1/auth/login') return Response.json({ enabled: true, authenticated: true })
+    })
+    await screen.findByTestId('kpi-equity')
+    fireEvent.click(screen.getByTestId('sidebar-lock-btn'))
+    await screen.findByText('本页已遮住，服务端锁定尚未确认。')
+    await act(async () => { fireEvent(window, new Event('focus')) })
+    expect(screen.queryByTestId('otl-root')).toBeNull()
+    cleanup()
+    render(<App />)
+    await screen.findByTestId('auth-login-card')
+    fireEvent.change(screen.getByTestId('auth-password-input'), { target: { value: 'fixture-password' } })
+    fireEvent.click(screen.getByTestId('auth-submit-btn'))
+    await screen.findByTestId('kpi-equity')
+  })
+
+  it('offers a retry after a suspended session check times out', async () => {
+    let offline = false
+    serve(async (path, init) => {
+      if (path === '/api/v1/auth/status' && offline) {
+        await new Promise<void>((_, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('timeout'))))
+      }
+    })
+    await screen.findByTestId('kpi-equity')
+    vi.useFakeTimers()
+    try {
+      offline = true
+      fireEvent(window, new Event('focus'))
+      expect(document.documentElement.dataset.sessionCheck).toBe('pending')
+      expect(screen.getByTestId('session-check-status').textContent).toContain('正在核对账本')
+      await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+      expect(screen.queryByTestId('otl-root')).toBeNull()
+      expect(document.documentElement.dataset.sessionCheck).toBeUndefined()
+      offline = false
+      fireEvent.click(screen.getByRole('button', { name: /重试/ }))
+    } finally {
+      vi.useRealTimers()
+    }
+    await screen.findByTestId('kpi-equity')
+  })
+
+  it('keeps new settings visible when the previous ledger has a late currency write', async () => {
+    const oldWrite = pause()
+    const newWrite = pause()
+    let demo = false
+    serve(async (path, init) => {
+      if (path === '/api/v1/auth/status') return Response.json({ authenticated: true, explicit_demo_mode: demo })
+      if (path === '/api/v1/dashboard') return Response.json({ ...mockDashboard, demo_mode: demo })
+      if (path === '/api/v1/settings' && init?.method === 'PUT') {
+        const { display_currency } = JSON.parse(String(init.body))
+        await (display_currency === 'CNY' ? oldWrite : newWrite).pending
+        return Response.json({ ...mockSettings, display_currency })
+      }
+    })
+    await screen.findByTestId('kpi-equity')
+    const selector = () => screen.getByTestId('currency-selector') as HTMLSelectElement
+    fireEvent.change(selector(), { target: { value: 'CNY' } })
+    await act(async () => {})
+    demo = true
+    fireEvent(window, new Event('focus'))
+    await screen.findByTestId('demo-mode-badge')
+    expect(selector().value).toBe('USDT')
+    fireEvent.change(selector(), { target: { value: 'EUR' } })
+    await act(async () => { oldWrite.resume() })
+    expect(selector().value).toBe('EUR')
+    await act(async () => { newWrite.resume() })
+    expect(selector().value).toBe('EUR')
+  })
+
+  it('ignores an old 401 delivered after a new ledger has loaded', async () => {
+    const slow = pause()
+    let demo = false
+    serve(async path => {
+      if (path === '/api/v1/auth/status') return Response.json({ authenticated: true, explicit_demo_mode: demo })
+      if (path === '/api/v1/dashboard') return Response.json({ ...mockDashboard, demo_mode: demo })
+      if (path === '/api/v1/exchanges/verify') {
+        await slow.pending
+        return Response.json({ auth_required: true }, { status: 401 })
+      }
+    })
+    await screen.findByTestId('kpi-equity')
+    const pending = api.verifyExchange({ venue_id: 'okx', label: 'old', api_key: 'fixture', api_secret: 'fixture' })
+    demo = true
+    fireEvent(window, new Event('focus'))
+    await screen.findByTestId('demo-mode-badge')
+    await act(async () => { slow.resume(); await expect(pending).rejects.toThrow() })
+    expect(screen.queryByTestId('auth-login-card')).toBeNull()
+    expect(screen.getByTestId('demo-mode-badge')).toBeTruthy()
+  })
+
+  it('keeps the last currency selection visible and persisted after a slow first write', async () => {
+    const slow = pause()
+    const started = pause()
+    let stored = 'USDT'
+    serve(async (path, init) => {
+      if (path === '/api/v1/settings' && init?.method === 'PUT') {
+        const currency = JSON.parse(String(init.body)).display_currency
+        if (currency === 'CNY') {
+          started.resume()
+          await slow.pending
+        }
+        stored = currency
+        return Response.json({ ...mockSettings, display_currency: currency })
+      }
+    })
+    await screen.findByTestId('kpi-equity')
+    const selector = screen.getByTestId('currency-selector') as HTMLSelectElement
+    fireEvent.change(selector, { target: { value: 'CNY' } })
+    await started.pending
+    fireEvent.change(selector, { target: { value: 'EUR' } })
+    expect(selector.value).toBe('EUR')
+    await act(async () => { slow.resume() })
+    await waitFor(() => expect(stored).toBe('EUR'))
+    expect(selector.value).toBe('EUR')
+    expect(screen.getByTestId('kpi-equity').textContent).toContain('€')
   })
 })

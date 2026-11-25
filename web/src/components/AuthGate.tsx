@@ -8,6 +8,7 @@ import { AnimatedCollapse } from './AnimatedCollapse'
 interface AuthGateProps {
   auth: AuthStatusPayload
   authChecked?: boolean
+  lockUnconfirmed?: boolean
   locale: Locale
   onToggleLocale: () => void
   onUnlocked: (nextAuth: AuthStatusPayload) => void
@@ -19,6 +20,7 @@ const TAB_CEREMONY_KEY = 'otl.tab_boot_ceremony'
 export function AuthGate({
   auth,
   authChecked = true,
+  lockUnconfirmed = false,
   locale,
   onToggleLocale,
   onUnlocked,
@@ -312,6 +314,12 @@ export function AuthGate({
                 </p>
               </div>
             </div>
+
+            {lockUnconfirmed && (
+              <p role="status" className="text-[13px] text-[var(--fg-2)]">
+                {isZh ? '本页已遮住，服务端锁定尚未确认。' : 'This page is hidden. Server lock is awaiting confirmation.'}
+              </p>
+            )}
 
             <div className="space-y-2.5 pt-1">
               <div className="relative">

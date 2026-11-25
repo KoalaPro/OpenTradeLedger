@@ -6,6 +6,7 @@ export type NavPage = 'overview' | 'trades' | 'analytics' | 'fees' | 'extensions
 export type ExtensionSubTab = 'watcher' | 'copy' | 'stock'
 
 export interface AuthStatusPayload {
+  explicit_demo_mode?: boolean
   demo_bypass?: boolean
   initialized?: boolean
   enabled?: boolean
@@ -55,14 +56,14 @@ export interface VersionCheckPayload {
 }
 
 export interface TradeLegFee {
-  role: 'MAKER' | 'TAKER'
+  role: 'MAKER' | 'TAKER' | 'UNKNOWN'
   mode_code: string
   fee_known?: boolean
-  fee_bps: number
+  fee_bps: number | null
   time_ms: number
   time_str: string
   avg_price: number
-  notional_usd: number
+  notional_usd: number | null
   gross_fee_usd: number
   discount_saved_usd: number
   discount_asset: string
@@ -81,7 +82,8 @@ export interface ClosedTrade {
   color_token: string
   symbol: string
   side: 'LONG' | 'SHORT'
-  qty: number
+  qty: number | null
+  contract_count?: number
   open_time_ms: number
   close_time_ms: number
   open_time_str: string
@@ -131,7 +133,8 @@ export interface OpenPosition {
   symbol: string
   side: 'LONG' | 'SHORT'
   leverage: number
-  qty: number
+  qty: number | null
+  contract_count?: number
   notional_usd: number
   entry_price: number
   mark_price: number
@@ -155,8 +158,8 @@ export interface VenueFeeRow {
   taker_rate_source?: 'observed' | 'configured' | 'unknown'
   maker_bps_known?: boolean
   taker_bps_known?: boolean
-  blended_gross_bps?: number
-  blended_net_bps?: number
+  blended_gross_bps?: number | null
+  blended_net_bps?: number | null
   gross_fee_usd: number
   discount_saved_usd: number
   discount_label: string
@@ -417,9 +420,10 @@ export interface DashboardData {
         category: string
         category_zh?: string
         trade_count: number
-        qty: number
-        maker_bps: number
-        taker_bps: number
+        qty: number | null
+        contract_count?: number
+        maker_bps: number | null
+        taker_bps: number | null
         gross_fee_usd: number
         rebate_usd: number
         net_fee_usd: number
@@ -549,6 +553,7 @@ export interface ExchangeAdapterInfo {
     venue_id: string
     label: string
     masked_api_key: string
+    revision?: string
     has_passphrase: boolean
     enabled: boolean
   } | null

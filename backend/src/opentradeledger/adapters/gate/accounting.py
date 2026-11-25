@@ -1160,14 +1160,14 @@ def build_gate_venue_ledger(
             "key": "manual_futures",
             "title_zh": "Gate 手操合约实收净盈亏",
             "label_zh": "Gate 手操合约实收净盈亏",
-            "detail_zh": f"Gate {len(internal_records)} 笔平仓及浮盈 {gate_manual_book_usd:+.2f} + 合伙人返佣 +{gate_manual_settled_reb_usd:.2f}",
+            "detail_zh": f"Gate {len(internal_records)} 笔平仓及浮盈 {gate_manual_book_usd:+.2f} U + 合伙人返佣 +{gate_manual_settled_reb_usd:.2f} U",
             "amount_usd": f2(gate_manual_net_usd, 2),
         },
         {
             "key": "copy_trading",
             "title_zh": "Gate 实盘跟单综合净赚",
             "label_zh": "Gate 实盘跟单综合净赚",
-            "detail_zh": f"跟单池浮盈 {copy_book_pnl:+.2f} + 返佣直退统一账户 +{(copy_reb_total + other_unmatched_rebate_usd):.2f}",
+            "detail_zh": f"跟单池浮盈 {copy_book_pnl:+.2f} U + 返佣直退统一账户 +{(copy_reb_total + other_unmatched_rebate_usd):.2f} U",
             "amount_usd": f2(copy_all_net_usd, 2),
         },
         {

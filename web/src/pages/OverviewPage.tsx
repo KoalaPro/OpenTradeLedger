@@ -8,7 +8,7 @@ import { UnderlineTabs } from '../components/UnderlineTabs'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
-import { fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
+import { fmtContractQty, fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
 import type { DashboardData, ExtensionSubTab, NavPage, SpotHolding } from '../lib/types'
 
 type StockHoldingItem = DashboardData['extensions']['stocks']['holdings'][number]
@@ -196,7 +196,7 @@ export function OverviewPage({
               </span>{' '}
               ·{' '}
               <span className="whitespace-nowrap">
-                {t('kpi_net_fee_paid')} <span className="sensitive">-{cur.money(s.net_fee_usd)}</span>
+                {t('kpi_net_fee_paid')} <span className="sensitive">{cur.signedMoney(-s.net_fee_usd)}</span>
               </span>
             </span>
           }
@@ -604,7 +604,7 @@ export function OverviewPage({
                         </span>
                       </td>
                       <td className="text-right whitespace-nowrap sensitive">
-                        {pos.qty} ({cur.money(pos.notional_usd, 0)})
+                        {pos.contract_count != null ? fmtContractQty(pos, locale) : pos.qty} ({cur.money(pos.notional_usd, 0)})
                       </td>
                       <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
                         {fmtPrice(pos.entry_price)} → {fmtPrice(pos.mark_price)}

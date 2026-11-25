@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Bell,
   Check,
@@ -53,10 +53,22 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
     }
   }
 
+  // A read started before a successful edit must not replace its newer switches.
+  const readGeneration = useRef(0)
+  const [busyTargets, setBusyTargets] = useState<Set<string>>(new Set())
+  const markTarget = (id: string, busy: boolean) => setBusyTargets(previous => {
+    const next = new Set(previous)
+    if (busy) next.add(id)
+    else next.delete(id)
+    return next
+  })
+
   const fetchStatus = useCallback(async (forceRefresh = false) => {
+    const generation = ++readGeneration.current
     if (forceRefresh) setRefreshing(true)
     try {
       const res = await api.getCopyWatcher(forceRefresh)
+      if (generation !== readGeneration.current) return
       setStatus(res)
       setSlotIntervalInput(String(res.interval_sec ?? 10))
       setTradeIntervalInput(String(res.trade_poll_sec ?? 30))
@@ -65,7 +77,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
         setGuideOpen((res.items || []).length === 0)
       }
     } catch (err) {
-      flash('err', err instanceof Error ? err.message : 'Failed to load radar status')
+      if (generation === readGeneration.current) flash('err', err instanceof Error ? err.message : 'Failed to load radar status')
     } finally {
       setLoading(false)
       setRefreshing(false)
@@ -75,9 +87,10 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
   useEffect(() => {
     void fetchStatus(false)
     const timer = window.setInterval(() => {
+      const generation = ++readGeneration.current
       void api
         .getCopyWatcher(false)
-        .then(res => setStatus(res))
+        .then(res => { if (generation === readGeneration.current) setStatus(res) })
         .catch(() => {})
     }, 10000)
     return () => window.clearInterval(timer)
@@ -89,13 +102,19 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
     if (e) e.preventDefault()
     if (!rawInput.trim() || adding) return
     const existingIds = new Set((status?.items || []).map(x => x.portfolio_id))
-    const inputIds = Array.from(rawInput.matchAll(/\b(\d{15,22})\b/g), m => m[1])
+    const inputIds = Array.from(rawInput.matchAll(/(?:^|\D)(\d{15,22})(?!\d)/g), m => m[1])
     const allAlreadyExisted = inputIds.length > 0 && inputIds.every(id => existingIds.has(id))
     setAdding(true)
     setFeedback(null)
     try {
       const res = await api.addCopyWatcherTargets(rawInput.trim(), hasBark && newSlotAlert, hasBark && newTradeAlert)
-      setStatus(res)
+      ++readGeneration.current
+      setStatus(current => {
+        if (!current || current === status || current.demo_mode !== res.demo_mode) return res
+        const additions = res.items.filter(item => inputIds.includes(item.portfolio_id) && !existingIds.has(item.portfolio_id) &&
+          !current.items.some(existing => existing.portfolio_id === item.portfolio_id))
+        return { ...current, items: [...current.items, ...additions] }
+      })
       setRawInput('')
       if (!userToggledGuide) setGuideOpen(false)
       const slotSec = res.interval_sec ?? status?.interval_sec ?? 10
@@ -129,9 +148,14 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
     item: CopyWatcherTargetItem,
     patch: { enabled?: boolean; slot_alert?: boolean; trade_alert?: boolean },
   ) => {
+    markTarget(item.portfolio_id, true)
     try {
       const res = await api.patchCopyWatcherTarget(item.portfolio_id, patch)
-      setStatus(res)
+      ++readGeneration.current
+      const updated = res.items.find(target => target.portfolio_id === item.portfolio_id)
+      if (updated) setStatus(current => current && ({
+        ...current, items: current.items.map(target => target.portfolio_id === updated.portfolio_id ? updated : target),
+      }))
       if (typeof patch.slot_alert === 'boolean') {
         flash(
           'ok',
@@ -156,16 +180,22 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
       }
     } catch (err) {
       flash('err', err instanceof Error ? err.message : 'Failed to update target settings')
+    } finally {
+      markTarget(item.portfolio_id, false)
     }
   }
 
   const handleDelete = async (portfolioId: string, nickname: string) => {
+    markTarget(portfolioId, true)
     try {
-      const res = await api.deleteCopyWatcherTarget(portfolioId)
-      setStatus(res)
+      await api.deleteCopyWatcherTarget(portfolioId)
+      ++readGeneration.current
+      setStatus(current => current && ({ ...current, items: current.items.filter(item => item.portfolio_id !== portfolioId) }))
       flash('ok', isZh ? `已停止盯盘并移除：${nickname}` : `Removed ${nickname}`)
     } catch (err) {
       flash('err', err instanceof Error ? err.message : 'Failed to remove target')
+    } finally {
+      markTarget(portfolioId, false)
     }
   }
 
@@ -182,7 +212,8 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
         trade_interval_sec: tradeSec,
         cooldown_sec: coolSec,
       })
-      setStatus(res)
+      ++readGeneration.current
+      setStatus(current => current && ({ ...current, interval_sec: res.interval_sec, trade_poll_sec: res.trade_poll_sec, cooldown_sec: res.cooldown_sec }))
       setSlotIntervalInput(String(res.interval_sec))
       setTradeIntervalInput(String(res.trade_poll_sec))
       setCooldownInput(String(res.cooldown_sec))
@@ -490,7 +521,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   ? '直接整段粘贴币安 App 分享文案、带单员网页链接或 15~22 位组合 ID…'
                   : 'Paste Binance share text, lead-details URL, or 15–22 digit portfolio ID…'
               }
-              className="otl-input flex-1"
+              className="otl-input min-h-[44px] sm:min-h-0 sm:flex-1"
             />
             <button
               type="submit"
@@ -669,7 +700,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                           type="button"
                           role="switch"
                           aria-label={isZh ? '空位响铃' : 'Slot Alarm'}
-                          disabled={!hasBark}
+                          disabled={!hasBark || busyTargets.has(item.portfolio_id)}
                           aria-checked={hasBark && item.slot_alert}
                           data-testid={`toggle-slot-alert-${item.portfolio_id}`}
                           onClick={() => void handlePatch(item, { slot_alert: !item.slot_alert })}
@@ -685,7 +716,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                           type="button"
                           role="switch"
                           aria-label={isZh ? '调仓推送' : 'Trade Chime'}
-                          disabled={!hasBark}
+                          disabled={!hasBark || busyTargets.has(item.portfolio_id)}
                           aria-checked={hasBark && item.trade_alert}
                           data-testid={`toggle-trade-alert-${item.portfolio_id}`}
                           onClick={() => void handlePatch(item, { trade_alert: !item.trade_alert })}
@@ -701,6 +732,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                           type="button"
                           role="switch"
                           aria-label={isZh ? '启用盯盘' : 'Enable Watcher'}
+                          disabled={busyTargets.has(item.portfolio_id)}
                           aria-checked={item.enabled}
                           data-testid={`toggle-enabled-${item.portfolio_id}`}
                           onClick={() => void handlePatch(item, { enabled: !item.enabled })}
@@ -729,6 +761,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                       <button
                         type="button"
                         data-testid={`remove-watcher-${item.portfolio_id}`}
+                        disabled={busyTargets.has(item.portfolio_id)}
                         onClick={() => void handleDelete(item.portfolio_id, item.nickname)}
                         className="otl-btn text-[var(--fg-3)] hover:text-[var(--err)]"
                         title={isZh ? '移除该盯盘目标' : 'Remove watched trader'}

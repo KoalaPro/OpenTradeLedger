@@ -54,3 +54,19 @@ export function pnlTone(value: number): string {
   if (value < -0.0001) return 'txt-neg'
   return ''
 }
+
+
+export function fmtContractQty(
+  row: { symbol: string; qty: number | null; contract_count?: number },
+  locale: 'zh-CN' | 'en',
+): string {
+  const base = row.symbol.split(/[_/-]/)[0]
+  const amount = row.qty == null ? '' : `${Number(row.qty.toPrecision(12))} ${base}`
+  if (row.contract_count == null) return amount
+  const count = `${row.contract_count} ${locale === 'en' ? 'contracts' : '张'}`
+  return amount ? `${count} · ${amount}` : count
+}
+
+export function fmtLegRate(rate: number | null, locale: 'zh-CN' | 'en'): string {
+  return rate == null ? (locale === 'en' ? 'Rate unknown' : '费率未知') : `${rate.toFixed(1)} bps`
+}

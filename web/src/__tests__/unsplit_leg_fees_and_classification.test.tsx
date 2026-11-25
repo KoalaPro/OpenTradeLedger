@@ -236,3 +236,35 @@ describe('Equity and commodity perpetual fee history on Trades', () => {
     expect(screen.getByText(/no equity or commodity perpetual records/i)).toBeTruthy()
   })
 })
+
+it.each([[1, '1 BTC', -2, '-2.0 bps'], [null, '100 张', null, '费率未知']] as const)(
+  'displays confirmed OKX units and maker credit with quantity %s', (qty, quantityText, rate, rateText) => {
+    const leg = {
+      role: 'MAKER' as const, mode_code: 'LIMIT_MAKER', fee_known: true, fee_bps: rate,
+      time_ms: 1, time_str: '10:00', avg_price: 100000, notional_usd: rate === null ? null : 100000,
+      gross_fee_usd: 0, discount_saved_usd: 0, discount_asset: '', rebate_usd: 20, rebate_pct: 0,
+      net_fee_usd: -20, rebate_status: 'SETTLED' as const, settled_at: '',
+    }
+    const trade: ClosedTrade = {
+      open_time_str: '10:00', close_time_str: '11:00', close_date: '2026-11-25', is_partial_close: false,
+      venue_id: 'okx', venue_name: 'OKX', trade_id: 'okx_btc', symbol: 'BTC_USDT', side: 'LONG',
+      color_token: 'okx', qty, contract_count: 100, open_time_ms: 1, close_time_ms: 2,
+      holding_sec: 1, gross_pnl_usd: 1000, funding_pnl_usd: 0, book_pnl_usd: 1000,
+      total_rebate_usd: 20, total_fee_usd: 0, total_discount_saved_usd: 0, net_fee_usd: -20,
+      net_pnl_usd: 1020, effective_relief_pct: 0, rebate_status: 'SETTLED', tags: [], note: '',
+      entry_leg: leg, exit_leg: { ...leg, rebate_usd: 0, fee_bps: 0, net_fee_usd: 0 },
+    }
+    render(<I18nProvider locale="zh-CN"><CurrencyProvider currency="USDT" fx={DEFAULT_FX}>
+      <TradesPage data={makeBaseDashboard([trade])} venueFilter="ALL" symbolFilter="ALL"
+        onVenueChange={() => {}} onSymbolChange={() => {}} onSaveJournal={async () => {}} />
+    </CurrencyProvider></I18nProvider>)
+    const detail = screen.getByTestId('trade-detail-panel')
+    expect(within(detail).getByText(/100 张/).closest('.sensitive')).not.toBeNull()
+    expect(detail.textContent).toContain(quantityText)
+    expect(detail.textContent).not.toContain('100 BTC')
+    const entry = screen.getByTestId('entry-leg-fee-card')
+    expect(entry.textContent).toContain(rateText)
+    expect(within(entry).getAllByText('+20.000 U')).toHaveLength(2)
+    expect(entry.textContent).not.toContain('免佣')
+  },
+)

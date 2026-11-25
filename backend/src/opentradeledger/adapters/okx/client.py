@@ -16,6 +16,14 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.okx.contracts import (
+    amount_usd,
+    build_fill_leg,
+    contract_quantity,
+    finite_number,
+    instrument_at,
+    positive_number,
+)
 from opentradeledger.security.readonly_guard import assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
@@ -108,7 +116,7 @@ class OkxReadOnlyClient:
         assert_readonly_request(method, path, OKX_ALLOWED_GET_PATHS)
         clean_params = {k: str(v) for k, v in (params or {}).items() if v is not None and v != ""}
         request_path = f"{path}?{urlencode(sorted(clean_params.items()))}" if clean_params else path
-        headers = self.build_headers(request_path)
+        headers = {} if path.startswith("/api/v5/public/") else self.build_headers(request_path)
         url = f"{self.base_url}{request_path}"
 
         if self._client is not None:
@@ -340,13 +348,20 @@ class OkxReadOnlyClient:
         copy_history = await _opt("copy_history", self.get_copy_subpositions_history(since_ms=since_ms))
         tickers = await _opt("tickers", self.get_spot_tickers(), {})
 
-        gross_fee_sum = sum(abs(float(f.get("fee") or 0.0)) for f in fills)
+        instruments = await _opt("instruments", self.request_readonly("GET", "/api/v5/public/instruments", {"instType": "SWAP"}))
+        instrument_fields = ("instId", "ctVal", "ctValCcy", "ctType", "settleCcy", "listTime")
+        instruments = [
+            {k: row[k] for k in instrument_fields if k in row}
+            for row in instruments if row.get("instId") and positive_number(row.get("ctVal")) and row.get("ctValCcy")
+        ]
+        gross_fee_sum = sum(max(0.0, -(finite_number(f.get("fee")) or 0.0)) for f in fills)
         if gross_fee_sum <= 0:
-            gross_fee_sum = sum(abs(float(p.get("fee") or 0.0)) for p in positions_history)
+            gross_fee_sum = sum(max(0.0, -(finite_number(p.get("fee")) or 0.0)) for p in positions_history)
+        embedded_bills = okx_fill_credit_ids(fills)
         rebate_sum = sum(
             max(0.0, float(b.get("balChg") or b.get("pnl") or 0.0))
             for b in bills
-            if is_okx_trading_rebate(b)
+            if is_okx_trading_rebate(b) and str(b.get("billId") or "") not in embedded_bills
         )
         observed_rebate_ratio = (
             min(0.95, rebate_sum / gross_fee_sum) if gross_fee_sum > 0 and rebate_sum > 0 else 0.0
@@ -357,6 +372,7 @@ class OkxReadOnlyClient:
             "balances": balances,
             "funding": funding,
             "positions": positions,
+            "instruments": instruments,
             "positions_history": positions_history,
             "fills": fills,
             "trade_fee": trade_fee,
@@ -372,6 +388,10 @@ class OkxReadOnlyClient:
         }
 
 
+def okx_fill_credit_ids(fills: list[dict[str, Any]]) -> set[str]:
+    return {str(fill["billId"]) for fill in fills if fill.get("billId") and positive_number(fill.get("fee"))}
+
+
 def is_okx_trading_rebate(b: dict[str, Any]) -> bool:
     b_type = str(b.get("type") or "").strip()
     sub_type = str(b.get("subType") or "").strip().lower()
@@ -384,23 +404,48 @@ def is_okx_trading_rebate(b: dict[str, Any]) -> bool:
     )
 
 
+def _match_position_fills(positions: list[dict], fills: list[dict]) -> list[list[dict]]:
+    windows: dict[str, list[tuple[int, dict, int, int, str]]] = {}
+    matched: list[list[dict]] = [[] for _ in positions]
+    for index, pos in enumerate(positions):
+        start = int(pos.get("cTime") or 0)
+        end = int(pos.get("uTime") or start)
+        side = str(pos.get("direction") or pos.get("posSide") or "long").lower()
+        windows.setdefault(str(pos.get("instId") or "").upper(), []).append((index, pos, start, end, side))
+
+    for fill in fills:
+        if str(fill.get("side") or "").lower() not in {"buy", "sell"}:
+            continue
+        timestamp = int(fill.get("fillTime") or fill.get("ts") or 0)
+        matches = []
+        for index, pos, start, end, side in windows.get(str(fill.get("instId") or "").upper(), []):
+            if fill.get("posId") and str(fill["posId"]) != str(pos.get("posId")):
+                continue
+            if (fill.get("posSide") or "net").lower() not in {"net", side}:
+                continue
+            distance = max(start - timestamp, timestamp - end, 0)
+            if distance <= 5000:
+                matches.append((distance, index))
+        # Prefer the actual position window. A clock-skewed fill belongs to its
+        # unique nearest window; an ambiguous fill cannot support a leg split.
+        matches.sort()
+        if matches and (len(matches) == 1 or matches[0][0] < matches[1][0]):
+            matched[matches[0][1]].append(fill)
+    return matched
+
+
 def normalize_okx_closed_trades(
     positions_history: list[dict[str, Any]],
     fills: list[dict[str, Any]],
     *,
     bills: Optional[list[dict[str, Any]]] = None,
     rebate_ratio: float = 0.0,
-    okb_usd_price: float = 50.0,
+    okb_usd_price: float = 0.0,
+    instruments: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Builds normalized closed trades with per-leg fees, matched rebates, OKB discounts, and partial-close flags."""
-    fills_by_inst: dict[str, list[dict[str, Any]]] = {}
-    for fill in fills:
-        inst = str(fill.get("instId") or "").upper()
-        if inst:
-            fills_by_inst.setdefault(inst, []).append(fill)
-
     rebate_bills_by_inst: dict[str, list[dict[str, Any]]] = {}
-    consumed_bill_ids: set[str] = set()
+    consumed_bill_ids = okx_fill_credit_ids(fills)
     for idx, b in enumerate(bills or []):
         if not is_okx_trading_rebate(b):
             continue
@@ -418,7 +463,7 @@ def normalize_okx_closed_trades(
         key=lambda p: (int(p.get("uTime") or 0), int(p.get("cTime") or 0)),
     )
 
-    for pos in sorted_positions:
+    for pos, inst_fills in zip(sorted_positions, _match_position_fills(sorted_positions, fills)):
         inst = str(pos.get("instId") or "").upper()
         if not inst:
             continue
@@ -426,54 +471,42 @@ def normalize_okx_closed_trades(
         close_ms = int(pos.get("uTime") or open_ms)
         open_px = float(pos.get("openAvgPx") or 0.0)
         close_px = float(pos.get("closeAvgPx") or 0.0)
-        qty = abs(float(pos.get("closeTotalPos") or pos.get("openMaxPos") or 0.0))
+        contracts = abs(float(pos.get("closeTotalPos") or pos.get("openMaxPos") or 0.0))
+        spec = instrument_at(instruments or [], inst, open_ms)
+        qty = contract_quantity(spec, contracts, close_px)
         direction = str(pos.get("direction") or pos.get("posSide") or "long").upper()
         side = "SHORT" if "SHORT" in direction else "LONG"
         is_partial = str(pos.get("type") or "") == "2"
 
-        inst_fills = [
-            f
-            for f in fills_by_inst.get(inst, [])
-            if open_ms - 5_000 <= int(f.get("ts") or 0) <= close_ms + 5_000
-        ]
         entry_side = "buy" if side == "LONG" else "sell"
         entry_fills = [f for f in inst_fills if str(f.get("side") or "").lower() == entry_side]
         exit_fills = [f for f in inst_fills if str(f.get("side") or "").lower() != entry_side]
 
-        def _fill_fee_usd(f: dict[str, Any]) -> tuple[float, float, str]:
-            raw_f = abs(float(f.get("fee") or 0.0))
-            fccy = str(f.get("feeCcy") or "USDT").upper()
-            if fccy == "OKB" and okb_usd_price > 0:
-                usd_f = raw_f * okb_usd_price
-                return usd_f, round(usd_f * 0.25, 6), "OKB"
-            return raw_f, 0.0, ""
+        entry = build_fill_leg(entry_fills, spec, inst, open_ms, open_px, okb_usd_price)
+        exit_leg = build_fill_leg(exit_fills, spec, inst, close_ms, close_px, okb_usd_price)
+        legs = (entry, exit_leg)
+        total_fee = sum(leg["gross_fee_usd"] for leg in legs)
+        embedded_rebate = sum(leg["fill_rebate_usd"] for leg in legs)
+        settlement = str(pos.get("ccy") or spec.get("settleCcy") or inst.split("-")[1]).upper()
 
-        entry_fee_tuples = [_fill_fee_usd(f) for f in entry_fills]
-        exit_fee_tuples = [_fill_fee_usd(f) for f in exit_fills]
-        entry_gross_fee = sum(x[0] for x in entry_fee_tuples)
-        exit_gross_fee = sum(x[0] for x in exit_fee_tuples)
-        entry_disc = sum(x[1] for x in entry_fee_tuples)
-        exit_disc = sum(x[1] for x in exit_fee_tuples)
-        entry_disc_asset = next((x[2] for x in entry_fee_tuples if x[2]), "")
-        exit_disc_asset = next((x[2] for x in exit_fee_tuples if x[2]), "")
+        def pos_usd(key: str) -> float:
+            return amount_usd(finite_number(pos.get(key)) or 0.0, settlement, inst, close_px, okb_usd_price) or 0.0
 
-        total_fee_pos = abs(float(pos.get("fee") or 0.0))
-        def fill_role(rows: list[dict[str, Any]]) -> str:
-            roles = {str(f.get("execType") or "").upper() for f in rows}
-            return "MAKER" if roles == {"M"} else ("TAKER" if roles == {"T"} else "UNKNOWN")
+        # A position fee is signed and already includes maker credits. Reconcile the
+        # unobserved remainder when the history contains only part of the fills.
+        if finite_number(pos.get("fee")) is not None:
+            position_fee = pos_usd("fee")
+            if settlement == inst.split("-")[0]:
+                # Compare the same currency at the same price before valuing any
+                # missing fees. Known base-currency fills use their execution prices.
+                observed = sum((finite_number(f.get("fee")) or 0) * close_px for f in inst_fills
+                               if str(f.get("feeCcy") or settlement).upper() == settlement)
+            else:
+                observed = embedded_rebate - total_fee
+            remainder = position_fee - observed
+            total_fee += max(0.0, -remainder)
+            embedded_rebate += max(0.0, remainder)
 
-        entry_role = fill_role(entry_fills)
-        exit_role = fill_role(exit_fills)
-        entry_fee_known = bool(entry_fills) and all(f.get("fee") not in (None, "") for f in entry_fills)
-        exit_fee_known = bool(exit_fills) and all(f.get("fee") not in (None, "") for f in exit_fills)
-        entry_notional = open_px * qty
-        exit_notional = close_px * qty
-        entry_bps = (entry_gross_fee / entry_notional * 10_000) if entry_notional > 0 else 0.0
-        exit_bps = (exit_gross_fee / exit_notional * 10_000) if exit_notional > 0 else 0.0
-
-        total_fee = round(max(entry_gross_fee + exit_gross_fee, total_fee_pos), 6)
-
-        # Match explicit rebate bills on this instrument first; fall back to observed_rebate_ratio
         matched_reb_amt = 0.0
         settled_ts = 0
         for rb in rebate_bills_by_inst.get(inst, []):
@@ -485,26 +518,31 @@ def normalize_okx_closed_trades(
                 matched_reb_amt += float(rb["_amt"])
                 settled_ts = max(settled_ts, bts)
 
-        if matched_reb_amt > 0 and total_fee > 0:
-            eff_ratio = min(0.95, matched_reb_amt / total_fee)
-            entry_rebate = round(matched_reb_amt * (entry_gross_fee / total_fee), 6)
-            exit_rebate = round(matched_reb_amt * (exit_gross_fee / total_fee), 6)
-            settled_str = _fmt_bj_ms(settled_ts)
-        else:
-            eff_ratio = max(0.0, min(1.0, rebate_ratio))
-            entry_rebate = round(entry_gross_fee * eff_ratio, 6)
-            exit_rebate = round(exit_gross_fee * eff_ratio, 6)
-            settled_str = ""
+        external_rebate = matched_reb_amt or total_fee * max(0.0, min(1.0, rebate_ratio))
+        ratio = external_rebate / total_fee if total_fee else 0.0
+        for leg in legs:
+            paid = leg["gross_fee_usd"]
+            rebate = leg["fill_rebate_usd"] + paid * ratio
+            leg["rebate_usd"] = round(rebate, 6)
+            leg["net_fee_usd"] = round(paid - rebate, 6)
+            leg["rebate_pct"] = round(rebate / paid * 100, 2) if paid else 0.0
+            leg["rebate_status"] = ("PENDING" if paid * ratio and not matched_reb_amt
+                                    else "SETTLED" if rebate else "NONE")
+            credited_at = settled_ts if matched_reb_amt and paid else leg["time_ms"]
+            leg["settled_at"] = _fmt_bj_ms(credited_at) if leg["rebate_status"] == "SETTLED" else ""
+            for sample in leg["role_samples"].values():
+                sample["net"] = sample["paid"] * (1 - ratio) - sample["credit"]
 
-        entry_net_fee = round(max(0.0, entry_gross_fee - entry_rebate), 6)
-        exit_net_fee = round(max(0.0, exit_gross_fee - exit_rebate), 6)
-
-        gross_pnl = float(pos.get("pnl") or 0.0)
-        funding_pnl = float(pos.get("fundingFee") or 0.0)
-        total_rebate = round(matched_reb_amt if matched_reb_amt > 0 else total_fee * eff_ratio, 6)
-        book_pnl = float(pos.get("realizedPnl") or (gross_pnl - total_fee + funding_pnl))
-        net_pnl = round(book_pnl + total_rebate, 6)
-        rebate_status = "SETTLED" if matched_reb_amt > 0 else ("PENDING" if total_rebate > 0 else "NONE")
+        gross_pnl = pos_usd("pnl")
+        funding_pnl = pos_usd("fundingFee")
+        realized = (pos_usd("realizedPnl") if finite_number(pos.get("realizedPnl")) is not None else
+                    gross_pnl - total_fee + embedded_rebate + funding_pnl + pos_usd("liqPenalty") + pos_usd("settledPnl"))
+        total_rebate = embedded_rebate + external_rebate
+        # The UI's pre-rebate book amount plus all rebates must bridge to net.
+        book_pnl = realized - embedded_rebate
+        net_pnl = realized + external_rebate
+        rebate_status = ("PENDING" if external_rebate and not matched_reb_amt
+                         else "SETTLED" if total_rebate else "NONE")
 
         sym = inst.replace("-SWAP", "").replace("-", "_")
         records.append(
@@ -516,6 +554,8 @@ def normalize_okx_closed_trades(
                 "symbol": sym,
                 "side": side,
                 "qty": qty,
+                "contract_count": contracts,
+                "realized_pnl_usd": round(realized, 4),
                 "open_time_ms": open_ms,
                 "close_time_ms": close_ms,
                 "gross_pnl_usd": round(gross_pnl, 4),
@@ -523,45 +563,13 @@ def normalize_okx_closed_trades(
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_usd": round(total_fee, 4),
                 "total_rebate_usd": round(total_rebate, 4),
-                "total_discount_saved_usd": round(entry_disc + exit_disc, 4),
-                "net_fee_usd": round(max(0.0, total_fee - total_rebate), 4),
+                "total_discount_saved_usd": round(sum(leg["discount_saved_usd"] for leg in legs), 4),
+                "net_fee_usd": round(total_fee - total_rebate, 4),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": rebate_status,
                 "is_partial_close": is_partial,
-                "entry_leg": {
-                    "role": entry_role,
-                    "fee_known": entry_fee_known,
-                    "mode_code": {"MAKER": "LIMIT_MAKER", "TAKER": "MARKET_TAKER"}.get(entry_role, "UNKNOWN"),
-                    "fee_bps": round(entry_bps, 2),
-                    "time_ms": open_ms,
-                    "avg_price": open_px,
-                    "notional_usd": round(entry_notional, 2),
-                    "gross_fee_usd": round(entry_gross_fee, 4),
-                    "discount_saved_usd": round(entry_disc, 4),
-                    "discount_asset": entry_disc_asset,
-                    "rebate_usd": round(entry_rebate, 4),
-                    "rebate_pct": round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else round(eff_ratio * 100.0, 2),
-                    "net_fee_usd": round(entry_net_fee, 4),
-                    "rebate_status": rebate_status,
-                    "settled_at": settled_str,
-                },
-                "exit_leg": {
-                    "role": exit_role,
-                    "fee_known": exit_fee_known,
-                    "mode_code": {"MAKER": "LIMIT_MAKER", "TAKER": "MARKET_TAKER"}.get(exit_role, "UNKNOWN"),
-                    "fee_bps": round(exit_bps, 2),
-                    "time_ms": close_ms,
-                    "avg_price": close_px,
-                    "notional_usd": round(exit_notional, 2),
-                    "gross_fee_usd": round(exit_gross_fee, 4),
-                    "discount_saved_usd": round(exit_disc, 4),
-                    "discount_asset": exit_disc_asset,
-                    "rebate_usd": round(exit_rebate, 4),
-                    "rebate_pct": round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else round(eff_ratio * 100.0, 2),
-                    "net_fee_usd": round(exit_net_fee, 4),
-                    "rebate_status": rebate_status,
-                    "settled_at": settled_str,
-                },
+                "entry_leg": entry,
+                "exit_leg": exit_leg,
             }
         )
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)

@@ -27,7 +27,7 @@ function FeeRateCell({ row, side }: { row: VenueFeeRow; side: 'maker' | 'taker' 
     )
   }
   if (source === 'unknown' || row[`${side}_bps_known`] === false || row.trade_count === 0) {
-    const blended = side === 'taker' && (row.blended_net_bps ?? 0) > 0
+    const blended = side === 'taker' && row.blended_net_bps != null && row.blended_net_bps !== 0
     return (
       <span className="text-[var(--fg-3)] text-[12px]">
         {row.trade_count === 0 ? (isZh ? '无成交样本' : 'No fills') : (isZh ? '分腿未知' : 'Split unknown')}
@@ -139,7 +139,7 @@ export function FeesAiPage({
     if (cur.code !== 'USDT') {
       if (h.kind === 'net_fee' && typeof h.amount_usd === 'number') {
         const pctSuffix = typeof h.pct === 'number' ? ` (${h.pct.toFixed(1)}%)` : ''
-        return `-${cur.money(Math.abs(h.amount_usd), 2)}${pctSuffix}`
+        return `${cur.signedMoney(h.amount_usd, 2)}${pctSuffix}`
       }
       if (h.kind === 'maker_upside' && typeof h.amount_usd === 'number') {
         return `+${cur.money(Math.abs(h.amount_usd), 2)}`
@@ -208,7 +208,7 @@ export function FeesAiPage({
                   <td className="text-right whitespace-nowrap sensitive">
                     {row.rebate_usd > 0 ? (
                       <span className="txt-pos">
-                        +{cur.money(row.rebate_usd)} ({row.rebate_pct.toFixed(1)}%)
+                        +{cur.money(row.rebate_usd)}{row.gross_fee_usd > 0 && ` (${row.rebate_pct.toFixed(1)}%)`}
                       </span>
                     ) : (
                       <span className="text-[var(--fg-3)]">—</span>

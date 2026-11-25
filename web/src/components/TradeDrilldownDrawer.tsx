@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useDialogFocus } from './useDialogFocus'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowUpRight, ChevronDown, X } from 'lucide-react'
 import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n/zh-CN'
 import { api } from '../lib/api'
 import { useCurrency } from '../lib/currency'
-import { fmtDuration, fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
+import { fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
 import type { ClosedTrade, OpenPosition, TradeLegFee } from '../lib/types'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { InstrumentMark } from './InstrumentMark'
@@ -43,7 +44,7 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-semibold text-[var(--fg-2)]">{title}</span>
           <span className="text-[var(--fg)] truncate">
-            · {feeUnknown ? t('leg_fee_unknown') : `${modeText(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
+            · {feeUnknown ? t('leg_fee_unknown') : `${modeText(leg.mode_code, t)} · ${fmtLegRate(leg.fee_bps, locale)}`}
           </span>
         </div>
         <span className="text-[var(--fg-3)] whitespace-nowrap">
@@ -62,11 +63,9 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
           <div className={`font-semibold sensitive ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
             {feeUnknown
               ? '—'
-              : leg.gross_fee_usd <= 0
-                ? t('leg_zero_fee')
-                : leg.rebate_usd > 0
-                  ? `+${cur.money(leg.rebate_usd, 3)} (${leg.rebate_pct.toFixed(0)}%)`
-                  : cur.money(0, 3)}
+              : leg.rebate_usd > 0
+                ? `+${cur.money(leg.rebate_usd, 3)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
+                : leg.gross_fee_usd <= 0 ? t('leg_zero_fee') : cur.money(0, 3)}
           </div>
           {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
             <div className="txt-pos mt-0.5 sensitive whitespace-nowrap">
@@ -79,7 +78,7 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
         <div className="text-right">
           <div className="text-[var(--fg-3)]">{netLabel}</div>
           <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? '—' : leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
+            {feeUnknown ? '—' : cur.signedMoney(-leg.net_fee_usd, 3)}
           </div>
         </div>
       </div>
@@ -103,6 +102,8 @@ export function TradeDrilldownDrawer({
   const closeTimerRef = useRef<number | null>(null)
 
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
   const [trades, setTrades] = useState<ClosedTrade[]>([])
   const [livePos, setLivePos] = useState<OpenPosition | null>(null)
   const [expandedId, setExpandedId] = useState<string>('')
@@ -140,23 +141,15 @@ export function TradeDrilldownDrawer({
     }
   }, [])
 
-  const requestClose = useCallback(() => {
-    onClose()
-  }, [onClose])
-
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') requestClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, requestClose])
+  const dialogRef = useDialogFocus(open, onClose)
 
   useEffect(() => {
     if (!open || !symbol) return
     let alive = true
     setLoading(true)
+    setLoadFailed(false)
+    setTrades([])
+    setLivePos(null)
     api
       .getDashboard(rangeKey, venueId, symbol)
       .then(async dash => {
@@ -180,8 +173,7 @@ export function TradeDrilldownDrawer({
       })
       .catch(() => {
         if (alive) {
-          setTrades([])
-          setLivePos(null)
+          setLoadFailed(true)
         }
       })
       .finally(() => {
@@ -190,7 +182,7 @@ export function TradeDrilldownDrawer({
     return () => {
       alive = false
     }
-  }, [open, venueId, symbol, rangeKey])
+  }, [open, venueId, symbol, rangeKey, attempt])
 
   const shouldRender = open || rendered
   if (!shouldRender) return null
@@ -205,10 +197,14 @@ export function TradeDrilldownDrawer({
   const drawerNode = (
     <div
       data-testid="trade-drilldown-drawer"
+      ref={dialogRef}
+      inert={!open}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
+      aria-label={`${symbol} · ${venueName || venueId.toUpperCase()}`}
       onClick={e => {
-        if (e.target === e.currentTarget) requestClose()
+        if (e.target === e.currentTarget) onClose()
       }}
       className={`otl-drawer-backdrop fixed inset-0 z-50 flex justify-end ${
         isClosingVisual ? 'closing' : ''
@@ -243,7 +239,7 @@ export function TradeDrilldownDrawer({
             )}
             <button
               type="button"
-              onClick={requestClose}
+              onClick={onClose}
               aria-label={locale === 'en' ? 'Close' : '关闭'}
               title={locale === 'en' ? 'Close' : '关闭'}
               className="otl-btn h-7 w-7 px-0 text-[var(--fg-2)] hover:text-[var(--fg)]"
@@ -265,7 +261,7 @@ export function TradeDrilldownDrawer({
                 </span>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-[var(--fg-3)] sensitive">{cur.money(livePos.notional_usd, 0)}</span>
+                <span className="text-[var(--fg-3)] sensitive">{livePos.contract_count != null && `${fmtContractQty(livePos, locale)} · `}{cur.money(livePos.notional_usd, 0)}</span>
                 <span className={`font-semibold sensitive ${pnlTone(livePos.unrealized_pnl_usd)}`}>
                   {cur.signedMoney(livePos.unrealized_pnl_usd)}
                   {Math.abs(livePos.unrealized_roi_pct) >= 0.01
@@ -312,6 +308,13 @@ export function TradeDrilldownDrawer({
                   />
                 ))}
               </div>
+            ) : loadFailed ? (
+              <div role="alert" className="py-10 text-center space-y-3">
+                <p>{locale === 'en' ? 'Could not load trade details.' : '交易明细加载失败'}</p>
+                <button type="button" className="otl-btn" onClick={() => setAttempt(n => n + 1)}>
+                  {locale === 'en' ? 'Retry' : '重试'}
+                </button>
+              </div>
             ) : trades.length === 0 ? (
               <div className="py-12 text-center text-[13px] text-[var(--fg-3)]">{t('empty_trades')}</div>
             ) : (
@@ -335,12 +338,13 @@ export function TradeDrilldownDrawer({
                           </span>
                           <span className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
                             · {fmtDuration(tr.holding_sec, locale)}
+                            {tr.contract_count != null && <span className="sensitive"> · {fmtContractQty(tr, locale)}</span>}
                           </span>
                         </div>
                         <div className="text-[12px] text-[var(--fg-3)] mt-0.5 sensitive">
                           {t('fee_entry_short')} {tr.entry_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)}`} ·{' '}
                           {t('fee_exit_short')} {tr.exit_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}`} ·{' '}
-                          {t('fee_net_short')} -{cur.money(tr.net_fee_usd, 2)}
+                          {t('fee_net_short')} {cur.signedMoney(-tr.net_fee_usd, 2)}
                         </div>
                       </div>
 

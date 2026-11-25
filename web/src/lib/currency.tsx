@@ -95,19 +95,11 @@ function buildHelpers(code: CurrencyCode, fx: FxRatesPayload): CurrencyContextVa
 
   const convertText = (text: string) => {
     if (!text || isUsdt) return text
-    // 1. Convert explicit U / USDT amounts (e.g. "+23.39 USDT", "-49.57 U", "53.32 U")
-    let out = text.replace(/([+-]?\d[\d,]*(?:\.\d+)?)\s*U(?:SDT)?\b/g, (_m, numStr: string) => {
-      const parsed = Number(numStr.replace(/,/g, ''))
-      if (!Number.isFinite(parsed)) return _m
-      return numStr.startsWith('+') || numStr.startsWith('-') ? signedMoney(parsed) : money(parsed)
+    return text.replace(/(^|[^\w.$+-])([+-]?)(?:US\$|\$)?(\d[\d,]*(?:\.\d+)?)\s*(?:USDT|USD|U)\b/gi, (token, prefix: string, sign: string, amount: string) => {
+      const value = Number(sign + amount.replace(/,/g, ''))
+      if (!Number.isFinite(value)) return token
+      return prefix + (sign ? signedMoney(value) : money(value))
     })
-    // 2. Convert standalone signed 2-decimal ledger components (e.g. "账面 -358.83 + 手操返佣 +157.86")
-    out = out.replace(/(^|[\s(])([+-]\d+(?:\.\d{2}))(?![\d.%A-Za-z])/g, (full, pre: string, numStr: string) => {
-      const parsed = Number(numStr)
-      if (!Number.isFinite(parsed)) return full
-      return `${pre}${signedMoney(parsed)}`
-    })
-    return out
   }
 
   return {

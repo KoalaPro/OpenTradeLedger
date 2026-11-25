@@ -450,12 +450,21 @@ def build_venue_stock_perpetuals(
             },
         )
         b["trade_count"] += 1
+        if tr.get("contract_count") is not None:
+            b["contracts"] = b.get("contracts", Decimal("0")) + dec(tr["contract_count"])
+            b["qty_unknown"] = b.get("qty_unknown", False) or tr.get("qty") is None
         b["qty"] += dec(tr.get("qty") if tr.get("qty") is not None else tr.get("qty_base"))
         b["g_fee"] += dec(tr.get("total_fee_usd"))
         b["reb"] += dec(tr.get("total_rebate_usd"))
         b["net_pnl"] += dec(tr.get("net_pnl_usd"))
         for lk in ("entry_leg", "exit_leg"):
             lg = tr.get(lk) or {}
+            if "role_samples" in lg:
+                for role, sample in lg["role_samples"].items():
+                    prefix = "m" if role == "MAKER" else "t"
+                    b[prefix + "_not"] += dec(sample["notional"])
+                    b[prefix + "_fee"] += dec(sample["paid"]) - dec(sample["credit"])
+                continue
             is_m = str(lg.get("role") or "").upper() == "MAKER"
             l_not = dec(lg.get("notional_usd"))
             l_fee = dec(lg.get("gross_fee_usd"))
@@ -495,6 +504,9 @@ def build_venue_stock_perpetuals(
         b = by_sym[sym]
         m_bps = (b["m_fee"] / b["m_not"] * Decimal("10000")) if b["m_not"] > 0 else Decimal("0")
         t_bps = (b["t_fee"] / b["t_not"] * Decimal("10000")) if b["t_not"] > 0 else Decimal("0")
+        net_fee = b["g_fee"] - b["reb"]
+        if "contracts" not in b:
+            net_fee = max(Decimal("0"), net_fee)
         rows.append(
             {
                 "venue_id": venue_id,
@@ -504,12 +516,13 @@ def build_venue_stock_perpetuals(
                 "category": b["category"],
                 "category_zh": b["category_zh"],
                 "trade_count": b["trade_count"],
-                "qty": f2(b["qty"], 6),
-                "maker_bps": f2(m_bps, 2),
-                "taker_bps": f2(t_bps, 2),
+                "qty": None if b.get("qty_unknown") else f2(b["qty"], 6),
+                **({"contract_count": float(b["contracts"])} if "contracts" in b else {}),
+                "maker_bps": None if "contracts" in b and not b["m_not"] else f2(m_bps, 2),
+                "taker_bps": None if "contracts" in b and not b["t_not"] else f2(t_bps, 2),
                 "gross_fee_usd": f2(b["g_fee"], 4),
                 "rebate_usd": f2(b["reb"], 4),
-                "net_fee_usd": f2(max(Decimal("0"), b["g_fee"] - b["reb"]), 4),
+                "net_fee_usd": f2(net_fee, 4),
                 "net_pnl_usd": f2(b["net_pnl"], 2),
             }
         )

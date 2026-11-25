@@ -6,10 +6,10 @@ import { TopBar } from './components/TopBar'
 import { TradeDrilldownDrawer } from './components/TradeDrilldownDrawer'
 import { I18nProvider } from './i18n'
 import { api, ApiError } from './lib/api'
+import { useLedgerSession } from './lib/ledgerSession'
 import { CurrencyProvider, DEFAULT_FX } from './lib/currency'
 import { attachVelvetRippleListener } from './lib/velvetRipple'
 import type {
-  AuthStatusPayload,
   CurrencyCode,
   DashboardData,
   ExchangeAdapterInfo,
@@ -102,8 +102,14 @@ export default function App() {
   })
   const enabledTabs = enabledExtensionTabs(settings.modules)
   const { page, extTab, redirectToOverview } = parseHashRoute(hash, enabledTabs)
-  const [privacyMode, setPrivacyMode] = useState(false)
+  const [privacyMode, setPrivacyMode] = useState(true)
+  const [preferencesReady, setPreferencesReady] = useState(false)
   const initializedPrivacyRef = useRef(false)
+  const settingsWrites = useRef(Promise.resolve())
+  const settingsRevision = useRef(0)
+  const pendingSettingsWrites = useRef(0)
+  const currencyRequest = useRef(0)
+  const [pendingCurrency, setPendingCurrency] = useState<CurrencyCode | null>(null)
   const bootstrappedRef = useRef(false)
   const [rangeKey, setRangeKey] = useState('all')
   const [venueFilter, setVenueFilter] = useState('ALL')
@@ -121,8 +127,6 @@ export default function App() {
   const [drilldown, setDrilldown] = useState<{ venueId: string; venueName?: string; symbol: string; rangeKey?: string } | null>(null)
   const [drilldownOpen, setDrilldownOpen] = useState(false)
 
-  const [authStatus, setAuthStatus] = useState<AuthStatusPayload>({ authenticated: true, require_setup: false })
-  const [authChecked, setAuthChecked] = useState(false)
   const [stageRevealSeq, setStageRevealSeq] = useState(0)
   const bumpStageReveal = useCallback(() => setStageRevealSeq(s => s + 1), [])
 
@@ -142,22 +146,8 @@ export default function App() {
     } catch { /* Preferences remain available for the current page. */ }
   }, [settings.locale, settings.theme, settings.polarity])
 
-  const isAuthLocked = Boolean(authStatus.require_setup || authStatus.authenticated === false)
-
   useEffect(() => {
     return attachVelvetRippleListener()
-  }, [])
-
-  useEffect(() => {
-    api
-      .authStatus()
-      .then(st => {
-        setAuthStatus(st)
-        setAuthChecked(true)
-      })
-      .catch(() => {
-        setAuthChecked(true)
-      })
   }, [])
 
   const applyExchangeList = (ex: { adapters: ExchangeAdapterInfo[]; error_count?: number }) => {
@@ -170,17 +160,8 @@ export default function App() {
     setExchangeErrorCount(computedErr)
   }
 
-  const handlePossibleAuthError = useCallback((err: unknown): boolean => {
-    if (err instanceof ApiError && err.status === 401 && err.authRequired) {
-      setAuthStatus(prev => ({
-        ...prev,
-        authenticated: false,
-        require_setup: err.requireSetup,
-      }))
-      return true
-    }
-    return false
-  }, [])
+  const handlePossibleAuthError = useCallback((err: unknown): boolean =>
+    err instanceof ApiError && err.status === 401 && err.authRequired, [])
 
   useEffect(() => {
     const onHashChange = () => setHash(window.location.hash)
@@ -208,7 +189,6 @@ export default function App() {
   const currentQuery = useRef({ rangeKey, effVenue, effSymbol })
   const dashboardRequest = useRef(0)
   const ledgerEpoch = useRef(0)
-  const switchingLedger = useRef(false)
 
   useLayoutEffect(() => {
     currentQuery.current = { rangeKey, effVenue, effSymbol }
@@ -218,6 +198,21 @@ export default function App() {
   const invalidateDashboard = useCallback(() => {
     dashboardRequest.current++
     ledgerEpoch.current++
+    bootstrappedRef.current = false
+    initializedPrivacyRef.current = false
+    pendingSettingsWrites.current = 0
+    setSettings(prev => ({
+      ...DEFAULT_SETTINGS, locale: prev.locale, theme: prev.theme, polarity: prev.polarity,
+    }))
+    setPreferencesReady(false)
+    setPrivacyMode(true)
+    setPendingCurrency(null)
+    setError('')
+    setVenueFilter('ALL')
+    setSymbolFilter('ALL')
+    setLastSyncHadError(false)
+    setManualSyncing(false)
+    setGeneratingAi(false)
     setDashboardError('')
     setData(null)
     setDrilldown(null)
@@ -226,12 +221,12 @@ export default function App() {
     setExchangeErrorCount(0)
   }, [])
 
-  useLayoutEffect(() => {
-    if (isAuthLocked) invalidateDashboard()
-  }, [isAuthLocked, invalidateDashboard])
+  const session = useLedgerSession(invalidateDashboard)
+  const { authStatus, authChecked, allowed, generation } = session
+  const isAuthLocked = Boolean(authStatus.require_setup || authStatus.authenticated === false)
 
   const loadDashboardOnly = useCallback(async () => {
-    if (switchingLedger.current) return
+    if (!allowed.current) return
     const id = ++dashboardRequest.current
     const query = currentQuery.current
     try {
@@ -243,25 +238,28 @@ export default function App() {
       if (id !== dashboardRequest.current || handlePossibleAuthError(e)) return
       setDashboardError(e instanceof Error ? e.message : 'Failed to load data')
     }
-  }, [handlePossibleAuthError])
+  }, [allowed, handlePossibleAuthError])
 
   const loadAll = useCallback(async () => {
-    if (switchingLedger.current) return
+    if (!allowed.current) return
     const epoch = ledgerEpoch.current
+    const revision = settingsRevision.current
+    const writing = pendingSettingsWrites.current > 0
     try {
       const [, pref, ex] = await Promise.all([loadDashboardOnly(), api.getSettings(), api.listExchanges()])
       if (epoch !== ledgerEpoch.current) return
-      setSettings(pref)
+      if (!writing && revision === settingsRevision.current) setSettings(pref)
       if (!initializedPrivacyRef.current) {
         initializedPrivacyRef.current = true
         setPrivacyMode(Boolean(pref.privacy_mode))
+        setPreferencesReady(true)
       }
       applyExchangeList(ex)
     } catch (e) {
       if (epoch !== ledgerEpoch.current || handlePossibleAuthError(e)) return
       setError(e instanceof Error ? e.message : 'Failed to load settings')
     }
-  }, [loadDashboardOnly, handlePossibleAuthError])
+  }, [allowed, loadDashboardOnly, handlePossibleAuthError])
 
   useEffect(() => {
     if (!authChecked || isAuthLocked) {
@@ -274,7 +272,7 @@ export default function App() {
       return
     }
     void loadDashboardOnly()
-  }, [authChecked, isAuthLocked, rangeKey, effVenue, effSymbol, loadAll, loadDashboardOnly])
+  }, [authChecked, isAuthLocked, generation, rangeKey, effVenue, effSymbol, loadAll, loadDashboardOnly])
 
   useEffect(() => {
     if (!authChecked || isAuthLocked) return
@@ -303,25 +301,47 @@ export default function App() {
   )
 
   const handleUpdateSettings = async (patch: Record<string, unknown>, showPageError = true) => {
+    const epoch = ledgerEpoch.current
+    const revision = ++settingsRevision.current
+    const currency = patch.display_currency as CurrencyCode | undefined
+    if (currency) {
+      currencyRequest.current = revision
+      setPendingCurrency(currency)
+    }
     setError('')
-    try {
+    pendingSettingsWrites.current++
+    const save = settingsWrites.current.then(async () => {
+      if (epoch !== ledgerEpoch.current || !allowed.current) return
       const next = await api.updateSettings(patch)
+      if (epoch !== ledgerEpoch.current) return
       setSettings(next)
-      if (typeof patch.privacy_mode === 'boolean') setPrivacyMode(patch.privacy_mode)
+      if (typeof patch.privacy_mode === 'boolean') {
+        setPrivacyMode(next.privacy_mode)
+        session.notifyOtherTabs()
+      }
+    })
+    settingsWrites.current = save.catch(() => {})
+    try {
+      await save
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Failed to update settings'
-      if (!handlePossibleAuthError(e) && showPageError) setError(message)
+      if (epoch === ledgerEpoch.current && !handlePossibleAuthError(e) && showPageError) setError(message)
       return message
+    } finally {
+      if (epoch === ledgerEpoch.current) pendingSettingsWrites.current--
+      if (currency && currencyRequest.current === revision) setPendingCurrency(null)
     }
-    await loadDashboardOnly()
+    if (epoch === ledgerEpoch.current && !pendingSettingsWrites.current) await loadDashboardOnly()
   }
 
   const handleSync = async () => {
+    const epoch = ledgerEpoch.current
     setManualSyncing(true)
     setError('')
     try {
       const syncRes = await api.triggerSync()
       await loadAll()
+      if (epoch !== ledgerEpoch.current) return
       const failedEntries = Object.entries(syncRes.venues || {}).filter(([, v]) => !v.ok)
       if (failedEntries.length > 0) {
         setLastSyncHadError(true)
@@ -338,11 +358,12 @@ export default function App() {
         setLastSyncHadError(false)
       }
     } catch (e) {
+      if (epoch !== ledgerEpoch.current) return
       setLastSyncHadError(true)
       if (handlePossibleAuthError(e)) return
       setError(e instanceof Error ? e.message : 'Sync failed')
     } finally {
-      setManualSyncing(false)
+      if (epoch === ledgerEpoch.current) setManualSyncing(false)
     }
   }
 
@@ -352,25 +373,17 @@ export default function App() {
   }
 
   const handleGenerateAi = async (mode: 'auto' | 'ai' | 'local_rules' = 'auto') => {
+    const epoch = ledgerEpoch.current
     setGeneratingAi(true)
     setError('')
     try {
       await api.generateAiReview(rangeKey, mode, data?.demo_mode)
       await loadAll()
     } catch (e) {
-      if (handlePossibleAuthError(e)) return
+      if (epoch !== ledgerEpoch.current || handlePossibleAuthError(e)) return
       setError(e instanceof Error ? e.message : 'AI review generation failed')
     } finally {
-      setGeneratingAi(false)
-    }
-  }
-
-  const handleLockLedger = async () => {
-    try {
-      const st = await api.authLogout()
-      setAuthStatus({ ...st, authenticated: false })
-    } catch {
-      setAuthStatus(prev => ({ ...prev, authenticated: false }))
+      if (epoch === ledgerEpoch.current) setGeneratingAi(false)
     }
   }
 
@@ -399,11 +412,15 @@ export default function App() {
   }, [data?.demo_mode])
 
   const visibleError = error || dashboardError
-  const activeCurrency: CurrencyCode = settings.display_currency || 'USDT'
+  const activeCurrency: CurrencyCode = pendingCurrency || settings.display_currency || 'USDT'
 
   return (
     <I18nProvider locale={settings.locale}>
       <CurrencyProvider currency={activeCurrency} fx={fx}>
+        <div className="otl-session-check" role="status" data-testid="session-check-status">
+          {settings.locale === 'en' ? 'Checking ledger access…' : '正在核对账本…'}
+        </div>
+
         {authChecked && (
           <AuthGate
             auth={authStatus}
@@ -412,14 +429,22 @@ export default function App() {
             onToggleLocale={() =>
               setSettings(prev => ({ ...prev, locale: prev.locale === 'zh-CN' ? 'en' : 'zh-CN' }))
             }
-            onUnlocked={nextAuth => {
-              setAuthStatus(nextAuth)
-            }}
+            lockUnconfirmed={session.lockUnconfirmed}
+            onUnlocked={session.unlocked}
             onCeremonyLiftStart={bumpStageReveal}
           />
         )}
 
-        {!isAuthLocked && (
+        {session.checkError && (
+          <div className="min-h-screen grid place-content-center text-center gap-3" role="alert">
+            <p>{settings.locale === 'en' ? 'Could not check ledger access.' : '暂时无法确认账本访问状态。'}</p>
+            <button type="button" className="otl-btn otl-btn-primary justify-self-center" onClick={() => void session.check()}>
+              {settings.locale === 'en' ? 'Retry' : '重试'}
+            </button>
+          </div>
+        )}
+
+        {authChecked && !isAuthLocked && (
           <div
             data-testid="otl-root"
             className="min-h-screen flex flex-col md:flex-row bg-[var(--bg)] text-[var(--fg)]"
@@ -447,7 +472,7 @@ export default function App() {
               syncFailed={lastSyncHadError}
               onSync={() => void handleSync()}
               authEnabled={Boolean(authStatus.enabled)}
-              onLock={() => void handleLockLedger()}
+              onLock={() => void session.lock()}
               versionStatus={versionStatus}
             />
 
@@ -488,12 +513,12 @@ export default function App() {
                   </div>
                 </AnimatedCollapse>
 
-                {(!data || data.range_key !== rangeKey) && (
+                {(!preferencesReady || !data || data.range_key !== rangeKey) && (
                   <div role="status" className="py-20 text-center text-[13px] text-[var(--fg-3)]">
                     {settings.locale === 'en' ? 'Loading…' : '加载中…'}
                   </div>
                 )}
-                {data && (
+                {preferencesReady && data && (
                   <div
                     key={`${page}-${data.demo_mode ? 'demo' : 'live'}-${stageRevealSeq}`}
                     hidden={data.range_key !== rangeKey}
@@ -560,7 +585,7 @@ export default function App() {
                     )}
                     {page === 'settings' && (
                       <SettingsPage
-                        settings={settings}
+                        settings={pendingCurrency ? { ...settings, display_currency: pendingCurrency } : settings}
                         adapters={adapters}
                         demoMode={Boolean(
                           (data as DashboardData & { explicit_demo_mode?: boolean }).explicit_demo_mode ??
@@ -571,8 +596,8 @@ export default function App() {
                             (data as DashboardData & { explicit_demo_mode?: boolean }).explicit_demo_mode === false,
                         )}
                         authStatus={authStatus}
-                        onAuthChanged={setAuthStatus}
-                        onLockNow={handleLockLedger}
+                        onAuthChanged={session.changed}
+                        onLockNow={session.lock}
                         versionStatus={versionStatus}
                         onCheckVersion={handleCheckVersion}
                         onUpdateSettings={async patch => {
@@ -588,8 +613,7 @@ export default function App() {
                           onStep?.('syncing')
                           const syncRes = await api.triggerSync(body.venue_id, body)
                           if (syncRes.auth_status) {
-                            invalidateDashboard()
-                            setAuthStatus(syncRes.auth_status)
+                            session.changed(syncRes.auth_status)
                             if (syncRes.auth_status.require_setup || syncRes.auth_status.authenticated === false) return
                           }
                           const venueRes = syncRes.venues?.[body.venue_id]
@@ -605,8 +629,8 @@ export default function App() {
                           await loadAll()
                           onStep?.('done')
                         }}
-                        onDeleteExchange={async (vid, keepData = false) => {
-                          await api.deleteExchange(vid, keepData)
+                        onDeleteExchange={async (vid, keepData = false, expectedRevision) => {
+                          await api.deleteExchange(vid, keepData, expectedRevision)
                           await loadAll()
                         }}
                         onTestExchange={async (vid, isRetry = false) => {
@@ -629,18 +653,14 @@ export default function App() {
                           }
                         }}
                         onToggleDemo={async enabled => {
-                          switchingLedger.current = true
-                          invalidateDashboard()
+                          session.beginChange()
                           try {
                             await api.setDemoMode(enabled)
-                            const st = await api.authStatus()
-                            setAuthStatus(st)
-                            switchingLedger.current = false
-                            if (!st.require_setup && st.authenticated !== false) await loadAll()
+                            session.notifyOtherTabs()
                           } catch (e) {
-                            switchingLedger.current = false
-                            await loadAll()
                             if (!handlePossibleAuthError(e)) setError(e instanceof Error ? e.message : 'Failed to switch ledger')
+                          } finally {
+                            await session.recheckAfterChange()
                           }
                         }}
                       />
@@ -652,7 +672,7 @@ export default function App() {
           </div>
         )}
 
-        {drilldown && !isAuthLocked && (
+        {drilldown && authChecked && preferencesReady && !isAuthLocked && (
           <TradeDrilldownDrawer
             venueId={drilldown.venueId}
             venueName={drilldown.venueName}

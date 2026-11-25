@@ -7,7 +7,7 @@ import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n/zh-CN'
 import { useCurrency } from '../lib/currency'
-import { fmtDuration, fmtPrice, pnlTone } from '../lib/format'
+import { fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, pnlTone } from '../lib/format'
 import type { ClosedTrade, DashboardData, TradeLegFee } from '../lib/types'
 
 const TAG_KEYS: Array<{ id: string; key: MessageKey }> = [
@@ -52,7 +52,7 @@ function LegFeeCard({
       <div>
         <div className="font-semibold text-[13px] text-[var(--fg)]">{title}</div>
         <div className="text-[12px] text-[var(--fg-2)] truncate">
-          {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
+          {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${fmtLegRate(leg.fee_bps, locale)}`}
         </div>
         <div className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
           {leg.time_str} {leg.avg_price > 0 ? `· ${fmtPrice(leg.avg_price)}` : ''}
@@ -71,11 +71,9 @@ function LegFeeCard({
           <span className={`whitespace-nowrap sensitive ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
             {feeUnknown
               ? '—'
-              : leg.gross_fee_usd <= 0
-                ? t('leg_zero_fee')
-                : leg.rebate_usd > 0
-                  ? `+${cur.money(leg.rebate_usd, 3)} (${leg.rebate_pct.toFixed(0)}%)`
-                  : cur.money(0, 3)}
+              : leg.rebate_usd > 0
+                ? `+${cur.money(leg.rebate_usd, 3)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
+                : leg.gross_fee_usd <= 0 ? t('leg_zero_fee') : cur.money(0, 3)}
           </span>
         </div>
         {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
@@ -91,7 +89,7 @@ function LegFeeCard({
         <div className="flex items-center justify-between gap-2 font-semibold pt-1">
           <span className="text-[var(--fg-2)]">{netLabel}</span>
           <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? '—' : leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
+            {feeUnknown ? '—' : cur.signedMoney(-leg.net_fee_usd, 3)}
           </span>
         </div>
       </div>
@@ -391,7 +389,7 @@ export function TradesPage({
                           <td className="hidden sm:table-cell text-right whitespace-nowrap">
                             <div className="text-[12.5px] font-medium sensitive">
                               {t('fee_net_short')}{' '}
-                              {tr.net_fee_usd > 0 ? `-${cur.money(tr.net_fee_usd, 2)}` : cur.money(0, 2)}
+                              {cur.signedMoney(-tr.net_fee_usd, 2)}
                               {tr.effective_relief_pct > 0 && (
                                 <span className="txt-pos ml-1">
                                   (-{tr.effective_relief_pct.toFixed(0)}%)
@@ -483,7 +481,7 @@ export function TradesPage({
                       />
                     </div>
                     <div className="text-[12px] text-[var(--fg-3)] mt-1">
-                      {selected.qty > 0 ? `${selected.qty} ${selected.symbol.split(/[_/-]/)[0]} · ` : ''}
+                      {(selected.qty || selected.contract_count) ? <span className="sensitive">{fmtContractQty(selected, locale)} · </span> : null}
                       {fmtDuration(selected.holding_sec, locale)}
                       {selected.effective_relief_pct > 0
                         ? ` · ${t('detail_relief_short')} ${selected.effective_relief_pct.toFixed(1)}%`
@@ -673,9 +671,9 @@ export function TradesPage({
                       <td>
                         <VenueBadge venueId={row.venue_id} name={venueName} />
                       </td>
-                      <td className="text-right whitespace-nowrap sensitive">{row.trade_count} / {row.qty}</td>
+                      <td className="text-right whitespace-nowrap sensitive">{row.trade_count} / {row.contract_count != null ? fmtContractQty(row, locale) : row.qty}</td>
                       <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
-                        {row.trade_count ? `${row.maker_bps.toFixed(1)} / ${row.taker_bps.toFixed(1)}` : '— / —'}
+                        {row.trade_count ? `${row.maker_bps?.toFixed(1) ?? '—'} / ${row.taker_bps?.toFixed(1) ?? '—'}` : '— / —'}
                       </td>
                       <td className="text-right whitespace-nowrap sensitive">
                         {cur.signedPlainMoney(-row.gross_fee_usd, 4)} /{' '}

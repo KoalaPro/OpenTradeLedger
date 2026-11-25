@@ -431,6 +431,12 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
     }
   }
 
+  @media (width < 768px) {
+    .otl-nav-btn.active {
+      background: var(--accent-soft);
+    }
+  }
+
   .otl-nav-btn:hover:not(.active) {
     color: var(--fg);
     background: var(--surface-hover);
@@ -1463,4 +1469,26 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   .otl-card-interactive {
     transition: none !important;
   }
+}
+
+/* Keep both the ledger and body-level modal portals covered while a resumed
+   document checks its current session and ledger mode. */
+:root[data-session-check="pending"] body {
+  visibility: hidden;
+}
+
+.otl-session-check {
+  display: none;
+}
+
+:root[data-session-check="pending"] .otl-session-check {
+  display: grid;
+  visibility: visible;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  place-content: center;
+  background: var(--bg);
+  color: var(--fg-2);
+  font-size: 14px;
 }

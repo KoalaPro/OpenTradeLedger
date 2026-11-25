@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useDialogFocus } from './useDialogFocus'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 
@@ -23,6 +24,7 @@ export function FloatingModal({
   testId,
   children,
 }: FloatingModalProps) {
+  const titleId = useId()
   const [rendered, setRendered] = useState(open)
   const [closing, setClosing] = useState(false)
   const timerRef = useRef<number | null>(null)
@@ -60,30 +62,23 @@ export function FloatingModal({
     }
   }, [])
 
-  const requestClose = useCallback(() => {
-    onClose()
-  }, [onClose])
+  const dialogRef = useDialogFocus(open, onClose)
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') requestClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, requestClose])
-
-  if (!rendered) return null
+  if (!open && !rendered) return null
 
   const isZh = typeof document !== 'undefined' && (document.documentElement.lang || '').startsWith('zh')
 
   const dialogNode = (
     <div
       data-testid={testId}
+      ref={dialogRef}
+      inert={!open}
+      tabIndex={-1}
       role="dialog"
       aria-modal="true"
+      aria-labelledby={titleId}
       onClick={e => {
-        if (e.target === e.currentTarget) requestClose()
+        if (e.target === e.currentTarget) onClose()
       }}
       className={`otl-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 ${
         closing ? 'closing' : ''
@@ -94,7 +89,7 @@ export function FloatingModal({
       >
         <div className="px-6 py-4 border-b border-[var(--border)] bg-[var(--surface)] flex items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
-            <div className="t-h2 truncate">{title}</div>
+            <div id={titleId} className="t-h2 truncate">{title}</div>
             {subtitle && (
               <div className="text-[12.5px] text-[var(--fg-3)] mt-0.5 truncate">{subtitle}</div>
             )}
@@ -103,7 +98,7 @@ export function FloatingModal({
             {headerActions}
             <button
               type="button"
-              onClick={requestClose}
+              onClick={onClose}
               aria-label={isZh ? '关闭' : 'Close'}
               title={isZh ? '关闭' : 'Close'}
               className="otl-btn h-7 w-7 px-0 text-[var(--fg-2)] hover:text-[var(--fg)]"

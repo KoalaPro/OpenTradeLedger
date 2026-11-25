@@ -47,10 +47,11 @@ interface SettingsPageProps {
       api_key: string
       api_secret: string
       passphrase?: string
+      expected_revision?: string
     },
     onStep?: (step: 'verifying' | 'syncing' | 'done') => void,
   ) => Promise<void>
-  onDeleteExchange: (venueId: string, keepData?: boolean) => Promise<void>
+  onDeleteExchange: (venueId: string, keepData?: boolean, expectedRevision?: string) => Promise<void>
   onTestExchange: (venueId: string, isRetry?: boolean) => Promise<void>
   onToggleDemo: (enabled: boolean) => Promise<void>
 }
@@ -87,6 +88,7 @@ export function SettingsPage({
   const isZh = locale === 'zh-CN'
 
   const [addingVenue, setAddingVenue] = useState<string>('')
+  const [formRevision, setFormRevision] = useState<string>()
   const [deletingVenue, setDeletingVenue] = useState<string>('')
   const [deleteMode, setDeleteMode] = useState<'choice' | 'purge_archived'>('choice')
   const [keepHistoryOnDelete, setKeepHistoryOnDelete] = useState<boolean>(true)
@@ -99,6 +101,7 @@ export function SettingsPage({
   const [label, setLabel] = useState('')
   const [busyVenue, setBusyVenue] = useState('')
   const statusTimerRef = useRef<number | null>(null)
+  const shakeTimerRef = useRef<number | null>(null)
   const closeCeremonyTimerRef = useRef<number | null>(null)
 
   const [goalLabel, setGoalLabel] = useState(settings.goal_label || '')
@@ -131,6 +134,7 @@ export function SettingsPage({
     return () => {
       if (statusTimerRef.current !== null) window.clearTimeout(statusTimerRef.current)
       if (closeCeremonyTimerRef.current !== null) window.clearTimeout(closeCeremonyTimerRef.current)
+      if (shakeTimerRef.current !== null) window.clearTimeout(shakeTimerRef.current)
     }
   }, [])
 
@@ -145,6 +149,16 @@ export function SettingsPage({
       setErrorMsg(err instanceof Error ? err.message : isZh ? '设置保存失败' : 'Failed to save settings')
     }
     return false
+  }
+
+  const openAccountForm = (ad: ExchangeAdapterInfo) => {
+    setAddingVenue(ad.venue_id)
+    setFormRevision(ad.configured ? ad.credential?.revision : 'absent')
+    setModalError('')
+    setLabel(ad.credential?.label || ad.display_name)
+    setApiKey('')
+    setApiSecret('')
+    setPassphrase('')
   }
 
   const handleAddSubmit = async () => {
@@ -163,6 +177,7 @@ export function SettingsPage({
           api_key: apiKey.trim(),
           api_secret: apiSecret.trim(),
           passphrase: passphrase.trim(),
+          expected_revision: formRevision,
         },
         step => setSubmitStep(step),
       )
@@ -196,15 +211,17 @@ export function SettingsPage({
       const updateHint = selectedAdapter?.configured
         ? isZh ? '原账户凭据和记录已保留。' : 'The previous credentials and records were kept.'
         : isZh ? '未保存新账户。' : 'The new account was not saved.'
-      const historyFailed = rolledBack && err.errorCode !== 'LOCAL_SAVE_FAILED'
+      const editConflict = err instanceof ApiError && err.errorCode === 'CREDENTIAL_EDIT_CONFLICT'
+      const historyFailed = rolledBack && err.status !== 409 && err.errorCode !== 'LOCAL_SAVE_FAILED'
       const phase = historyFailed ? isZh ? '历史同步失败。' : 'Historical sync failed.' : ''
-      const message = rolledBack ? [phase, detail, updateHint].filter(Boolean).join(' ') : detail
+      const message = rolledBack && !editConflict ? [phase, detail, updateHint].filter(Boolean).join(' ') : detail
       setModalError(message)
       setErrorMsg(message)
       setSubmitStep('')
       setBusyVenue('')
       setModalShake(true)
-      window.setTimeout(() => setModalShake(false), 320)
+      if (shakeTimerRef.current !== null) window.clearTimeout(shakeTimerRef.current)
+      shakeTimerRef.current = window.setTimeout(() => setModalShake(false), 320)
     }
   }
 
@@ -371,14 +388,7 @@ export function SettingsPage({
                           <button
                             type="button"
                             data-testid={`edit-adapter-${ad.venue_id}`}
-                            onClick={() => {
-                              setAddingVenue(ad.venue_id)
-                              setModalError('')
-                              setLabel(ad.credential?.label || ad.display_name)
-                              setApiKey('')
-                              setApiSecret('')
-                              setPassphrase('')
-                            }}
+                            onClick={() => openAccountForm(ad)}
                             title={isZh ? '修改或更新 API 密钥' : 'Update API credentials'}
                             className="otl-btn"
                           >
@@ -389,6 +399,7 @@ export function SettingsPage({
                             type="button"
                             data-testid={`remove-adapter-${ad.venue_id}`}
                             onClick={() => {
+                              setFormRevision(ad.credential?.revision)
                               setDeleteMode('choice')
                               setKeepHistoryOnDelete(true)
                               setDeletingVenue(ad.venue_id)
@@ -404,14 +415,7 @@ export function SettingsPage({
                           <button
                             type="button"
                             data-testid={`configure-adapter-${ad.venue_id}`}
-                            onClick={() => {
-                              setAddingVenue(ad.venue_id)
-                              setModalError('')
-                              setLabel(ad.display_name)
-                              setApiKey('')
-                              setApiSecret('')
-                              setPassphrase('')
-                            }}
+                            onClick={() => openAccountForm(ad)}
                             className="otl-btn"
                           >
                             {isZh ? '重新绑定 API' : 'Rebind API'}
@@ -421,6 +425,7 @@ export function SettingsPage({
                             data-testid={`purge-archived-${ad.venue_id}`}
                             title={isZh ? '彻底清空该平台封存的本地历史数据' : 'Permanently clear archived local data'}
                             onClick={() => {
+                              setFormRevision('absent')
                               setDeleteMode('purge_archived')
                               setKeepHistoryOnDelete(false)
                               setDeletingVenue(ad.venue_id)
@@ -435,14 +440,7 @@ export function SettingsPage({
                         <button
                           type="button"
                           data-testid={`configure-adapter-${ad.venue_id}`}
-                          onClick={() => {
-                            setAddingVenue(ad.venue_id)
-                            setModalError('')
-                            setLabel(ad.display_name)
-                            setApiKey('')
-                            setApiSecret('')
-                            setPassphrase('')
-                          }}
+                          onClick={() => openAccountForm(ad)}
                           className="otl-btn"
                         >
                           {t('set_add_btn')}
@@ -1138,7 +1136,14 @@ export function SettingsPage({
                   const vid = deletingAdapter.venue_id
                   const shouldKeep = deleteMode === 'choice' ? keepHistoryOnDelete : false
                   setDeletingVenue('')
-                  await onDeleteExchange(vid, shouldKeep)
+                  setStatusMsg('')
+                  setErrorMsg('')
+                  try {
+                    await onDeleteExchange(vid, shouldKeep, formRevision)
+                  } catch (err) {
+                    setErrorMsg(err instanceof Error ? err.message : isZh ? '操作失败，请重试。' : 'Unable to remove the account. Try again.')
+                    return
+                  }
                   flashOk(
                     shouldKeep
                       ? isZh

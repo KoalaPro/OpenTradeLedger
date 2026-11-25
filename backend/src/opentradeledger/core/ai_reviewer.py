@@ -362,12 +362,12 @@ def build_local_highlights(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
             "kind": "net_fee",
             "title": "Net Fee Burden & Relief",
             "title_zh": "净手续费磨损与减免率",
-            "metric": f"-{net_fee:.2f} U ({relief:.1f}%)",
+            "metric": f"{-net_fee:+.2f} U ({relief:.1f}%)",
             "amount_usd": -round(net_fee, 2),
             "pct": round(relief, 1),
             "trade_count": trade_count,
             "body": f"Across {trade_count} closed trades, fee rebates & token discounts covered {relief:.1f}% of gross fees.",
-            "body_zh": f"共 {trade_count} 笔平仓，返佣与平台币抵扣覆盖了 {relief:.1f}% 的原始手续费，实付净费 -{net_fee:.2f} U。",
+            "body_zh": f"共 {trade_count} 笔平仓，返佣与平台币抵扣覆盖了 {relief:.1f}% 的原始手续费，净手续费现金流 {-net_fee:+.2f} U。",
         },
         {
             "kind": "win_rate",
@@ -604,12 +604,12 @@ async def generate_ai_review(
             else "per-leg maker/taker split unavailable"
         )
         commentary_zh = (
-            f"1. **压缩出场吃单磨损**：当前净手续费 -{float(s.get('net_fee_usd') or 0):.2f} U（{mk_clause_zh}），优先在目标位分批挂限价止盈，预计可额外留存 *+{float(s.get('potential_maker_savings_usd') or 0):.2f} USDT*。\n"
+            f"1. **压缩出场吃单磨损**：当前净手续费 {-float(s.get('net_fee_usd') or 0):+.2f} U（{mk_clause_zh}），优先在目标位分批挂限价止盈，预计可额外留存 *+{float(s.get('potential_maker_savings_usd') or 0):.2f} USDT*。\n"
             f"2. **校准多空与持仓纪律**：当前做多胜率 {ctx['summary']['long_win_rate_pct']}%（{ctx['summary']['long_trades']} 笔）、做空胜率 {ctx['summary']['short_win_rate_pct']}%（{ctx['summary']['short_trades']} 笔）；盈利单平均持仓 {ctx['summary']['avg_win_hold_min']} 分钟 vs 亏损单 {ctx['summary']['avg_loss_hold_min']} 分钟，警惕亏损扛单放大回撤。\n"
             "3. **接入任意 OpenAI 兼容大模型**：可在「设置与连接」填入 Base URL / API Key 并点「获取模型列表」选择模型，获得结合最近 20 笔逐笔进出场与复盘笔记的深度点评。"
         )
         commentary_en = (
-            f"1. **Reduce exit taker drag**: Net fees are -{float(s.get('net_fee_usd') or 0):.2f} U ({mk_clause_en}). Passive limit exits could retain an extra *+{float(s.get('potential_maker_savings_usd') or 0):.2f} USDT*.\n"
+            f"1. **Reduce exit taker drag**: Net fees are {-float(s.get('net_fee_usd') or 0):+.2f} U ({mk_clause_en}). Passive limit exits could retain an extra *+{float(s.get('potential_maker_savings_usd') or 0):.2f} USDT*.\n"
             f"2. **Tighten directional & hold discipline**: Long win rate {ctx['summary']['long_win_rate_pct']}% ({ctx['summary']['long_trades']} trades) vs Short {ctx['summary']['short_win_rate_pct']}% ({ctx['summary']['short_trades']} trades); average winning hold {ctx['summary']['avg_win_hold_min']}m vs losing {ctx['summary']['avg_loss_hold_min']}m.\n"
             "3. **Connect any OpenAI-compatible LLM**: Configure Base URL & API Key in Settings and click Fetch Models for deep coaching over your top symbols and recent 20 trades."
         )

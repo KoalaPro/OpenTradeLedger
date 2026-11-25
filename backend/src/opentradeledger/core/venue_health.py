@@ -10,6 +10,7 @@ import re
 import time
 from typing import Any
 
+from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.core.store import LedgerStore
 
 VENUE_HEALTH_META_KEY = "venue_health"
@@ -51,6 +52,8 @@ def _sanitize_raw_error(raw: Any, max_len: int = 280) -> str:
 
 def humanize_exchange_error(venue_id: str, raw_err: Any) -> dict[str, str]:
     """Classify cryptic exchange HTTP/API errors into clear bilingual explanations + sanitized raw detail."""
+    if isinstance(raw_err, EasiCoinIdentityError):
+        return {"code": raw_err.code, "reason": raw_err.reason, "reason_zh": raw_err.reason_zh, "raw": ""}
     raw_clean = _sanitize_raw_error(raw_err)
     low = raw_clean.lower()
 

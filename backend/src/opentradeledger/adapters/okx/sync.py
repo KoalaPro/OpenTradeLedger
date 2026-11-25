@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
 
 OKX_MERGE_SPECS = {
+    "instruments": lambda r: (r.get("instId"), r.get("listTime")),
     "positions_history": lambda r: f"{r.get('posId')}_{r.get('uTime')}_{r.get('instId')}",
     "fills": lambda r: str(r.get("billId") or r.get("tradeId") or f"{r.get('ordId')}_{r.get('ts')}"),
     "bills": lambda r: str(r.get("billId") or f"{r.get('ts')}_{r.get('subType')}_{r.get('balChg')}"),
@@ -59,6 +60,13 @@ async def sync_okx_venue(
         raw_snap = await client.fetch_full_snapshot(since_ms=since_ms)
     except TypeError:
         raw_snap = await client.fetch_full_snapshot()
+    # One public instrument list covers both current rows and trades retained
+    # outside the API history window. Keep only relevant specifications on disk.
+    used_instruments = {row.get("instId") for snapshot in (existing_snap, raw_snap)
+                        for field in ("positions", "positions_history", "fills")
+                        for row in snapshot.get(field) or []}
+    raw_snap["instruments"] = [row for row in raw_snap.get("instruments") or []
+                               if row.get("instId") in used_instruments]
     snap = store.upsert_plugin_snapshot("okx", raw_snap, merge_specs=OKX_MERGE_SPECS)
     eq_usd, has_open, fp_after = extract_okx_snapshot_activity(snap)
     new_closed = 0

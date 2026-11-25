@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
+import logging
 import math
 import os
 from pathlib import Path
@@ -14,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from opentradeledger import __app_name__, __app_name_zh__, __version__
+from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.adapters.registry import AdapterRegistry, build_default_registry
 from opentradeledger.core.ai_reviewer import (
     _normalize_ai_base,
@@ -43,7 +46,7 @@ from opentradeledger.security.local_auth import (
     AuthValidationError,
     LocalAuthManager,
 )
-from opentradeledger.security.vault import CredentialVault, ExchangeCredentialRecord
+from opentradeledger.security.vault import CredentialEditConflict, CredentialVault, ExchangeCredentialRecord
 
 
 class JournalUpdateRequest(BaseModel):
@@ -59,6 +62,7 @@ class ExchangeUpsertRequest(BaseModel):
     api_secret: str
     passphrase: str = ""
     enabled: bool = True
+    expected_revision: str | None = None
 
 
 class DemoToggleRequest(BaseModel):
@@ -217,7 +221,12 @@ def create_app(
 
     vault = CredentialVault(data_path)
     # Non-destructively import local data/.env read-only keys if present
-    vault.import_from_dotenv(data_path / ".env", overwrite=False)
+    dotenv_easicoin = None
+    for candidate in vault.dotenv_candidates(data_path / ".env"):
+        if candidate.venue_id == "easicoin":
+            dotenv_easicoin = candidate
+        else:
+            vault.upsert(candidate)
 
     store = LedgerStore(data_path)
     _import_dotenv_watcher_targets_once(data_path, store)
@@ -252,14 +261,28 @@ def create_app(
         base_version=base_img_ver,
     )
 
+    async def import_easicoin(candidate: ExchangeCredentialRecord) -> None:
+        try:
+            await sync_manager.sync_candidate_and_commit(candidate, expected_revision="absent")
+        except CredentialEditConflict:
+            pass  # A newer explicit save won the race.
+        except Exception as exc:
+            reason = humanize_exchange_error("easicoin", exc)["reason"]
+            logging.getLogger("opentradeledger.sync").warning("EasiCoin .env import deferred: %s", reason)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        import_task = asyncio.create_task(import_easicoin(dotenv_easicoin)) if dotenv_easicoin else None
         if enable_background_sync:
             await sync_manager.start()
             await copy_watcher.start()
         try:
             yield
         finally:
+            if import_task:
+                import_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await import_task
             await copy_watcher.stop()
             await sync_manager.stop()
 
@@ -321,10 +344,15 @@ def create_app(
 
     # ── Local NAS Password Authentication Endpoints ──────────────────────────
 
+    def _session_status(token: str | None) -> dict[str, Any]:
+        status = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
+        if status["authenticated"]:
+            status["explicit_demo_mode"] = bool(ledger_service.demo_mode)
+        return status
+
     @app.get("/api/v1/auth/status")
     async def auth_status(request: Request) -> dict[str, Any]:
-        token = request.cookies.get(AUTH_COOKIE_NAME)
-        return auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
+        return _session_status(request.cookies.get(AUTH_COOKIE_NAME))
 
     @app.post("/api/v1/auth/setup")
     async def auth_setup(body: AuthSetupRequest) -> Response:
@@ -333,7 +361,7 @@ def create_app(
         except AuthValidationError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
-        st = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
+        st = _session_status(token)
         resp = JSONResponse(content={"ok": True, **st})
         _set_session_cookie(resp, token, ttl, body.remember)
         return resp
@@ -344,7 +372,7 @@ def create_app(
             auth_manager.skip_setup()
         except AuthValidationError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
-        st = auth_manager.get_status(None, demo_mode=bool(ledger_service.demo_mode))
+        st = _session_status(None)
         return JSONResponse(content={"ok": True, **st})
 
     @app.post("/api/v1/auth/login")
@@ -360,14 +388,14 @@ def create_app(
             return JSONResponse(status_code=401, content={"detail": str(exc)})
 
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
-        st = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
+        st = _session_status(token)
         resp = JSONResponse(content={"ok": True, **st})
         _set_session_cookie(resp, token, ttl, body.remember)
         return resp
 
     @app.post("/api/v1/auth/logout")
     async def auth_logout() -> Response:
-        st = auth_manager.get_status(None, demo_mode=bool(ledger_service.demo_mode))
+        st = _session_status(None)
         resp = JSONResponse(content={"ok": True, **st})
         resp.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
         return resp
@@ -376,7 +404,7 @@ def create_app(
     async def auth_change_password(body: AuthChangePasswordRequest, request: Request) -> Response:
         cur_tok = request.cookies.get(AUTH_COOKIE_NAME)
         if not auth_manager.is_request_allowed(cur_tok, demo_mode=bool(ledger_service.demo_mode)):
-            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+            return JSONResponse(status_code=401, content={"detail": "Authentication required", "auth_required": True})
         try:
             auth_manager.change_password(
                 body.current_password,
@@ -392,7 +420,7 @@ def create_app(
             return JSONResponse(status_code=400, content={"detail": str(exc)})
 
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
-        st = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
+        st = _session_status(token)
         resp = JSONResponse(content={"ok": True, **st})
         _set_session_cookie(resp, token, ttl, body.remember)
         return resp
@@ -401,7 +429,7 @@ def create_app(
     async def auth_disable_password(body: AuthDisableRequest, request: Request) -> Response:
         cur_tok = request.cookies.get(AUTH_COOKIE_NAME)
         if not auth_manager.is_request_allowed(cur_tok, demo_mode=bool(ledger_service.demo_mode)):
-            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+            return JSONResponse(status_code=401, content={"detail": "Authentication required", "auth_required": True})
         try:
             auth_manager.disable_password(body.current_password, client_key=_client_key(request))
         except AuthRateLimitError as exc:
@@ -412,7 +440,7 @@ def create_app(
         except AuthValidationError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-        st = auth_manager.get_status(None, demo_mode=bool(ledger_service.demo_mode))
+        st = _session_status(None)
         resp = JSONResponse(content={"ok": True, **st})
         resp.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
         return resp
@@ -465,67 +493,84 @@ def create_app(
                 },
             )
 
+    @app.exception_handler(CredentialEditConflict)
+    async def credential_conflict(_request: Request, _exc: CredentialEditConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content={
+            "detail": "This account configuration has changed. Refresh the page and reopen the form before saving.",
+            "detail_zh": "这份账户配置已被更新，请刷新页面，重新打开表单后再保存。",
+            "error_code": "CREDENTIAL_EDIT_CONFLICT",
+            "committed": False,
+        })
+
+    async def commit_candidate(cand: ExchangeUpsertRequest, request: Request, *, finish_onboarding: bool) -> Response:
+        vid = cand.venue_id.strip().lower()
+        adapter = reg.get(vid)
+        if adapter is None:
+            raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
+        if adapter.meta.requires_passphrase and not cand.passphrase.strip():
+            raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
+        if not cand.api_key.strip() or not cand.api_secret.strip():
+            raise HTTPException(status_code=400, detail="API Key and API Secret are required")
+        temp_cred = ExchangeCredentialRecord(
+            venue_id=vid,
+            label=cand.label.strip() or adapter.meta.display_name,
+            api_key=cand.api_key.strip(),
+            api_secret=cand.api_secret.strip(),
+            passphrase=cand.passphrase.strip(),
+            enabled=cand.enabled,
+        )
+        # Existing users can edit credentials while intentionally viewing the demo.
+        # Also finish onboarding for older installations that saved a key before setup.
+        enter_live_ledger = finish_onboarding and ledger_service.demo_mode and (
+            not vault.list_masked()
+            or auth_manager.get_status(request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False)["require_setup"]
+        )
+        try:
+            res = await sync_manager.sync_candidate_and_commit(temp_cred, cand.expected_revision)
+        except CredentialEditConflict:
+            raise
+        except EasiCoinIdentityError as exc:
+            return JSONResponse(status_code=409, content={
+                "detail": exc.reason, "detail_zh": exc.reason_zh,
+                "error_code": exc.code, "committed": False,
+            })
+        except CandidateRollbackError:
+            return JSONResponse(status_code=500, content={
+                "detail": "Local rollback failed. Check the data directory and verify the account before retrying.",
+                "detail_zh": "本地回滚失败，请检查数据目录并核对账户状态后再重试。",
+                "error_code": "LOCAL_ROLLBACK_FAILED",
+            })
+        except CandidateSaveError:
+            return JSONResponse(status_code=500, content={
+                "detail": "Local save failed. Check available disk space and data directory permissions.",
+                "detail_zh": "本地保存失败，请检查磁盘空间和数据目录写入权限。",
+                "error_code": "LOCAL_SAVE_FAILED",
+                "committed": False,
+            })
+        except Exception as exc:
+            diag = humanize_exchange_error(vid, exc)
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "detail": diag["reason"],
+                    "detail_zh": diag["reason_zh"],
+                    "error_code": diag["code"],
+                    "raw_error": diag["raw"],
+                    "committed": False,
+                },
+            )
+
+        if res.get("committed") and enter_live_ledger and ledger_service.demo_mode:
+            ledger_service.set_demo_mode(False)
+            res["auth_status"] = auth_manager.get_status(
+                request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False
+            )
+        return JSONResponse(content=res)
+
     @app.post("/api/v1/sync")
     async def trigger_sync(request: Request, body: SyncRequest | None = None) -> Response:
         if body and body.candidate_credential is not None:
-            cand = body.candidate_credential
-            vid = cand.venue_id.strip().lower()
-            adapter = reg.get(vid)
-            if adapter is None:
-                raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
-            if adapter.meta.requires_passphrase and not cand.passphrase.strip():
-                raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
-            if not cand.api_key.strip() or not cand.api_secret.strip():
-                raise HTTPException(status_code=400, detail="API Key and API Secret are required")
-            temp_cred = ExchangeCredentialRecord(
-                venue_id=vid,
-                label=cand.label.strip() or adapter.meta.display_name,
-                api_key=cand.api_key.strip(),
-                api_secret=cand.api_secret.strip(),
-                passphrase=cand.passphrase.strip(),
-                enabled=cand.enabled,
-            )
-            # Existing users can edit credentials while intentionally viewing the demo.
-            # Also finish onboarding for older installations that saved a key before setup.
-            enter_live_ledger = ledger_service.demo_mode and (
-                not vault.list_masked()
-                or auth_manager.get_status(request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False)["require_setup"]
-            )
-            try:
-                res = await sync_manager.sync_candidate_and_commit(temp_cred)
-            except CandidateRollbackError:
-                return JSONResponse(status_code=500, content={
-                    "detail": "Local rollback failed. Check the data directory and verify the account before retrying.",
-                    "detail_zh": "本地回滚失败，请检查数据目录并核对账户状态后再重试。",
-                    "error_code": "LOCAL_ROLLBACK_FAILED",
-                })
-            except CandidateSaveError:
-                return JSONResponse(status_code=500, content={
-                    "detail": "Local save failed. Check available disk space and data directory permissions.",
-                    "detail_zh": "本地保存失败，请检查磁盘空间和数据目录写入权限。",
-                    "error_code": "LOCAL_SAVE_FAILED",
-                    "committed": False,
-                })
-            except Exception as exc:
-                diag = humanize_exchange_error(vid, exc)
-                return JSONResponse(
-                    status_code=502,
-                    content={
-                        "detail": diag["reason"],
-                        "detail_zh": diag["reason_zh"],
-                        "error_code": diag["code"],
-                        "raw_error": diag["raw"],
-                        "committed": False,
-                    },
-                )
-
-            if res.get("committed") and enter_live_ledger and ledger_service.demo_mode:
-                ledger_service.set_demo_mode(False)
-                res["auth_status"] = auth_manager.get_status(
-                    request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False
-                )
-            return JSONResponse(content=res)
-
+            return await commit_candidate(body.candidate_credential, request, finish_onboarding=True)
         req_venue = body.venue_id if body else None
         if ledger_service.is_demo_active() and not req_venue:
             return JSONResponse(content={"ok": True, "demo_mode": True, "venues": {}})
@@ -663,55 +708,60 @@ def create_app(
             )
 
     @app.post("/api/v1/exchanges")
-    async def upsert_exchange(body: ExchangeUpsertRequest) -> dict[str, Any]:
+    async def upsert_exchange(request: Request, body: ExchangeUpsertRequest) -> Response:
         vid = body.venue_id.strip().lower()
         adapter = reg.get(vid)
         if adapter is None:
             raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
         if adapter.meta.requires_passphrase and not body.passphrase.strip():
             raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
-        masked = vault.upsert(
-            ExchangeCredentialRecord(
-                venue_id=vid,
-                label=body.label.strip() or adapter.meta.display_name,
-                api_key=body.api_key.strip(),
-                api_secret=body.api_secret.strip(),
-                passphrase=body.passphrase.strip(),
-                enabled=body.enabled,
+        if vid == "easicoin":
+            return await commit_candidate(body, request, finish_onboarding=False)
+        async with sync_manager.credential_change(vid, body.expected_revision):
+            masked = vault.upsert(
+                ExchangeCredentialRecord(
+                    venue_id=vid,
+                    label=body.label.strip() or adapter.meta.display_name,
+                    api_key=body.api_key.strip(),
+                    api_secret=body.api_secret.strip(),
+                    passphrase=body.passphrase.strip(),
+                    enabled=body.enabled,
+                )
             )
-        )
-        health_state = (
-            health_tracker.mark_unverified(vid)
-            if body.enabled
-            else health_tracker.resolve_state(vid, configured=True, enabled=False)
-        )
-        return {"ok": True, "credential": masked, "health": health_state}
+            health_state = (
+                health_tracker.mark_unverified(vid)
+                if body.enabled
+                else health_tracker.resolve_state(vid, configured=True, enabled=False)
+            )
+            return JSONResponse(content={"ok": True, "credential": masked, "health": health_state})
 
     @app.delete("/api/v1/exchanges/{venue_id}")
     async def delete_exchange(
         venue_id: str,
         keep_data: bool = Query(default=False),
+        expected_revision: str | None = Query(default=None),
     ) -> dict[str, Any]:
         vid = venue_id.strip().lower()
         adapter = reg.get(vid)
-        had_cred = vault.delete(vid)
-        had_data = bool(adapter and adapter.has_venue_data(store))
-        if not had_cred and not had_data:
-            raise HTTPException(status_code=404, detail="Exchange credential not found")
-        health_tracker.remove(vid)
-        sched = store.get_meta("sync_schedule", {})
-        if isinstance(sched, dict) and vid in sched:
-            sched.pop(vid, None)
-            store.set_meta("sync_schedule", sched)
-        if not keep_data:
-            store.purge_venue_data(vid)
-        still_has_data = bool(adapter and adapter.has_venue_data(store))
-        return {
-            "ok": True,
-            "venue_id": vid,
-            "kept_data": bool(keep_data and still_has_data),
-            "has_archived_data": still_has_data,
-        }
+        async with sync_manager.credential_change(vid, expected_revision):
+            had_cred = vault.delete(vid)
+            had_data = bool(adapter and adapter.has_venue_data(store))
+            if not had_cred and not had_data:
+                raise HTTPException(status_code=404, detail="Exchange credential not found")
+            health_tracker.remove(vid)
+            sched = store.get_meta("sync_schedule", {})
+            if isinstance(sched, dict) and vid in sched:
+                sched.pop(vid, None)
+                store.set_meta("sync_schedule", sched)
+            if not keep_data:
+                store.purge_venue_data(vid)
+            still_has_data = bool(adapter and adapter.has_venue_data(store))
+            return {
+                "ok": True,
+                "venue_id": vid,
+                "kept_data": bool(keep_data and still_has_data),
+                "has_archived_data": still_has_data,
+            }
 
     @app.post("/api/v1/exchanges/{venue_id}/test")
     async def test_exchange(venue_id: str) -> Response:

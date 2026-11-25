@@ -122,6 +122,19 @@ class VenueDataScope:
                 (self.venue_id, key, raw, now),
             )
 
+    def bind_account_uid(self, uid: str) -> bool:
+        """Claim an unbound partition without overwriting a concurrent first binding."""
+        raw = json.dumps(uid, ensure_ascii=False)
+        with self._store._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO otl_venue_kv (venue_id, key, value_json, updated_at) "
+                "VALUES (?, 'account_uid', ?, ?)", (self.venue_id, raw, int(time.time())),
+            )
+            row = conn.execute(
+                "SELECT value_json FROM otl_venue_kv WHERE venue_id = ? AND key = 'account_uid'", (self.venue_id,),
+            ).fetchone()
+            return json.loads(row["value_json"]) == uid
+
     def upsert_records(
         self,
         stream: str,
@@ -488,6 +501,7 @@ class LedgerStore:
     def _default_snapshot_merge_specs(vid: str) -> dict[str, Any]:
         if vid == "okx":
             return {
+                "instruments": lambda r: (r.get("instId"), r.get("listTime")),
                 "positions_history": lambda r: f"{r.get('posId')}_{r.get('uTime')}_{r.get('instId')}",
                 "fills": lambda r: str(r.get("billId") or r.get("tradeId") or f"{r.get('ordId')}_{r.get('ts')}"),
                 "bills": lambda r: str(r.get("billId") or f"{r.get('ts')}_{r.get('subType')}_{r.get('balChg')}"),

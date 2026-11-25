@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from cryptography.fernet import Fernet
 from pydantic import BaseModel, Field
@@ -44,6 +45,10 @@ def _chmod_600(path: Path) -> None:
         pass
 
 
+class CredentialEditConflict(RuntimeError):
+    """A form was submitted after the corresponding credential changed."""
+
+
 class ExchangeCredentialRecord(BaseModel):
     venue_id: str
     label: str = ""
@@ -52,6 +57,7 @@ class ExchangeCredentialRecord(BaseModel):
     passphrase: str = ""
     enabled: bool = True
     extra: dict[str, str] = Field(default_factory=dict)
+    revision: str = "legacy"
 
 
 class CredentialVault:
@@ -109,10 +115,14 @@ class CredentialVault:
         tmp.replace(self.vault_path)
         _chmod_600(self.vault_path)
 
+    def revision(self, venue_id: str) -> str:
+        existing = self.get_decrypted(venue_id)
+        return existing.revision if existing is not None else "absent"
+
     def upsert(self, record: ExchangeCredentialRecord) -> dict[str, Any]:
         venue_id = record.venue_id.strip().lower()
         store = self._read_all()
-        normalized = record.model_copy(update={"venue_id": venue_id})
+        normalized = record.model_copy(update={"venue_id": venue_id, "revision": uuid4().hex})
         store[venue_id] = normalized.model_dump()
         self._write_all(store)
         return self._mask_record(normalized)
@@ -146,12 +156,13 @@ class CredentialVault:
             "venue_id": rec.venue_id,
             "label": rec.label or rec.venue_id.upper(),
             "masked_api_key": mask_secret(rec.api_key),
+            "revision": rec.revision,
             "has_passphrase": bool(rec.passphrase.strip()),
             "enabled": rec.enabled,
         }
 
-    def import_from_dotenv(self, env_path: Path, overwrite: bool = False) -> list[str]:
-        """Imports non-placeholder read-only exchange keys from a local .env file."""
+    def dotenv_candidates(self, env_path: Path, overwrite: bool = False) -> list[ExchangeCredentialRecord]:
+        """Read currently eligible credentials without mutating the encrypted vault."""
         if not env_path.exists():
             return []
         kv: dict[str, str] = {}
@@ -162,7 +173,7 @@ class CredentialVault:
             k, v = s.split("=", 1)
             kv[k.strip()] = v.strip().strip('"').strip("'")
 
-        imported: list[str] = []
+        candidates: list[ExchangeCredentialRecord] = []
         for venue_id, (k_key, k_sec, k_pass) in DOTENV_VENUE_MAP.items():
             if not overwrite and self.get_decrypted(venue_id) is not None:
                 continue
@@ -176,7 +187,7 @@ class CredentialVault:
                 continue
             if k_pass and _is_placeholder(passphrase):
                 passphrase = ""
-            self.upsert(
+            candidates.append(
                 ExchangeCredentialRecord(
                     venue_id=venue_id,
                     label=venue_id.upper(),
@@ -186,5 +197,13 @@ class CredentialVault:
                     enabled=True,
                 )
             )
-            imported.append(venue_id)
+        return candidates
+
+    def import_from_dotenv(self, env_path: Path, overwrite: bool = False) -> list[str]:
+        """Import local keys. EasiCoin requires verified sync before persistence."""
+        imported = []
+        for candidate in self.dotenv_candidates(env_path, overwrite):
+            if candidate.venue_id != "easicoin":
+                self.upsert(candidate)
+                imported.append(candidate.venue_id)
         return imported
