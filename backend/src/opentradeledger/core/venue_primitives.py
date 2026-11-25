@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from math import isfinite
 from typing import Any, Mapping, Sequence
 
 TZ_BEIJING = timezone(timedelta(hours=8))
@@ -35,6 +36,9 @@ STABLECOINS: frozenset[str] = frozenset(
         "BFUSD",
     }
 )
+
+# Fallback ledger valuation when a dollar-denominated balance has no quote.
+USD_CASH_ASSETS = frozenset({"USD", "USDT", "USDC", "FDUSD", "BUSD", "USDE", "USD1", "TUSD", "PYUSD", "USDP", "DAI"})
 
 DEFAULT_CONTRACTS_MULTIPLIER: dict[str, Decimal] = {
     "BTC_USDT": Decimal("0.0001"),
@@ -512,7 +516,7 @@ def build_venue_stock_perpetuals(
     return rows
 
 
-def build_spot_holdings_list(
+def build_spot_wallet_balances(
     raw_balances: Sequence[tuple[str, float, float, str]],
     *,
     venue_id: str,
@@ -521,46 +525,57 @@ def build_spot_holdings_list(
     spot_prices: Mapping[str, float],
     excluded_symbols: set[str],
 ) -> list[dict[str, Any]]:
-    """Convert `(raw_asset, qty, explicit_usd, wallet_type)` tuples into filtered non-stablecoin spot holdings."""
-    agg: dict[str, dict[str, Any]] = {}
-    for raw_asset, qty, explicit_usd, wallet_type in raw_balances:
+    """Positive balances by wallet, including cash. Unified balances may also back futures."""
+    by_wallet: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw_asset, qty, explicit_usd, wallet in raw_balances:
         asset = str(raw_asset or "").strip().upper()
-        if not asset or qty <= 0:
+        if not asset or not isfinite(qty) or qty <= 0 or asset in excluded_symbols:
             continue
-        if asset.startswith("LD") and len(asset) > 4 and asset not in STABLECOINS:
+        if venue_id == "binance" and asset.startswith("LD") and len(asset) > 4:
             asset = asset[2:]
-        if asset in STABLECOINS or asset in excluded_symbols:
+            wallet = "EARN"
+        if asset in excluded_symbols:
             continue
-        px = float(spot_prices.get(asset, 0.0) or 0.0)
-        if explicit_usd > 0 and px <= 0:
-            px = explicit_usd / qty
-        val = explicit_usd if explicit_usd > 0 else (qty * px)
-        if val < 0.01:
-            continue
-        if asset not in agg:
-            agg[asset] = {
-                "venue_id": venue_id,
-                "venue_name": venue_name,
-                "color_token": color_token,
-                "asset": asset,
-                "qty": 0.0,
-                "price_usd": px,
-                "market_value_usd": 0.0,
-                "wallet_type": wallet_type,
+        price = float(spot_prices.get(asset) or 0)
+        if price <= 0 and asset in USD_CASH_ASSETS:
+            price = 1.0
+        value = explicit_usd if explicit_usd > 0 else qty * price
+        key = (wallet, asset)
+        if key not in by_wallet:
+            by_wallet[key] = {
+                "venue_id": venue_id, "venue_name": venue_name, "color_token": color_token,
+                "asset": asset, "wallet_type": wallet, "qty": 0.0, "market_value_usd": 0.0,
             }
-        agg[asset]["qty"] += qty
-        agg[asset]["market_value_usd"] += val
-        if px > 0:
-            agg[asset]["price_usd"] = px
+        row = by_wallet[key]
+        row["qty"] += qty
+        if value <= 0 or not isfinite(value):
+            row["market_value_usd"] = None
+        elif row["market_value_usd"] is not None:
+            row["market_value_usd"] += value
+    return sorted(by_wallet.values(), key=lambda row: row["market_value_usd"] or 0, reverse=True)
 
-    items = []
-    for row in agg.values():
-        row["qty"] = round(row["qty"], 6)
-        row["price_usd"] = round(row["price_usd"], 4)
+
+def spot_holdings_from_wallets(balances: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the overview's existing one-row-per-asset contract; cash is visible in wallet details."""
+    holdings: dict[str, dict[str, Any]] = {}
+    for balance in balances:
+        asset = balance["asset"]
+        value = balance["market_value_usd"]
+        if asset in STABLECOINS or value is None or value < 0.01:
+            continue
+        if asset not in holdings:
+            holdings[asset] = dict(balance)
+        else:
+            combined = holdings[asset]
+            combined["qty"] += balance["qty"]
+            combined["market_value_usd"] += value
+            if combined["wallet_type"] != balance["wallet_type"]:
+                combined["wallet_type"] = "MULTIPLE"
+    for row in holdings.values():
+        row["price_usd"] = round(row["market_value_usd"] / row["qty"], 4)
         row["market_value_usd"] = round(row["market_value_usd"], 2)
-        items.append(row)
-    items.sort(key=lambda x: x["market_value_usd"], reverse=True)
-    return items
+        row["qty"] = round(row["qty"], 6)
+    return sorted(holdings.values(), key=lambda row: row["market_value_usd"], reverse=True)
 
 
 def clamp_reconcile_streams_to_target(

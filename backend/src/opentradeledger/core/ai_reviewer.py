@@ -303,10 +303,10 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "equity_usd": stk.get("equity_usd"),
             "unrealized_pnl_usd": stk.get("unrealized_pnl_usd"),
             "non_perp_fees_usd": stk.get("non_perp_fees_usd"),
-            "holdings_count": len(stk.get("holdings") or []),
+            "holdings_count": len(stock_holdings),
             "holdings": stock_holdings,
-            "perps_count": len(stk.get("perpetuals") or []),
         },
+        "stock_commodity_perp_history_count": len(stk.get("perpetuals") or []),
         "goal": dashboard.get("goal"),
         "recent_20_trades": recent_20_trades,
     }
@@ -455,24 +455,27 @@ async def generate_ai_review(
     api_key = "" if force_local else (prefs.ai_api_key or "").strip()
     model = (prefs.ai_model or "").strip() or "gpt-4o-mini"
 
-    if trade_count <= 0 or not (dashboard.get("trades") or []):
+    has_closed_trades = trade_count > 0 and bool(ctx["recent_20_trades"])
+    input_summary = {
+        "exchanges_count": len(ctx["exchanges"]),
+        "fee_matrix_count": len(ctx["fee_matrix"]),
+        "top_symbols_count": len(ctx["top_symbols"]),
+        "recent_trades_count": len(ctx["recent_20_trades"]) if has_closed_trades else 0,
+        "open_positions_count": len(ctx["open_positions"]),
+        "spot_holdings_count": len(ctx["spot_holdings"]),
+        "has_copy_trading": bool(ctx["copy_trading"].get("invested_usd")),
+        "has_stocks": bool(ctx["stocks"]["equity_usd"] or ctx["stocks"]["holdings_count"]),
+        "stock_commodity_perp_history_count": ctx["stock_commodity_perp_history_count"],
+        "excluded_secrets": ["API Key / Secret / Passphrase", "Exchange UID", "Wallet Addresses"],
+    }
+
+    if not has_closed_trades:
         all_time_cnt = int(s.get("all_time_trade_count") or 0)
         z_highlights, commentary, commentary_zh = build_zero_trade_texts(
             all_time_cnt=all_time_cnt,
             range_label_en=range_label_en,
             range_label_zh=range_label_zh,
         )
-        input_summary = {
-            "exchanges_count": len(ctx["exchanges"]),
-            "fee_matrix_count": len(ctx["fee_matrix"]),
-            "top_symbols_count": len(ctx["top_symbols"]),
-            "recent_trades_count": 0,
-            "open_positions_count": len(ctx["open_positions"]),
-            "spot_holdings_count": len(ctx["spot_holdings"]),
-            "has_copy_trading": bool(ctx["copy_trading"].get("invested_usd")),
-            "has_stocks": bool(ctx["stocks"].get("equity_usd") or ctx["stocks"].get("holdings_count")),
-            "excluded_secrets": ["API Key / Secret / Passphrase", "Exchange UID", "Wallet Addresses"],
-        }
         return {
             "generated_at": generated_at,
             "generated_ms": now_ms,
@@ -506,7 +509,9 @@ async def generate_ai_review(
             "1) Long/Short win-rate asymmetry & holding-duration discipline (cut losers vs let winners run).\n"
             "2) Per-leg Maker vs Taker fee drag & cross-venue fee/rebate routing optimization.\n"
             "3) Top winning/losing symbols concentration & stop-loss posture on open positions.\n"
-            "4) Capital allocation across futures, copy trading, equities/spot, and goal pacing (if enabled).\n\n"
+            "4) Capital allocation across futures, copy trading, equities/spot, and goal pacing (if enabled). "
+            "Use current holdings and equity for stock allocation. stock_commodity_perp_history_count counts "
+            "historical derivatives records grouped by venue and symbol.\n\n"
             "Ledger JSON:\n"
             + json.dumps(ctx, ensure_ascii=False)
         )
@@ -603,18 +608,6 @@ async def generate_ai_review(
         commentary = commentary_en
     else:
         commentary_zh = commentary
-
-    input_summary = {
-        "exchanges_count": len(ctx["exchanges"]),
-        "fee_matrix_count": len(ctx["fee_matrix"]),
-        "top_symbols_count": len(ctx["top_symbols"]),
-        "recent_trades_count": len(ctx["recent_20_trades"]),
-        "open_positions_count": len(ctx["open_positions"]),
-        "spot_holdings_count": len(ctx["spot_holdings"]),
-        "has_copy_trading": bool(ctx["copy_trading"].get("invested_usd")),
-        "has_stocks": bool(ctx["stocks"].get("equity_usd") or ctx["stocks"].get("perps_count")),
-        "excluded_secrets": ["API Key / Secret / Passphrase", "Exchange UID", "Wallet Addresses"],
-    }
 
     return {
         "generated_at": generated_at,

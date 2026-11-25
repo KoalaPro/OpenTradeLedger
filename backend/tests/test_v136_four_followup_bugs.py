@@ -208,6 +208,44 @@ async def test_copy_watcher_readding_existing_target_preserves_disabled_toggles(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("trade_count", [0, 1])
+@pytest.mark.parametrize(
+    ("stock_equity", "holdings", "perpetuals", "has_stocks", "perp_count"),
+    [
+        (0.0, [], [{"symbol": "TSLA_USDT"}, {"symbol": "XAU_USDT"}], False, 2),
+        (0.0, [{"symbol": "AAPLX", "shares": 2.0}], [], True, 0),
+        (150.0, [], [], True, 0),
+        (300.0, [{"symbol": "NVDA", "shares": 1.0}], [{"symbol": "NVDA_USDT"}], True, 1),
+        (0.0, [], [], False, 0),
+    ],
+    ids=["perps_only", "unpriced_stock_token", "stock_equity_only", "shares_and_perps", "empty"],
+)
+async def test_ai_stock_holdings_and_perp_history_across_periods(
+    trade_count: int,
+    stock_equity: float,
+    holdings: list[dict[str, Any]],
+    perpetuals: list[dict[str, Any]],
+    has_stocks: bool,
+    perp_count: int,
+) -> None:
+    dashboard = {
+        "summary": {"trade_count": trade_count},
+        "trades": [{"symbol": "BTC_USDT", "exit_leg": {"role": "TAKER"}}] if trade_count else [],
+        "extensions": {"stocks": {"equity_usd": stock_equity, "holdings": holdings, "perpetuals": perpetuals}},
+    }
+
+    report = await generate_ai_review(dashboard, UserPreferences(), force_local=True)
+    assert report["input_summary"]["has_stocks"] is has_stocks
+    assert report["input_summary"]["stock_commodity_perp_history_count"] == perp_count
+
+    context = build_ai_context_payload(dashboard)
+    assert context["stock_commodity_perp_history_count"] == perp_count
+    assert context["stocks"]["holdings_count"] == len(holdings)
+    assert [h["symbol"] for h in context["stocks"]["holdings"]] == [h["symbol"] for h in holdings]
+    assert "perps_count" not in context["stocks"]
+
+
+@pytest.mark.asyncio
 async def test_ai_review_transmission_provenance_across_unconfigured_zero_503_and_200() -> None:
     """Issue 4: Unambiguous `execution_mode` and `data_transmitted` across unconfigured, 0-trade, 503 fallback, and 200 OK."""
     base_dash_with_trade: dict[str, Any] = {

@@ -176,6 +176,10 @@ export interface SpotHolding {
   wallet_type: string
 }
 
+export type SpotWalletBalance = Omit<SpotHolding, 'price_usd' | 'market_value_usd'> & {
+  market_value_usd: number | null
+}
+
 export interface DashboardData {
   demo_mode: boolean
   explicit_demo_mode?: boolean
@@ -215,6 +219,7 @@ export interface DashboardData {
   exchanges: ExchangeSummary[]
   open_positions: OpenPosition[]
   spot_holdings?: SpotHolding[]
+  spot_wallet_balances?: SpotWalletBalance[]
   trades: ClosedTrade[]
   reconciliation: {
     net_principal_usd: number
@@ -318,6 +323,7 @@ export interface DashboardData {
       spot_holdings_count: number
       has_copy_trading: boolean
       has_stocks: boolean
+      stock_commodity_perp_history_count?: number
       excluded_secrets: string[]
     }
     context_preview?: Record<string, unknown>

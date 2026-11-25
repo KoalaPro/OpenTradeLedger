@@ -104,6 +104,7 @@ export function TradesPage({
   symbolFilter,
   onSymbolChange,
   onSaveJournal,
+  onInspectSymbol,
 }: {
   data: DashboardData
   venueFilter: string
@@ -111,6 +112,7 @@ export function TradesPage({
   symbolFilter: string
   onSymbolChange: (s: string) => void
   onSaveJournal: (tradeId: string, tags: string[], note: string) => Promise<void>
+  onInspectSymbol?: (venueId: string, symbol: string, venueName: string, rangeKey: string) => void
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
@@ -202,6 +204,11 @@ export function TradesPage({
       })),
     ],
     [data.exchanges, locale, t],
+  )
+
+  const perpHistory = data.extensions.stocks.perpetuals.filter(row =>
+    (venueFilter === 'ALL' || row.venue_id.toLowerCase() === venueFilter.toLowerCase()) &&
+    (symbolFilter === 'ALL' || row.symbol.toUpperCase() === symbolFilter.toUpperCase()),
   )
 
   return (
@@ -573,6 +580,75 @@ export function TradesPage({
           )}
         </aside>
       </div>
+
+      <section className="otl-card overflow-hidden">
+        <h2 id="perp-history-title" className="m-0 px-5 py-3 border-b border-[var(--border)] text-[14px] font-semibold">
+          {t('st_perps')} · {locale === 'en' ? 'All time' : '全部历史'}
+        </h2>
+        {perpHistory.length === 0 ? (
+          <p className="m-0 py-8 text-center text-[12.5px] text-[var(--fg-3)]">
+            {locale === 'en'
+              ? 'No equity or commodity perpetual records match these filters.'
+              : '当前筛选下没有股票或商品永续合约记录。'}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table aria-labelledby="perp-history-title" className="otl-table">
+              <thead>
+                <tr>
+                  <th scope="col">{t('th_symbol')}</th>
+                  <th scope="col">{t('th_venue')}</th>
+                  <th scope="col" className="text-right">{t('th_trades')} / {t('th_qty')}</th>
+                  <th scope="col" className="text-right">{locale === 'en' ? 'Maker / Taker (bps)' : '挂单 / 吃单 (bps)'}</th>
+                  <th scope="col" className="text-right">{t('th_fee_rebate')}</th>
+                  <th scope="col" className="text-right">{t('kpi_net_fee_paid')}</th>
+                  <th scope="col" className="text-right">{t('th_net_pnl')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perpHistory.map(row => {
+                  const venueName = locale === 'en' ? row.venue_name : row.venue_name_zh || row.venue_name
+                  return (
+                    <tr key={`${row.venue_id}-${row.symbol}`}>
+                      <td className="whitespace-nowrap">
+                        <div className="flex items-center gap-2 font-semibold">
+                          <InstrumentMark instrument={row.symbol} exchange={row.venue_id.toUpperCase()} />
+                          {onInspectSymbol ? (
+                            <button
+                              type="button"
+                              aria-label={`${venueName} ${row.symbol} · ${locale === 'en' ? 'View trade history' : '查看历史成交'}`}
+                              className="text-[var(--accent)] hover:underline cursor-pointer"
+                              onClick={() => onInspectSymbol(row.venue_id, row.symbol, venueName, 'all')}
+                            >
+                              {row.symbol}
+                            </button>
+                          ) : row.symbol}
+                        </div>
+                        <div className="text-[11px] text-[var(--fg-3)]">
+                          {locale === 'en' ? row.category : row.category_zh || row.category}
+                        </div>
+                      </td>
+                      <td><VenueBadge venueId={row.venue_id} name={venueName} /></td>
+                      <td className="text-right whitespace-nowrap sensitive">{row.trade_count} / {row.qty}</td>
+                      <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
+                        {row.trade_count ? `${row.maker_bps.toFixed(1)} / ${row.taker_bps.toFixed(1)}` : '— / —'}
+                      </td>
+                      <td className="text-right whitespace-nowrap sensitive">
+                        {cur.signedPlainMoney(-row.gross_fee_usd, 4)} /{' '}
+                        <span className="txt-pos">{cur.signedPlainMoney(row.rebate_usd, 4)}</span>
+                      </td>
+                      <td className="text-right whitespace-nowrap sensitive">{cur.money(row.net_fee_usd, 4)}</td>
+                      <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_usd)}`}>
+                        {cur.signedMoney(row.net_pnl_usd)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   )
 }

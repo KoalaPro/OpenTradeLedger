@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, within } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../i18n'
 import { CurrencyProvider, DEFAULT_FX } from '../lib/currency'
 import type { ClosedTrade, DashboardData } from '../lib/types'
@@ -180,5 +180,59 @@ describe('v1.3.5 Per-Leg Unknown Fee vs Genuine Zero Fee UI', () => {
     expect(entryCard.textContent).not.toContain('0.000')
     expect(exitCard.textContent).not.toContain('0.000')
     expect(detailPanel.textContent).toContain('-1.000')
+  })
+})
+
+describe('Equity and commodity perpetual fee history on Trades', () => {
+  it('keeps each venue and contract separate with Stocks disabled, including rebate-only history', () => {
+    const data = makeBaseDashboard([])
+    data.range_key = '7d'
+    const stocks = data.extensions.stocks
+    stocks.enabled = false
+    const gateEquity = {
+      venue_id: 'gate', venue_name: 'Gate', symbol: 'QCOM_USDT', category: 'US Equity Perp',
+      trade_count: 2, qty: 10, maker_bps: 1.2, taker_bps: 3.6,
+      gross_fee_usd: 1.2, rebate_usd: 0.24, net_fee_usd: 0.96, net_pnl_usd: 45.2,
+    }
+    stocks.perpetuals = [
+      gateEquity,
+      { ...gateEquity, symbol: 'XAU_USDT', category: 'Commodity Perp' },
+      {
+        ...gateEquity, venue_id: 'binance', venue_name: 'Binance', venue_name_zh: '币安',
+        trade_count: 0, qty: 0, maker_bps: 0, taker_bps: 0,
+        gross_fee_usd: 0, rebate_usd: 0.03, net_fee_usd: 0, net_pnl_usd: 0.03,
+      },
+    ]
+    const inspect = vi.fn()
+    const page = (venue: string, symbol: string, locale: 'en' | 'zh-CN' = 'en') => (
+      <I18nProvider locale={locale}>
+        <TradesPage
+          data={data} venueFilter={venue} symbolFilter={symbol}
+          onVenueChange={() => {}} onSymbolChange={() => {}} onSaveJournal={async () => {}}
+          onInspectSymbol={inspect}
+        />
+      </I18nProvider>
+    )
+    const { rerender } = render(page('ALL', 'ALL'))
+    const table = screen.getByRole('table', { name: /equity & commodity perps.*all time/i })
+    const rows = within(table).getAllByRole('row')
+    expect(rows).toHaveLength(4)
+    const equity = within(rows[1])
+    expect(equity.getByText('2 / 10')).toBeTruthy()
+    expect(equity.getByText('1.2 / 3.6')).toBeTruthy()
+    expect(rows[1].textContent).toContain('-1.2000 / +0.2400')
+    expect(rows[1].textContent).toContain('+45.20 U')
+    expect(rows[2].textContent).toContain('XAU_USDT')
+    expect(rows[3].textContent).toContain('+0.0300')
+
+    rerender(page('BINANCE', 'qcom_usdt', 'zh-CN'))
+    const scoped = screen.getByRole('table', { name: /股票与商品永续.*全部历史/ })
+    expect(within(scoped).getAllByRole('row')).toHaveLength(2)
+    fireEvent.click(within(scoped).getByRole('button', { name: /QCOM_USDT/ }))
+    expect(inspect).toHaveBeenCalledWith('binance', 'QCOM_USDT', '币安', 'all')
+
+    rerender(page('binance', 'XAU_USDT'))
+    expect(screen.queryByRole('table', { name: /equity & commodity perps/i })).toBeNull()
+    expect(screen.getByText(/no equity or commodity perpetual records/i)).toBeTruthy()
   })
 })

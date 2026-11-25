@@ -1,6 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
+import { OverviewPage } from '../pages/OverviewPage'
+import { I18nProvider } from '../i18n'
 import { DEFAULT_FX } from '../lib/currency'
 import type { DashboardData, UserSettings } from '../lib/types'
 
@@ -205,6 +207,8 @@ describe('Stocks & Spot Main-Page Detail Modals, Perp Separation & Blank-Page Pr
     const { unmount } = render(<App />)
     await waitFor(() => expect(screen.getByTestId('overview-page')).toBeTruthy())
 
+    expect(screen.queryByTestId('overview-open-watcher-btn')).toBeNull()
+
     // 1. Clicking ANT stock row when stocks module is OFF must NOT navigate to a blank page — opens detail modal!
     fireEvent.click(screen.getByText('ANT'))
     expect(screen.getByTestId('overview-page')).toBeTruthy()
@@ -233,4 +237,36 @@ describe('Stocks & Spot Main-Page Detail Modals, Perp Separation & Blank-Page Pr
     expect(stockView.textContent).not.toContain('QCOM_USDT')
     expect(screen.queryByTestId('stock-perps-fullwidth')).toBeNull()
   })
+})
+
+it('opens itemized wallets from the equity allocation even when current holdings are empty', async () => {
+  const sample = DASHBOARD_WITH_STOCK_AND_SPOT
+  const data: DashboardData = {
+    ...sample,
+    open_positions: [],
+    spot_holdings: [],
+    extensions: { ...sample.extensions, stocks: { ...sample.extensions.stocks, equity_usd: 0, holdings: [] } },
+    summary: { ...sample.summary, total_equity_usd: 100 },
+    equity_breakdown: { spot_and_other_usd: 100, stocks_equity_usd: 0, futures_margin_usd: 0, copy_equity_usd: 0 },
+    spot_wallet_balances: [
+      { asset: 'USDT', venue_id: 'easicoin', venue_name: 'EasiCoin', color_token: 'easicoin', wallet_type: 'SPOT', qty: 65, market_value_usd: 65 },
+      { asset: 'USDT', venue_id: 'easicoin', venue_name: 'EasiCoin', color_token: 'easicoin', wallet_type: 'FUNDING', qty: 35, market_value_usd: 35 },
+    ],
+  }
+  const overview = (dashboard: DashboardData) => (
+    <I18nProvider locale="zh-CN"><OverviewPage data={dashboard} onNavigate={() => {}} /></I18nProvider>
+  )
+  const { rerender } = render(overview(data))
+  fireEvent.click(screen.getByTestId('kpi-equity'))
+  fireEvent.click(within(await screen.findByTestId('equity-drawer')).getByRole('button', { name: /现货、理财与空投尾仓/ }))
+  const detail = within(await screen.findByTestId('spot-holding-detail-modal'))
+  expect(detail.getAllByText('USDT')).toHaveLength(2)
+  expect(detail.getByText('现货账户')).toBeTruthy()
+  expect(detail.getByText('资金账户')).toBeTruthy()
+  expect(detail.getByText('65')).toBeTruthy()
+  expect(detail.getByText('35')).toBeTruthy()
+  // Older snapshots with only an aggregate value must never invent a coin or a wallet.
+  rerender(overview({ ...data, spot_wallet_balances: undefined }))
+  expect(detail.queryByText('USDT')).toBeNull()
+  expect(detail.getByText('当前快照没有逐币钱包余额。')).toBeTruthy()
 })

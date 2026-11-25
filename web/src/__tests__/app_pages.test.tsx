@@ -215,6 +215,60 @@ const mockAdapters: ExchangeAdapterInfo[] = [
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  window.history.replaceState(null, '', window.location.pathname)
+})
+
+describe('extension routes', () => {
+  function renderRoute(hash: string, modules: UserSettings['modules']) {
+    window.history.replaceState(null, '', hash)
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      if (url.startsWith('/api/v1/dashboard')) return Response.json(mockDashboard)
+      if (url.startsWith('/api/v1/settings')) return Response.json({ ...mockSettings, modules })
+      if (url.startsWith('/api/v1/exchanges')) return Response.json({ adapters: [] })
+      return Response.json({ ok: true })
+    })
+    render(<App />)
+  }
+
+  it.each([
+    ['stock', { copy_watcher: false, copy_trading: true, stocks: false }],
+    ['copy', { copy_watcher: false, copy_trading: false, stocks: true }],
+    ['watcher', { copy_watcher: false, copy_trading: true, stocks: true }],
+    ['unknown', { copy_watcher: false, copy_trading: true, stocks: true }],
+    ['', { copy_watcher: false, copy_trading: false, stocks: false }],
+  ] as const)('replaces an unavailable #/extensions/%s with overview', async (tab, modules) => {
+    const historyLength = window.history.length
+    renderRoute(tab ? `#/extensions/${tab}` : '#/extensions', modules)
+
+    await waitFor(() => expect(window.location.hash).toBe('#/overview'))
+    expect(await screen.findByTestId('overview-page')).toBeTruthy()
+    expect(window.history.length).toBe(historyLength)
+  })
+
+  it('restores the default and explicit extension tabs through back and forward', async () => {
+    renderRoute('#/extensions', { copy_watcher: false, copy_trading: true, stocks: true })
+    expect(await screen.findByTestId('copy-module-view')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('ext-tab-stock'))
+    expect(await screen.findByTestId('stock-module-view')).toBeTruthy()
+    expect(window.location.hash).toBe('#/extensions/stock')
+
+    window.history.back()
+    await waitFor(() => expect(window.location.hash).toBe('#/extensions'))
+    expect(await screen.findByTestId('copy-module-view')).toBeTruthy()
+
+    window.history.forward()
+    expect(await screen.findByTestId('stock-module-view')).toBeTruthy()
+    expect(window.location.hash).toBe('#/extensions/stock')
+
+    window.location.hash = '#/extensions/watcher'
+    expect(await screen.findByTestId('overview-page')).toBeTruthy()
+    window.history.back()
+    expect(await screen.findByTestId('stock-module-view')).toBeTruthy()
+    window.history.forward()
+    expect(await screen.findByTestId('overview-page')).toBeTruthy()
+    expect(window.location.hash).toBe('#/overview')
+  })
 })
 
 describe('OpenTradeLedger Full 6-Page Integration', () => {

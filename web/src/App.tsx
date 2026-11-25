@@ -50,14 +50,27 @@ const DEFAULT_SETTINGS: UserSettings = {
 
 const VALID_PAGES: NavPage[] = ['overview', 'trades', 'analytics', 'fees', 'extensions', 'settings']
 
-function parseHashRoute(hash: string): { page: NavPage; extTab?: ExtensionSubTab } {
+function enabledExtensionTabs(modules: UserSettings['modules']): ExtensionSubTab[] {
+  const tabs: ExtensionSubTab[] = []
+  if (modules.copy_watcher !== false) tabs.push('watcher')
+  if (modules.copy_trading) tabs.push('copy')
+  if (modules.stocks) tabs.push('stock')
+  return tabs
+}
+
+function parseHashRoute(
+  hash: string,
+  enabledTabs: ExtensionSubTab[],
+): { page: NavPage; extTab?: ExtensionSubTab; redirectToOverview?: boolean } {
   const cleaned = hash.replace(/^#\/?/, '').trim()
   if (!cleaned) return { page: 'overview' }
-  const [seg0, seg1] = cleaned.split('/')
+  const [seg0, ...rest] = cleaned.replace(/\/+$/, '').split('/')
   const matched = VALID_PAGES.find(p => p === seg0)
   if (!matched) return { page: 'overview' }
-  if (matched === 'extensions' && (seg1 === 'watcher' || seg1 === 'copy' || seg1 === 'stock')) {
-    return { page: 'extensions', extTab: seg1 }
+  if (matched === 'extensions') {
+    const requestedTab = rest.join('/')
+    const extTab = requestedTab ? enabledTabs.find(tab => tab === requestedTab) : enabledTabs[0]
+    return extTab ? { page: matched, extTab } : { page: 'overview', redirectToOverview: true }
   }
   return { page: matched }
 }
@@ -70,10 +83,10 @@ function buildHashRoute(page: NavPage, extTab?: ExtensionSubTab): string {
 }
 
 export default function App() {
-  const initialRoute = parseHashRoute(typeof window !== 'undefined' ? window.location.hash : '')
-  const [page, setPage] = useState<NavPage>(initialRoute.page)
-  const [extTab, setExtTab] = useState<ExtensionSubTab | undefined>(initialRoute.extTab)
+  const [hash, setHash] = useState(() => typeof window !== 'undefined' ? window.location.hash : '')
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
+  const enabledTabs = enabledExtensionTabs(settings.modules)
+  const { page, extTab, redirectToOverview } = parseHashRoute(hash, enabledTabs)
   const [privacyMode, setPrivacyMode] = useState(false)
   const initializedPrivacyRef = useRef(false)
   const bootstrappedRef = useRef(false)
@@ -89,7 +102,7 @@ export default function App() {
   const [lastSyncHadError, setLastSyncHadError] = useState(false)
   const [generatingAi, setGeneratingAi] = useState(false)
   const [error, setError] = useState('')
-  const [drilldown, setDrilldown] = useState<{ venueId: string; venueName?: string; symbol: string } | null>(null)
+  const [drilldown, setDrilldown] = useState<{ venueId: string; venueName?: string; symbol: string; rangeKey?: string } | null>(null)
   const [drilldownOpen, setDrilldownOpen] = useState(false)
 
   const [authStatus, setAuthStatus] = useState<AuthStatusPayload>({ authenticated: true, require_setup: false })
@@ -144,30 +157,23 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const onHashChange = () => {
-      const parsed = parseHashRoute(window.location.hash)
-      setPage(parsed.page)
-      if (parsed.extTab) setExtTab(parsed.extTab)
-    }
+    const onHashChange = () => setHash(window.location.hash)
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
 
   const navigateTo = useCallback(
     (nextPage: NavPage, nextExtTab?: ExtensionSubTab) => {
-      setPage(nextPage)
-      if (nextPage === 'extensions' && nextExtTab) {
-        setExtTab(nextExtTab)
-      }
+      const targetHash = buildHashRoute(nextPage, nextExtTab)
+      setHash(targetHash)
       if (typeof window !== 'undefined') {
-        const targetHash = buildHashRoute(nextPage, nextPage === 'extensions' ? nextExtTab ?? extTab : undefined)
         if (window.location.hash !== targetHash) {
           window.location.hash = targetHash
         }
         if (window.scrollY) window.scrollTo(0, 0)
       }
     },
-    [extTab],
+    [],
   )
 
   const effVenue = page === 'trades' ? venueFilter : 'ALL'
@@ -319,30 +325,24 @@ export default function App() {
     }
   }
 
-  const handleInspectSymbol = (venueId: string, symbol: string, venueName?: string) => {
-    setDrilldown({ venueId: venueId.toLowerCase(), venueName, symbol })
+  const handleInspectSymbol = (venueId: string, symbol: string, venueName?: string, drilldownRange?: string) => {
+    setDrilldown({ venueId: venueId.toLowerCase(), venueName, symbol, rangeKey: drilldownRange })
     setDrilldownOpen(true)
   }
 
   const handleOpenInTrades = (venueId: string, symbol: string) => {
     setDrilldownOpen(false)
+    if (drilldown?.rangeKey) setRangeKey(drilldown.rangeKey)
     setVenueFilter(venueId.toLowerCase())
     setSymbolFilter(symbol)
     navigateTo('trades')
   }
 
-  const showExtensions =
-    settings.modules.copy_watcher !== false || settings.modules.copy_trading || settings.modules.stocks
-  const effectivePage: NavPage = page === 'extensions' && !showExtensions ? 'overview' : page
-
   useEffect(() => {
-    if (page === 'extensions' && !showExtensions) {
-      setPage('overview')
-      if (typeof window !== 'undefined' && window.location.hash.startsWith('#/extensions')) {
-        window.location.hash = '#/overview'
-      }
-    }
-  }, [page, showExtensions])
+    if (!data || !redirectToOverview || window.location.hash !== hash) return
+    window.history.replaceState(window.history.state, '', '#/overview')
+    setHash('#/overview')
+  }, [data, hash, redirectToOverview])
 
   const activeCurrency: CurrencyCode = settings.display_currency || 'USDT'
 
@@ -384,7 +384,7 @@ export default function App() {
                   }, 120)
                 }
               }}
-              showExtensions={showExtensions}
+              showExtensions={enabledTabs.length > 0}
               lastSyncMs={data?.last_sync_ms ?? 0}
               manualSyncing={manualSyncing}
               syncFailed={lastSyncHadError}
@@ -425,16 +425,17 @@ export default function App() {
                 {!data ? (
                   <div className="py-20 text-center text-[13px] text-[var(--fg-3)]">Loading…</div>
                 ) : (
-                  <div key={effectivePage} className="otl-page-enter">
-                    {effectivePage === 'overview' && (
+                  <div key={page} className="otl-page-enter">
+                    {page === 'overview' && (
                       <OverviewPage
                         data={data}
-                        enableStockTab={Boolean(settings.modules.stocks)}
+                        enableStockTab={enabledTabs.includes('stock')}
+                        enableWatcherTab={enabledTabs.includes('watcher')}
                         onNavigate={navigateTo}
                         onInspectSymbol={handleInspectSymbol}
                       />
                     )}
-                    {effectivePage === 'trades' && (
+                    {page === 'trades' && (
                       <TradesPage
                         data={data}
                         venueFilter={venueFilter}
@@ -442,9 +443,10 @@ export default function App() {
                         symbolFilter={symbolFilter}
                         onSymbolChange={setSymbolFilter}
                         onSaveJournal={handleSaveJournal}
+                        onInspectSymbol={handleInspectSymbol}
                       />
                     )}
-                    {effectivePage === 'analytics' && (
+                    {page === 'analytics' && (
                       <AnalyticsPage
                         data={data}
                         rangeKey={rangeKey}
@@ -454,7 +456,7 @@ export default function App() {
                         onUpdateSettings={handleUpdateSettings}
                       />
                     )}
-                    {effectivePage === 'fees' && (
+                    {page === 'fees' && (
                       <FeesAiPage
                         data={data}
                         settings={settings}
@@ -463,22 +465,14 @@ export default function App() {
                         onGoConfigureAi={() => navigateTo('settings')}
                       />
                     )}
-                    {effectivePage === 'extensions' && showExtensions && (
+                    {page === 'extensions' && (
                       <ExtensionsPage
                         data={data}
-                        enableWatcher={settings.modules.copy_watcher !== false}
-                        enableCopy={settings.modules.copy_trading}
-                        enableStocks={settings.modules.stocks}
+                        enableWatcher={enabledTabs.includes('watcher')}
+                        enableCopy={enabledTabs.includes('copy')}
+                        enableStocks={enabledTabs.includes('stock')}
                         requestedTab={extTab}
-                        onTabChange={nextTab => {
-                          setExtTab(nextTab)
-                          if (typeof window !== 'undefined') {
-                            const targetHash = buildHashRoute('extensions', nextTab)
-                            if (window.location.hash !== targetHash) {
-                              window.location.hash = targetHash
-                            }
-                          }
-                        }}
+                        onTabChange={nextTab => navigateTo('extensions', nextTab)}
                         onInspectSymbol={handleInspectSymbol}
                         onGoSettings={() => {
                           navigateTo('settings')
@@ -491,7 +485,7 @@ export default function App() {
                         }}
                       />
                     )}
-                    {effectivePage === 'settings' && (
+                    {page === 'settings' && (
                       <SettingsPage
                         settings={settings}
                         adapters={adapters}
@@ -582,7 +576,7 @@ export default function App() {
             venueId={drilldown.venueId}
             venueName={drilldown.venueName}
             symbol={drilldown.symbol}
-            rangeKey={rangeKey}
+            rangeKey={drilldown.rangeKey ?? rangeKey}
             open={drilldownOpen}
             onClose={() => setDrilldownOpen(false)}
             onOpenInTrades={handleOpenInTrades}

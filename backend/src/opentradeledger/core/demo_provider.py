@@ -464,6 +464,29 @@ def build_demo_dashboard(
         ),
     }
 
+    spot_holdings = [
+        {
+            "venue_id": "binance",
+            "venue_name": "Binance",
+            "color_token": "binance",
+            "asset": "BTC",
+            "qty": 0.032,
+            "price_usd": 89000.0,
+            "market_value_usd": 2848.0,
+            "wallet_type": "SPOT",
+        },
+        {
+            "venue_id": "okx",
+            "venue_name": "OKX",
+            "color_token": "okx",
+            "asset": "SOL",
+            "qty": 8.5,
+            "price_usd": 192.0,
+            "market_value_usd": 1632.0,
+            "wallet_type": "UNIFIED",
+        },
+    ]
+
     return {
         "demo_mode": True,
         "read_only": True,
@@ -531,28 +554,8 @@ def build_demo_dashboard(
                 "has_stop_order": True,
             },
         ],
-        "spot_holdings": [
-            {
-                "venue_id": "binance",
-                "venue_name": "Binance",
-                "color_token": "binance",
-                "asset": "BTC",
-                "qty": 0.032,
-                "price_usd": 89000.0,
-                "market_value_usd": 2848.0,
-                "wallet_type": "SPOT",
-            },
-            {
-                "venue_id": "okx",
-                "venue_name": "OKX",
-                "color_token": "okx",
-                "asset": "SOL",
-                "qty": 8.5,
-                "price_usd": 192.0,
-                "market_value_usd": 1632.0,
-                "wallet_type": "UNIFIED",
-            },
-        ],
+        "spot_holdings": spot_holdings,
+        "spot_wallet_balances": [{k: v for k, v in row.items() if k != "price_usd"} for row in spot_holdings],
         "trades": filtered,
         "reconciliation": {
             "net_principal_usd": total_principal,

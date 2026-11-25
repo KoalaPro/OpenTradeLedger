@@ -100,6 +100,7 @@ class VenueLedgerBundle:
     copy_trading: VenueCopyBundle = field(default_factory=VenueCopyBundle)
     stocks: VenueStockBundle = field(default_factory=VenueStockBundle)
     fee_context: dict[str, Any] = field(default_factory=dict)
+    spot_wallet_balances: list[dict[str, Any]] = field(default_factory=list)
 
 
 class BaseExchangeAdapter(ABC):

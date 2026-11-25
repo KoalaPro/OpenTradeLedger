@@ -5,6 +5,7 @@ import { FloatingModal } from '../components/FloatingModal'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
 import { SegmentedPills } from '../components/SegmentedPills'
+import { SpotWalletTable, formatWalletType } from '../components/SpotWalletTable'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
@@ -12,15 +13,6 @@ import { fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
 import type { DashboardData, ExtensionSubTab, NavPage, SpotHolding } from '../lib/types'
 
 type StockHoldingItem = DashboardData['extensions']['stocks']['holdings'][number]
-
-function formatWalletType(wt: string, isEn: boolean): string {
-  const u = (wt || '').trim().toUpperCase()
-  if (u === 'UNIFIED') return isEn ? 'Unified Account' : '统一账户'
-  if (u === 'SPOT') return isEn ? 'Spot Account' : '现货账户'
-  if (u === 'FUNDING') return isEn ? 'Funding Account' : '资金账户'
-  if (u === 'EARN' || u === 'SAVINGS' || u === 'FINANCE') return isEn ? 'Earn / Savings' : '理财账户'
-  return wt || (isEn ? 'Spot' : '现货')
-}
 
 const BAR_COLORS: Record<string, string> = {
   binance: '#f6cd76',
@@ -35,17 +27,19 @@ const BAR_COLORS: Record<string, string> = {
 export function OverviewPage({
   data,
   enableStockTab = false,
+  enableWatcherTab = true,
   onNavigate,
   onInspectSymbol,
 }: {
   data: DashboardData
   enableStockTab?: boolean
+  enableWatcherTab?: boolean
   onNavigate: (page: NavPage, extTab?: ExtensionSubTab) => void
   onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
-  const [openModal, setOpenModal] = useState<null | 'equity' | 'reconcile'>(null)
+  const [openModal, setOpenModal] = useState<null | 'equity' | 'reconcile' | 'wallet'>(null)
   const [selectedStock, setSelectedStock] = useState<StockHoldingItem | null>(null)
   const [selectedSpot, setSelectedSpot] = useState<SpotHolding | null>(null)
   const [holdingTab, setHoldingTab] = useState<'all' | 'futures' | 'stocks' | 'spot'>('all')
@@ -70,6 +64,7 @@ export function OverviewPage({
   const futuresList = data.open_positions || []
   const stockList = data.extensions?.stocks?.holdings || []
   const spotList = data.spot_holdings || []
+  const wallets = data.spot_wallet_balances ?? spotList
   const totalHoldingsCount = futuresList.length + stockList.length + spotList.length
   const activeCategoriesCount =
     (futuresList.length > 0 ? 1 : 0) + (stockList.length > 0 ? 1 : 0) + (spotList.length > 0 ? 1 : 0)
@@ -108,6 +103,9 @@ export function OverviewPage({
   const futuresShare = s.total_equity_usd > 0 ? (futuresBucketVal / s.total_equity_usd) * 100 : 0
   const copyShare = s.total_equity_usd > 0 ? (copyActiveEq / s.total_equity_usd) * 100 : 0
   const stockShare = s.total_equity_usd > 0 ? (stockEq / s.total_equity_usd) * 100 : 0
+  const selectedSpotShare = selectedSpot && s.total_equity_usd > 0
+    ? (selectedSpot.market_value_usd / s.total_equity_usd) * 100
+    : 0
   const spotShare = s.total_equity_usd > 0 ? (spotTotalVal / s.total_equity_usd) * 100 : 0
 
   return (
@@ -226,29 +224,36 @@ export function OverviewPage({
               color: '#f59e0b',
             },
             {
+              wallet: true,
               title: locale === 'en' ? 'Spot, Earn & Token Dust' : '现货、理财与空投尾仓',
               val: spotTotalVal,
               pct: spotShare,
               color: '#10b981',
             },
-          ].map((b, idx) => (
-            <div key={idx} className="otl-surface-2 rounded-lg p-3 flex flex-col gap-1">
-              <div className="text-[11px] text-[var(--fg-3)]">{b.title}</div>
-              <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">{cur.money(b.val)}</div>
-              <div className="flex items-center justify-between gap-2 mt-0.5">
-                <div className="h-1 flex-1 rounded-full bg-[var(--track)] overflow-hidden">
-                  <div
-                    className="otl-bar-fill h-full rounded-full"
-                    style={{
-                      width: `${showEquity ? Math.min(100, Math.max(0, b.pct)) : 0}%`,
-                      background: b.color,
-                    }}
-                  />
+          ].map(b => {
+            const Tile = b.wallet ? 'button' : 'div'
+            return (
+              <Tile key={b.title}
+                {...(b.wallet ? { type: 'button' as const, onClick: () => setOpenModal('wallet') } : {})}
+                className={`otl-surface-2 rounded-lg p-3 flex flex-col gap-1 text-left ${b.wallet ? 'cursor-pointer hover:bg-[var(--surface-hover)]' : ''}`}
+              >
+                <div className="text-[11px] text-[var(--fg-3)]">{b.title}{b.wallet && <span aria-hidden="true"> ↗</span>}</div>
+                <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">{cur.money(b.val)}</div>
+                <div className="flex items-center justify-between gap-2 mt-0.5">
+                  <div className="h-1 flex-1 rounded-full bg-[var(--track)] overflow-hidden">
+                    <div
+                      className="otl-bar-fill h-full rounded-full"
+                      style={{
+                        width: `${showEquity ? Math.min(100, Math.max(0, b.pct)) : 0}%`,
+                        background: b.color,
+                      }}
+                    />
+                  </div>
+                  <span className="text-[11px] text-[var(--fg-3)]">{b.pct.toFixed(1)}%</span>
                 </div>
-                <span className="text-[11px] text-[var(--fg-3)]">{b.pct.toFixed(1)}%</span>
-              </div>
-            </div>
-          ))}
+              </Tile>
+            )
+          })}
         </div>
 
         {/* Per-Venue Asset Table */}
@@ -415,15 +420,17 @@ export function OverviewPage({
           <div className="flex items-center justify-between gap-2">
             <h2 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('ov_alloc_title')}</h2>
             <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                data-testid="overview-open-watcher-btn"
-                onClick={() => onNavigate('extensions', 'watcher')}
-                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer whitespace-nowrap"
-              >
-                <Radio size={12} className="text-emerald-400" />
-                <span>{locale === 'en' ? 'Public Radar' : '公开盯盘'}</span>
-              </button>
+              {enableWatcherTab && (
+                <button
+                  type="button"
+                  data-testid="overview-open-watcher-btn"
+                  onClick={() => onNavigate('extensions', 'watcher')}
+                  className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer whitespace-nowrap"
+                >
+                  <Radio size={12} className="text-emerald-400" />
+                  <span>{locale === 'en' ? 'Public Radar' : '公开盯盘'}</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onNavigate('settings')}
@@ -507,14 +514,21 @@ export function OverviewPage({
             <span className="text-[12px] text-[var(--fg-3)]">{totalHoldingsCount}</span>
           </div>
 
-          {activeCategoriesCount > 1 && (
-            <SegmentedPills
-              size="sm"
-              value={holdingTab}
-              onChange={setHoldingTab}
-              options={holdingFilterOptions}
-            />
-          )}
+          <div className="flex items-center flex-wrap gap-2.5">
+            {activeCategoriesCount > 1 && (
+              <SegmentedPills
+                size="sm"
+                value={holdingTab}
+                onChange={setHoldingTab}
+                options={holdingFilterOptions}
+              />
+            )}
+            {(spotTotalVal > 0 || wallets.length > 0) && (
+              <button type="button" className="text-xs text-[var(--accent)] hover:underline" onClick={() => setOpenModal('wallet')}>
+                {locale === 'en' ? 'Wallet balances' : '钱包明细'}
+              </button>
+            )}
+          </div>
         </div>
 
         {totalHoldingsCount === 0 ? (
@@ -784,8 +798,11 @@ export function OverviewPage({
 
       {/* Spot Holding Detail Modal */}
       <FloatingModal
-        open={selectedSpot !== null}
-        onClose={() => setSelectedSpot(null)}
+        open={selectedSpot !== null || openModal === 'wallet'}
+        onClose={() => {
+          setSelectedSpot(null)
+          setOpenModal(null)
+        }}
         testId="spot-holding-detail-modal"
         maxWidthClass="max-w-[640px]"
         title={
@@ -793,7 +810,7 @@ export function OverviewPage({
             ? locale === 'en'
               ? `${selectedSpot.asset} · Spot Holding`
               : `${selectedSpot.asset} · 现货资产明细`
-            : ''
+            : locale === 'en' ? 'Wallet balances' : '钱包明细'
         }
         subtitle={
           selectedSpot ? (
@@ -806,102 +823,35 @@ export function OverviewPage({
           ) : undefined
         }
       >
-        {selectedSpot && (() => {
-          const spWeightPct = s.total_equity_usd > 0 ? (selectedSpot.market_value_usd / s.total_equity_usd) * 100 : 0
-          const listedSpotSum = spotList.reduce((acc, item) => acc + item.market_value_usd, 0)
-          const idleCashAndDust = Math.max(0, spotTotalVal - listedSpotSum)
-          return (
-            <div className="p-5 space-y-4 text-[12.5px]">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
-                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Quantity' : '持仓数量'}</div>
-                  <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">
-                    {selectedSpot.qty} {selectedSpot.asset}
-                  </div>
-                </div>
-                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
-                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Market Value' : '折合市值'}</div>
-                  <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">
-                    {cur.money(selectedSpot.market_value_usd)}
-                  </div>
-                </div>
-                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
-                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Reference Price' : '实时参考单价'}</div>
-                  <div className="text-[14px] font-semibold text-[var(--fg)]">
-                    {selectedSpot.price_usd > 0 ? fmtPrice(selectedSpot.price_usd) : '—'}
-                  </div>
-                </div>
-                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
-                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Portfolio Share' : '占总净资产'}</div>
-                  <div className="text-[15px] font-semibold text-[var(--fg)]">{spWeightPct.toFixed(2)}%</div>
+        <div className="p-5 space-y-4 text-[12.5px]">
+          {selectedSpot && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Quantity' : '持仓数量'}</div>
+                <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">
+                  {selectedSpot.qty} {selectedSpot.asset}
                 </div>
               </div>
-
-              <div className="border border-[var(--border)] rounded-xl overflow-hidden">
-                <div className="px-4 py-2.5 bg-[var(--surface-2)] border-b border-[var(--border)] flex items-center justify-between gap-2 text-[12px]">
-                  <span className="font-semibold text-[var(--fg)]">
-                    {locale === 'en' ? 'All Spot, Earn & Dust Assets' : '全账户现货、理财与尾仓构成'}
-                  </span>
-                  <span className="text-[var(--fg-2)] sensitive">
-                    {locale === 'en' ? 'Total' : '合计'} {cur.money(spotTotalVal)}
-                  </span>
+              <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Market Value' : '折合市值'}</div>
+                <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">
+                  {cur.money(selectedSpot.market_value_usd)}
                 </div>
-                <div className="overflow-x-auto max-h-56">
-                  <table className="otl-table">
-                    <thead>
-                      <tr>
-                        <th>{locale === 'en' ? 'Asset' : '币种 / 项目'}</th>
-                        <th>{t('th_venue')}</th>
-                        <th>{locale === 'en' ? 'Account' : '所在账户'}</th>
-                        <th className="text-right">{locale === 'en' ? 'Qty' : '数量'}</th>
-                        <th className="text-right">{locale === 'en' ? 'Value' : '估值'}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {spotList.map(item => (
-                        <tr
-                          key={`${item.venue_id}-${item.asset}`}
-                          className={
-                            item.venue_id === selectedSpot.venue_id && item.asset === selectedSpot.asset
-                              ? 'bg-[var(--accent-soft)]'
-                              : undefined
-                          }
-                        >
-                          <td className="font-semibold whitespace-nowrap">{item.asset}</td>
-                          <td>
-                            <VenueBadge venueId={item.venue_id} name={item.venue_name} />
-                          </td>
-                          <td className="text-[var(--fg-2)] whitespace-nowrap">
-                            {formatWalletType(item.wallet_type, locale === 'en')}
-                          </td>
-                          <td className="text-right whitespace-nowrap sensitive">{item.qty}</td>
-                          <td className="text-right font-semibold whitespace-nowrap sensitive">
-                            {cur.money(item.market_value_usd)}
-                          </td>
-                        </tr>
-                      ))}
-                      {idleCashAndDust >= 0.01 && (
-                        <tr>
-                          <td className="text-[var(--fg-2)] whitespace-nowrap">
-                            {locale === 'en' ? 'Idle Stablecoin / Earn & Sub-cent Dust' : '现货/理财闲置稳定币及微额尾仓'}
-                          </td>
-                          <td className="text-[var(--fg-3)]">—</td>
-                          <td className="text-[var(--fg-3)]">
-                            {locale === 'en' ? 'Spot / Earn' : '现货与理财'}
-                          </td>
-                          <td className="text-right text-[var(--fg-3)]">—</td>
-                          <td className="text-right font-medium whitespace-nowrap sensitive">
-                            {cur.money(idleCashAndDust)}
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+              </div>
+              <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Reference Price' : '实时参考单价'}</div>
+                <div className="text-[14px] font-semibold text-[var(--fg)]">
+                  {selectedSpot.price_usd > 0 ? fmtPrice(selectedSpot.price_usd) : '—'}
                 </div>
+              </div>
+              <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Portfolio Share' : '占总净资产'}</div>
+                <div className="text-[15px] font-semibold text-[var(--fg)]">{selectedSpotShare.toFixed(2)}%</div>
               </div>
             </div>
-          )
-        })()}
+          )}
+          <SpotWalletTable balances={wallets} spotTotal={spotTotalVal} selected={selectedSpot} />
+        </div>
       </FloatingModal>
     </div>
   )

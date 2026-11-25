@@ -359,6 +359,7 @@ class LedgerService:
 
         exchanges: list[dict[str, Any]] = []
         all_open_positions: list[dict[str, Any]] = []
+        spot_wallet_balances: list[dict[str, Any]] = []
         spot_holdings: list[dict[str, Any]] = []
         fee_matrix: list[dict[str, Any]] = []
         all_trades_unfiltered: list[dict[str, Any]] = []
@@ -400,6 +401,7 @@ class LedgerService:
 
             all_open_positions.extend(bundle.open_positions)
             spot_holdings.extend(bundle.spot_holdings)
+            spot_wallet_balances.extend(bundle.spot_wallet_balances or bundle.spot_holdings)
 
             # Trades & range filtering
             v_range_trades: list[dict[str, Any]] = []
@@ -821,6 +823,7 @@ class LedgerService:
             "exchanges": exchanges,
             "open_positions": open_positions,
             "spot_holdings": spot_holdings,
+            "spot_wallet_balances": sorted(spot_wallet_balances, key=lambda r: r["market_value_usd"] or 0, reverse=True),
             "trades": trades,
             "reconciliation": {
                 "net_principal_usd": total_principal,

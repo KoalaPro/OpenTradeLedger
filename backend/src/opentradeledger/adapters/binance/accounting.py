@@ -21,7 +21,8 @@ from opentradeledger.adapters.stock_channels import (
 from opentradeledger.core.venue_primitives import (
     STOCK_COMMODITY_BASES,
     aggregate_trade_legs_decimal,
-    build_spot_holdings_list,
+    build_spot_wallet_balances,
+    spot_holdings_from_wallets,
     build_venue_stock_perpetuals,
     clamp_reconcile_streams_to_target,
     dec,
@@ -1461,7 +1462,7 @@ def build_binance_venue_ledger(
         daily_comp[bn_first_day]["binance_fx_spot_adj"] += bn_small_adj_usd
 
     px_float_map = {**(global_spot_prices or {}), **extract_binance_spot_prices(store)}
-    spot_holdings = build_spot_holdings_list(
+    wallet_balances = build_spot_wallet_balances(
         raw_spot_rows,
         venue_id="binance",
         venue_name=meta.display_name,
@@ -1518,7 +1519,8 @@ def build_binance_venue_ledger(
         },
         trades=public_trades,
         open_positions=open_positions,
-        spot_holdings=spot_holdings,
+        spot_holdings=spot_holdings_from_wallets(wallet_balances),
+        spot_wallet_balances=wallet_balances,
         reconcile_streams=reconcile_streams,
         daily_pnl=dict(daily_pnl),
         daily_components={d: dict(c) for d, c in daily_comp.items()},

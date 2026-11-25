@@ -15,7 +15,8 @@ from opentradeledger.adapters.base import (
 from opentradeledger.adapters.bybit.client import normalize_bybit_closed_trades
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
-    build_spot_holdings_list,
+    build_spot_wallet_balances,
+    spot_holdings_from_wallets,
     build_venue_stock_perpetuals,
     clamp_reconcile_streams_to_target,
     dec,
@@ -235,7 +236,7 @@ def build_bybit_venue_ledger(
     )
 
     stock_syms = {h["symbol"] for h in tokenized_stocks}
-    spot_holdings = build_spot_holdings_list(
+    wallet_balances = build_spot_wallet_balances(
         raw_spot_rows,
         venue_id="bybit",
         venue_name=meta.display_name,
@@ -294,7 +295,8 @@ def build_bybit_venue_ledger(
         },
         trades=trades,
         open_positions=open_positions,
-        spot_holdings=spot_holdings,
+        spot_holdings=spot_holdings_from_wallets(wallet_balances),
+        spot_wallet_balances=wallet_balances,
         reconcile_streams=reconcile_streams,
         daily_pnl=dict(daily_pnl),
         daily_components={d: dict(c) for d, c in daily_comp.items()},

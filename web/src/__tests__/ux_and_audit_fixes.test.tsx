@@ -301,6 +301,42 @@ afterEach(() => {
 })
 
 describe('Audit Bugfixes: Calendar, Add-Account Modal, Privacy, Currency, Drafts & Routing', () => {
+  it('opens an all-time perpetual breakdown from a seven-day view and keeps its full history in Trades', async () => {
+    const data = structuredClone(twoTradeDashboard)
+    data.available_symbols = ['QCOM_USDT']
+    data.trades.forEach(trade => { trade.symbol = 'QCOM_USDT' })
+    data.extensions.stocks.perpetuals = [{
+      venue_id: 'gate', venue_name: 'Gate', symbol: 'QCOM_USDT', category: 'US Equity Perp',
+      trade_count: 2, qty: 3, maker_bps: 0, taker_bps: 3, gross_fee_usd: 15,
+      rebate_usd: 10, net_fee_usd: 5, net_pnl_usd: -200,
+    }]
+    data.extensions.stocks.enabled = false
+    window.location.hash = '#/trades'
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = new URL(String(input), window.location.origin)
+      if (url.pathname === '/api/v1/dashboard') {
+        const range = url.searchParams.get('range')
+        return Response.json({ ...data, range_key: range, trades: range === 'all' ? data.trades : data.trades.slice(0, 1) })
+      }
+      if (url.pathname === '/api/v1/settings') {
+        return Response.json({ ...baseSettings, modules: { stocks: false, copy_trading: false, copy_watcher: false } })
+      }
+      if (url.pathname === '/api/v1/exchanges') return Response.json({ adapters: [] })
+      if (url.pathname === '/api/v1/auth/status') return Response.json({ authenticated: true })
+      return Response.json({ ok: true, rates: DEFAULT_FX.rates })
+    })
+
+    render(<App />)
+    await screen.findByTestId('trades-page')
+    fireEvent.click(screen.getByRole('button', { name: '7天' }))
+    await waitFor(() => expect(screen.getAllByTestId(/^trade-row-/)).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: /Gate QCOM_USDT/ }))
+    await screen.findByText(/2 笔交割/)
+    fireEvent.click(screen.getByRole('button', { name: '去合约页查看' }))
+    await waitFor(() => expect(screen.getAllByTestId(/^trade-row-/)).toHaveLength(2))
+    expect((screen.getByRole('combobox', { name: '全部标的' }) as HTMLSelectElement).value).toBe('QCOM_USDT')
+  })
+
   it('MonthlyCalendar does not count passive sub-dollar interest as trade win days or display -0', () => {
     render(
       <I18nProvider locale="zh-CN">

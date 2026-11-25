@@ -19,7 +19,8 @@ from opentradeledger.adapters.stock_channels import (
 )
 from opentradeledger.core.venue_primitives import (
     aggregate_trade_legs_decimal,
-    build_spot_holdings_list,
+    build_spot_wallet_balances,
+    spot_holdings_from_wallets,
     build_venue_stock_perpetuals,
     clamp_reconcile_streams_to_target,
     contract_mult,
@@ -1455,7 +1456,7 @@ def build_gate_venue_ledger(
             )
             raw_spot_rows.append((str(coin), q, 0.0, "UNIFIED"))
 
-    spot_holdings = build_spot_holdings_list(
+    wallet_balances = build_spot_wallet_balances(
         raw_spot_rows,
         venue_id="gate",
         venue_name=meta.display_name,
@@ -1506,7 +1507,8 @@ def build_gate_venue_ledger(
         },
         trades=public_trades,
         open_positions=open_positions,
-        spot_holdings=spot_holdings,
+        spot_holdings=spot_holdings_from_wallets(wallet_balances),
+        spot_wallet_balances=wallet_balances,
         reconcile_streams=reconcile_streams,
         daily_pnl=dict(whole_daily_pnl),
         daily_components={d: dict(c) for d, c in daily_comp.items()},
