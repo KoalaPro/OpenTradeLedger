@@ -268,6 +268,17 @@ export const api = {
       method: 'DELETE',
     })
   },
+  updateCopyWatcherConfig(body: {
+    interval_sec: number
+    trade_interval_sec: number
+    cooldown_sec: number
+  }): Promise<{ ok: boolean } & CopyWatcherStatusPayload> {
+    return req('/api/v1/extensions/copy-watcher/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  },
   testNotify(options?: {
     portfolio_id?: string
     notifications?: Record<string, unknown>

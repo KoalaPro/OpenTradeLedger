@@ -37,6 +37,9 @@ class UserPreferences(BaseModel):
     ai_api_key: str = ""
     ai_model: str = ""
     outbound_proxy_url: str = ""
+    watcher_interval_sec: int = 10
+    watcher_trade_interval_sec: int = 30
+    watcher_cooldown_sec: int = 180
     copy_watcher_targets: list[str] = Field(default_factory=list)
     modules: ModuleSettings = Field(default_factory=ModuleSettings)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)

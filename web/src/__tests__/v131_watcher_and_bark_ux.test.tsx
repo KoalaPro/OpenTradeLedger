@@ -249,4 +249,75 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
     const notifs = capturedBody!.notifications
     expect(notifs?.bark_push_key).toContain('NewUserKey777')
   })
+
+  it('allows customizing watcher slot & position polling intervals inline', async () => {
+    let savedIntervals: Record<string, unknown> | null = null
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input)
+      if (url.includes('/api/v1/extensions/copy-watcher/config') && init?.method === 'PUT') {
+        savedIntervals = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            demo_mode: false,
+            watcher_running: true,
+            interval_sec: 5,
+            trade_poll_sec: 15,
+            cooldown_sec: 120,
+            updated_at_ms: Date.now(),
+            open_slot_count: 0,
+            channels: { webhook: false, telegram: false, bark: true },
+            configured_targets: [],
+            items: [],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response(
+        JSON.stringify({
+          demo_mode: false,
+          watcher_running: true,
+          interval_sec: 10,
+          trade_poll_sec: 30,
+          cooldown_sec: 180,
+          updated_at_ms: 0,
+          open_slot_count: 0,
+          channels: { webhook: false, telegram: false, bark: true },
+          configured_targets: [],
+          items: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    })
+
+    render(
+      <I18nProvider locale="zh-CN">
+        <CurrencyProvider currency="USDT" fx={DEFAULT_FX}>
+          <ExtensionsPage
+            data={emptyDash}
+            enableWatcher={true}
+            enableCopy={true}
+            enableStocks={true}
+            requestedTab="watcher"
+          />
+        </CurrencyProvider>
+      </I18nProvider>,
+    )
+
+    fireEvent.click(await screen.findByTestId('watcher-config-toggle-btn'))
+    expect(screen.getByTestId('watcher-config-panel')).toBeTruthy()
+
+    fireEvent.change(screen.getByTestId('watcher-interval-input'), { target: { value: '5' } })
+    fireEvent.change(screen.getByTestId('watcher-trade-interval-input'), { target: { value: '15' } })
+    fireEvent.change(screen.getByTestId('watcher-cooldown-input'), { target: { value: '120' } })
+    fireEvent.click(screen.getByTestId('watcher-save-config-btn'))
+
+    await waitFor(() => {
+      expect(savedIntervals).toEqual({
+        interval_sec: 5,
+        trade_interval_sec: 15,
+        cooldown_sec: 120,
+      })
+    })
+  })
 })

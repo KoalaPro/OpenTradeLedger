@@ -494,6 +494,9 @@ export interface UserSettings {
   ai_api_key_set?: boolean
   ai_model: string
   outbound_proxy_url?: string
+  watcher_interval_sec?: number
+  watcher_trade_interval_sec?: number
+  watcher_cooldown_sec?: number
   copy_watcher_targets: string[]
   modules: {
     copy_watcher?: boolean

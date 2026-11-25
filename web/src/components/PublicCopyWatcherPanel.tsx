@@ -11,6 +11,7 @@ import {
   Plus,
   Radio,
   RefreshCw,
+  SlidersHorizontal,
   Smartphone,
   Trash2,
 } from 'lucide-react'
@@ -40,6 +41,11 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
   const [adding, setAdding] = useState(false)
   const [guideOpen, setGuideOpen] = useState(true)
   const [userToggledGuide, setUserToggledGuide] = useState(false)
+  const [configOpen, setConfigOpen] = useState(false)
+  const [slotIntervalInput, setSlotIntervalInput] = useState('10')
+  const [tradeIntervalInput, setTradeIntervalInput] = useState('30')
+  const [cooldownInput, setCooldownInput] = useState('180')
+  const [savingConfig, setSavingConfig] = useState(false)
   const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({})
   const [testingId, setTestingId] = useState<string>('')
   const [copiedId, setCopiedId] = useState<string>('')
@@ -59,6 +65,9 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
     try {
       const res = await api.getCopyWatcher(forceRefresh)
       setStatus(res)
+      setSlotIntervalInput(String(res.interval_sec ?? 10))
+      setTradeIntervalInput(String(res.trade_poll_sec ?? 30))
+      setCooldownInput(String(res.cooldown_sec ?? 180))
       if (!userToggledGuide) {
         setGuideOpen((res.items || []).length === 0)
       }
@@ -145,6 +154,37 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
       flash('ok', isZh ? `已停止盯盘并移除：${nickname}` : `Removed ${nickname}`)
     } catch (err) {
       flash('err', err instanceof Error ? err.message : 'Failed to remove target')
+    }
+  }
+
+  const handleSaveConfig = async () => {
+    if (savingConfig) return
+    const slotSec = Number(slotIntervalInput)
+    const tradeSec = Number(tradeIntervalInput)
+    const coolSec = Number(cooldownInput)
+    setSavingConfig(true)
+    setFeedback(null)
+    try {
+      const res = await api.updateCopyWatcherConfig({
+        interval_sec: slotSec,
+        trade_interval_sec: tradeSec,
+        cooldown_sec: coolSec,
+      })
+      setStatus(res)
+      setSlotIntervalInput(String(res.interval_sec))
+      setTradeIntervalInput(String(res.trade_poll_sec))
+      setCooldownInput(String(res.cooldown_sec))
+      setConfigOpen(false)
+      flash(
+        'ok',
+        isZh
+          ? `盯盘频率已生效：名额每 ${res.interval_sec}s 扫描 · 持仓每 ${res.trade_poll_sec}s 推算 · 响铃冷却 ${res.cooldown_sec}s`
+          : `Polling updated: Slots ${res.interval_sec}s · Positions ${res.trade_poll_sec}s · Cooldown ${res.cooldown_sec}s`,
+      )
+    } catch (err) {
+      flash('err', err instanceof Error ? err.message : 'Failed to save polling intervals')
+    } finally {
+      setSavingConfig(false)
     }
   }
 
@@ -241,11 +281,16 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                     : 'Public Copy-Trade Radar (Slot Alarm & Live Position Inference)'}
                 </span>
               </h2>
-              <span className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)]">
+              <button
+                type="button"
+                onClick={() => setConfigOpen(v => !v)}
+                className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
+                title={isZh ? '点击自定义轮询秒数' : 'Click to customize polling seconds'}
+              >
                 {isZh
                   ? `免 API Key 只读 · 名额 ${status?.interval_sec ?? 10}s / 持仓 ${status?.trade_poll_sec ?? 30}s`
                   : `Keyless Read-Only · Slots ${status?.interval_sec ?? 10}s / Positions ${status?.trade_poll_sec ?? 30}s`}
-              </span>
+              </button>
               {status?.demo_mode && (
                 <span className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-3)]">
                   {isZh ? '演示示例（粘贴真实链接添加后自动切为实盘盯盘）' : 'Demo Preview'}
@@ -259,17 +304,121 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
             </p>
           </div>
 
-          <button
-            type="button"
-            data-testid="watcher-refresh-btn"
-            disabled={refreshing || loading}
-            onClick={() => void fetchStatus(true)}
-            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
-          >
-            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-            <span>{isZh ? '立即刷新' : 'Refresh'}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="watcher-config-toggle-btn"
+              onClick={() => setConfigOpen(v => !v)}
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
+            >
+              <SlidersHorizontal size={12} />
+              <span>{isZh ? `频率设置 (${status?.interval_sec ?? 10}s)` : `Frequency (${status?.interval_sec ?? 10}s)`}</span>
+            </button>
+
+            <button
+              type="button"
+              data-testid="watcher-refresh-btn"
+              disabled={refreshing || loading}
+              onClick={() => void fetchStatus(true)}
+              className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
+            >
+              <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+              <span>{isZh ? '立即刷新' : 'Refresh'}</span>
+            </button>
+          </div>
         </div>
+
+        {/* Inline Customizable Polling Frequency & Cooldown Panel */}
+        <AnimatedCollapse open={configOpen}>
+          <div
+            data-testid="watcher-config-panel"
+            className="otl-surface-2 rounded-xl p-3.5 space-y-3 text-[12px] border border-[var(--border)]"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-semibold text-[var(--fg)]">
+                {isZh ? '自定义监控频率与响铃冷却（保存后立即生效，无需重启）' : 'Custom Polling Intervals & Alarm Cooldown'}
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {[
+                  { labelZh: '极速抢位 (5s / 15s)', labelEn: 'Fast (5s / 15s)', s: '5', t: '15', c: '120' },
+                  { labelZh: '标准推荐 (10s / 30s)', labelEn: 'Standard (10s / 30s)', s: '10', t: '30', c: '180' },
+                  { labelZh: '低频省流 (30s / 60s)', labelEn: 'Relaxed (30s / 60s)', s: '30', t: '60', c: '300' },
+                ].map(preset => (
+                  <button
+                    key={preset.s}
+                    type="button"
+                    onClick={() => {
+                      setSlotIntervalInput(preset.s)
+                      setTradeIntervalInput(preset.t)
+                      setCooldownInput(preset.c)
+                    }}
+                    className="h-6 px-2 rounded-md border border-[var(--border-strong)] bg-[var(--surface)] text-[11px] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
+                  >
+                    {isZh ? preset.labelZh : preset.labelEn}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 items-end">
+              <div className="space-y-1">
+                <label className="block text-[11px] text-[var(--fg-2)]">
+                  {isZh ? '名额扫描间隔（3~300 秒）' : 'Slot Scan (3–300s)'}
+                </label>
+                <input
+                  type="number"
+                  min={3}
+                  max={300}
+                  data-testid="watcher-interval-input"
+                  value={slotIntervalInput}
+                  onChange={e => setSlotIntervalInput(e.target.value)}
+                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] text-[var(--fg-2)]">
+                  {isZh ? '持仓推算间隔（10~600 秒）' : 'Position Poll (10–600s)'}
+                </label>
+                <input
+                  type="number"
+                  min={10}
+                  max={600}
+                  data-testid="watcher-trade-interval-input"
+                  value={tradeIntervalInput}
+                  onChange={e => setTradeIntervalInput(e.target.value)}
+                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] text-[var(--fg-2)]">
+                  {isZh ? '重复响铃冷却（30~3600 秒）' : 'Alarm Cooldown (30–3600s)'}
+                </label>
+                <input
+                  type="number"
+                  min={30}
+                  max={3600}
+                  data-testid="watcher-cooldown-input"
+                  value={cooldownInput}
+                  onChange={e => setCooldownInput(e.target.value)}
+                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)]"
+                />
+              </div>
+
+              <button
+                type="button"
+                data-testid="watcher-save-config-btn"
+                disabled={savingConfig}
+                onClick={() => void handleSaveConfig()}
+                className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+              >
+                {savingConfig ? (isZh ? '保存中…' : 'Saving…') : isZh ? '保存频率' : 'Save Frequency'}
+              </button>
+            </div>
+          </div>
+        </AnimatedCollapse>
 
         {/* Add Lead Trader Form */}
         <form onSubmit={e => void handleAdd(e)} className="space-y-2.5">

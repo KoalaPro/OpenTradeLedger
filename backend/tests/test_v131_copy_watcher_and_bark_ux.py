@@ -263,3 +263,43 @@ def test_humanize_exchange_error_recognizes_status_zero_connection_failures():
     diag = humanize_exchange_error("binance", "Binance GET /api/v3/account failed (0):")
     assert diag["code"] == "NETWORK_UNREACHABLE"
     assert "网络或代理超时" in diag["reason_zh"]
+
+
+def test_copy_watcher_custom_polling_intervals_and_validation(tmp_path: Path):
+    app = create_app(
+        data_dir=tmp_path,
+        demo_mode=False,
+        enable_background_sync=False,
+        auto_prompt_setup=False,
+    )
+    with TestClient(app) as client:
+        # Default intervals: 10s slot, 30s trade, 180s cooldown
+        st0 = client.get("/api/v1/extensions/copy-watcher").json()
+        assert st0["interval_sec"] == 10
+        assert st0["trade_poll_sec"] == 30
+        assert st0["cooldown_sec"] == 180
+
+        # Reject dangerously fast (< 3s) interval to protect user IP from Binance ban
+        r_bad = client.put(
+            "/api/v1/extensions/copy-watcher/config",
+            json={"interval_sec": 1, "trade_interval_sec": 30, "cooldown_sec": 180},
+        )
+        assert r_bad.status_code == 400
+
+        # Update to custom intervals: 5s slot, 20s trade, 120s cooldown
+        r_ok = client.put(
+            "/api/v1/extensions/copy-watcher/config",
+            json={"interval_sec": 5, "trade_interval_sec": 20, "cooldown_sec": 120},
+        )
+        assert r_ok.status_code == 200
+        body = r_ok.json()
+        assert body["interval_sec"] == 5
+        assert body["trade_poll_sec"] == 20
+        assert body["cooldown_sec"] == 120
+
+        # Persists in GET /api/v1/settings as well
+        prefs = client.get("/api/v1/settings").json()
+        assert prefs["watcher_interval_sec"] == 5
+        assert prefs["watcher_trade_interval_sec"] == 20
+        assert prefs["watcher_cooldown_sec"] == 120
+

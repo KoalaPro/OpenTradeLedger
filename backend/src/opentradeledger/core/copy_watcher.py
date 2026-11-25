@@ -440,7 +440,12 @@ def humanize_watcher_error(exc: Exception) -> tuple[str, str]:
     return raw, f"盯盘查询异常：{raw}"
 
 
-def build_demo_copy_watcher_status() -> dict[str, Any]:
+def build_demo_copy_watcher_status(
+    *,
+    interval_sec: int = 10,
+    trade_poll_sec: int = 30,
+    cooldown_sec: int = 180,
+) -> dict[str, Any]:
     """Sanitized demonstration radar payload for Demo Mode (zero personal IDs)."""
     now_ms = int(time.time() * 1000)
     demo_id_1 = "3900000000000000101"
@@ -448,9 +453,9 @@ def build_demo_copy_watcher_status() -> dict[str, Any]:
     return {
         "demo_mode": True,
         "watcher_running": True,
-        "interval_sec": 10,
-        "trade_poll_sec": 30,
-        "cooldown_sec": 180,
+        "interval_sec": int(interval_sec),
+        "trade_poll_sec": int(trade_poll_sec),
+        "cooldown_sec": int(cooldown_sec),
         "updated_at_ms": now_ms,
         "last_error": "",
         "last_error_zh": "",
@@ -594,15 +599,28 @@ class CopyWatcherService:
 
         self._lock = asyncio.Lock()
         self._stop_event: asyncio.Event | None = None
+        self._wake_event: asyncio.Event | None = None
         self._bg_task: asyncio.Task[None] | None = None
         self._cycles = 0
         self._consecutive_failures = 0
         self._last_slot_alert_mono: dict[str, float] = {}
+        self._last_trade_poll_mono: dict[str, float] = {}
         self._last_error: str = ""
         self._last_error_zh: str = ""
         self._updated_at_ms: int = 0
 
         self._bootstrap_legacy_targets()
+
+    def _effective_timings(self) -> tuple[float, float, float]:
+        prefs = self.store.get_preferences()
+        slot_s = float(max(3, min(300, int(prefs.watcher_interval_sec or self.interval_sec))))
+        trade_s = float(max(10, min(600, int(prefs.watcher_trade_interval_sec or (self.interval_sec * self.trade_poll_every_n_cycles)))))
+        cool_s = float(max(30, min(3600, int(prefs.watcher_cooldown_sec or self.cooldown_sec))))
+        return slot_s, trade_s, cool_s
+
+    def notify_config_changed(self) -> None:
+        if self._wake_event is not None:
+            self._wake_event.set()
 
     def _load_state(self) -> dict[str, Any]:
         raw = self.store.get_meta(WATCHER_META_KEY, {})
@@ -657,11 +675,14 @@ class CopyWatcherService:
         if self._bg_task and not self._bg_task.done():
             return
         self._stop_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
         self._bg_task = asyncio.create_task(self._watch_loop(), name="otl-copy-watcher")
 
     async def stop(self) -> None:
         if self._stop_event is not None:
             self._stop_event.set()
+        if self._wake_event is not None:
+            self._wake_event.set()
         if self._bg_task is not None:
             self._bg_task.cancel()
             try:
@@ -672,8 +693,11 @@ class CopyWatcherService:
 
     async def _watch_loop(self) -> None:
         assert self._stop_event is not None
+        assert self._wake_event is not None
         while not self._stop_event.is_set():
-            delay = self.interval_sec + random.uniform(-1.0, 1.0)
+            self._wake_event.clear()
+            slot_s, _trade_s, _cool_s = self._effective_timings()
+            delay = slot_s + random.uniform(-0.5, 0.5)
             try:
                 prefs = self.store.get_preferences()
                 state = self._load_state()
@@ -681,21 +705,28 @@ class CopyWatcherService:
                 saved_demo = self.store.get_meta("demo_mode_override", None)
                 if prefs.modules.copy_watcher and has_enabled and saved_demo is not True:
                     await self.poll_once(force_trades=False)
+                    slot_s, _trade_s, _cool_s = self._effective_timings()
+                    delay = slot_s + random.uniform(-0.5, 0.5)
                     if self._consecutive_failures > 0:
                         exp = min(5, self._consecutive_failures - 1)
-                        delay = min(60.0, self.interval_sec * (2**exp))
+                        delay = min(60.0, slot_s * (2**exp))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning("Copy watcher background tick error: %s", exc)
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=max(3.0, delay))
+                await asyncio.wait_for(self._wake_event.wait(), timeout=max(3.0, delay))
             except asyncio.TimeoutError:
                 continue
 
     def get_status(self, *, demo_mode: bool = False) -> dict[str, Any]:
+        slot_s, trade_s, cool_s = self._effective_timings()
         if demo_mode:
-            return build_demo_copy_watcher_status()
+            return build_demo_copy_watcher_status(
+                interval_sec=int(round(slot_s)),
+                trade_poll_sec=int(round(trade_s)),
+                cooldown_sec=int(round(cool_s)),
+            )
 
         prefs = self.store.get_preferences()
         n = prefs.notifications
@@ -746,9 +777,9 @@ class CopyWatcherService:
         return {
             "demo_mode": False,
             "watcher_running": bool(self._bg_task and not self._bg_task.done()),
-            "interval_sec": int(round(self.interval_sec)),
-            "trade_poll_sec": int(round(self.interval_sec * self.trade_poll_every_n_cycles)),
-            "cooldown_sec": int(round(self.cooldown_sec)),
+            "interval_sec": int(round(slot_s)),
+            "trade_poll_sec": int(round(trade_s)),
+            "cooldown_sec": int(round(cool_s)),
             "updated_at_ms": self._updated_at_ms,
             "last_error": self._last_error,
             "last_error_zh": self._last_error_zh,
@@ -935,7 +966,7 @@ class CopyWatcherService:
                 return self.get_status(demo_mode=False)
 
             self._cycles += 1
-            do_trades = force_trades or (self._cycles == 1) or (self._cycles % self.trade_poll_every_n_cycles == 0)
+            _slot_s, eff_trade_s, eff_cool_s = self._effective_timings()
             now_mono = self._clock_fn()
             wall_ms = int(time.time() * 1000)
             prefs = self.store.get_preferences()
@@ -982,7 +1013,7 @@ class CopyWatcherService:
                         self._last_slot_alert_mono.pop(pid, None)
                     elif bool(t.get("slot_alert", True)) and has_any_channel:
                         prev_mono = self._last_slot_alert_mono.get(pid)
-                        if prev_mono is None or (now_mono - prev_mono) >= self.cooldown_sec:
+                        if prev_mono is None or (now_mono - prev_mono) >= eff_cool_s:
                             title = f"🚨 {snap.nickname} 空出 {snap.available_slots} 个跟单名额！"
                             body = (
                                 f"当前 {snap.current_copy_count}/{snap.max_copy_count} "
@@ -1007,9 +1038,17 @@ class CopyWatcherService:
 
                     # 2. Public trade activity & inferred positions check
                     act: LeadTradeActivity | None = None
-                    if do_trades or not prev_cached:
+                    prev_trade_mono = self._last_trade_poll_mono.get(pid)
+                    due_for_trade = (
+                        force_trades
+                        or (not prev_cached)
+                        or (prev_trade_mono is None)
+                        or ((now_mono - prev_trade_mono) >= eff_trade_s)
+                    )
+                    if due_for_trade:
                         try:
                             act = await watcher_client.fetch_trade_activity(pid, now_ms=wall_ms)
+                            self._last_trade_poll_mono[pid] = now_mono
                         except Exception as exc:
                             logger.debug("Trade activity fetch skipped for %s: %s", pid, exc)
 

@@ -94,6 +94,12 @@ class WatcherPatchRequest(BaseModel):
     trade_alert: bool | None = None
 
 
+class WatcherConfigRequest(BaseModel):
+    interval_sec: int = 10
+    trade_interval_sec: int = 30
+    cooldown_sec: int = 180
+
+
 class TestNotifyRequest(BaseModel):
     portfolio_id: str = ""
     notifications: dict[str, Any] | None = None
@@ -744,6 +750,42 @@ def create_app(
     async def update_copy_watcher(body: WatcherTargetsRequest) -> dict[str, Any]:
         cleaned = copy_watcher.set_target_ids_bulk(body.targets)
         return {"ok": True, "configured_targets": cleaned, **copy_watcher.get_status(demo_mode=False)}
+
+    @app.put("/api/v1/extensions/copy-watcher/config")
+    async def update_copy_watcher_config(body: WatcherConfigRequest) -> Response:
+        if not (3 <= body.interval_sec <= 300):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "Slot scan interval must be between 3 and 300 seconds (min 3s prevents Binance IP rate-limit bans)",
+                    "detail_zh": "名额扫描间隔须在 3 ~ 300 秒之间（最低 3 秒以防止触发币安高频访问封禁 IP）",
+                },
+            )
+        if not (10 <= body.trade_interval_sec <= 600):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "Position inference interval must be between 10 and 600 seconds",
+                    "detail_zh": "持仓推算间隔须在 10 ~ 600 秒之间",
+                },
+            )
+        if not (30 <= body.cooldown_sec <= 3600):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "Slot alarm repeat cooldown must be between 30 and 3600 seconds",
+                    "detail_zh": "空位重复响铃冷却时间须在 30 ~ 3600 秒之间",
+                },
+            )
+        ledger_service.update_preferences(
+            {
+                "watcher_interval_sec": int(body.interval_sec),
+                "watcher_trade_interval_sec": int(body.trade_interval_sec),
+                "watcher_cooldown_sec": int(body.cooldown_sec),
+            }
+        )
+        copy_watcher.notify_config_changed()
+        return JSONResponse(content={"ok": True, **copy_watcher.get_status(demo_mode=bool(ledger_service.demo_mode))})
 
     @app.patch("/api/v1/extensions/copy-watcher/targets/{portfolio_id}")
     async def patch_copy_watcher_target(portfolio_id: str, body: WatcherPatchRequest) -> dict[str, Any]:
