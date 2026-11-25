@@ -27,9 +27,6 @@ const mockSettings: UserSettings = {
   copy_watcher_targets: [],
   modules: { copy_watcher: true, copy_trading: true, stocks: true },
   notifications: {
-    webhook_url: '',
-    telegram_bot_token: '',
-    telegram_chat_id: '',
     bark_server_url: 'https://api.day.app',
     bark_push_key: '',
   },
@@ -114,7 +111,7 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
             cooldown_sec: 180,
             updated_at_ms: Date.now(),
             open_slot_count: 1,
-            channels: { webhook: false, telegram: false, bark: true },
+            channels: { bark: false },
             configured_targets: ['3988776655443322110'],
             items: [
               {
@@ -152,7 +149,7 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
           cooldown_sec: 180,
           updated_at_ms: 0,
           open_slot_count: 0,
-          channels: { webhook: false, telegram: false, bark: false },
+          channels: { bark: false },
           configured_targets: [],
           items: [],
         }),
@@ -177,6 +174,11 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
     expect(await screen.findByTestId('ext-tab-watcher')).toBeTruthy()
     expect(screen.getByTestId('watcher-howto-guide')).toBeTruthy()
 
+    await screen.findByTestId('watcher-bark-unconfigured-banner')
+    for (const checkbox of screen.getAllByRole<HTMLInputElement>('checkbox')) {
+      expect(checkbox.disabled).toBe(true)
+      expect(checkbox.checked).toBe(false)
+    }
     const input = screen.getByTestId('watcher-add-input')
     fireEvent.change(input, {
       target: { value: 'https://www.binance.com/zh-CN/copy-trading/lead-details/3988776655443322110' },
@@ -186,7 +188,15 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
     await waitFor(() => {
       expect(screen.getByText('SteadyWhale')).toBeTruthy()
     })
-    expect(fetchMock).toHaveBeenCalled()
+    for (const name of ['空位响铃', '调仓推送']) {
+      const control = screen.getByRole<HTMLButtonElement>('switch', { name })
+      expect(control.disabled).toBe(true)
+      expect(control.getAttribute('aria-checked')).toBe('false')
+    }
+    expect(screen.getByRole<HTMLButtonElement>('switch', { name: '启用盯盘' }).disabled).toBe(false)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '测试响铃' }).disabled).toBe(true)
+    const post = fetchMock.mock.calls.find(([, opts]) => opts?.method === 'POST')
+    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ slot_alert: false, trade_alert: false })
   })
 
   it('shows Bark onboarding guide in Settings and auto-saves pasted Bark URL when clicking Test Push directly', async () => {
@@ -247,7 +257,12 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
       expect(capturedBody).not.toBeNull()
     })
     const notifs = capturedBody!.notifications
-    expect(notifs?.bark_push_key).toContain('NewUserKey777')
+    expect(notifs).toEqual({
+      bark_server_url: 'https://api.day.app',
+      bark_push_key: 'https://api.day.app/NewUserKey777/这里改成你自己的推送内容',
+    })
+    expect(screen.queryByPlaceholderText('Telegram Bot Token')).toBeNull()
+    expect(screen.queryByPlaceholderText('Webhook URL (https://...)')).toBeNull()
   })
 
   it('allows customizing watcher slot & position polling intervals inline', async () => {
@@ -266,7 +281,7 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
             cooldown_sec: 120,
             updated_at_ms: Date.now(),
             open_slot_count: 0,
-            channels: { webhook: false, telegram: false, bark: true },
+            channels: { bark: true },
             configured_targets: [],
             items: [],
           }),
@@ -282,7 +297,7 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
           cooldown_sec: 180,
           updated_at_ms: 0,
           open_slot_count: 0,
-          channels: { webhook: false, telegram: false, bark: true },
+          channels: { bark: true },
           configured_targets: [],
           items: [],
         }),

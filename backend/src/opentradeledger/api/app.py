@@ -30,7 +30,7 @@ from opentradeledger.core.copy_watcher import (
 from opentradeledger.core.fx_rates import FxRateService
 from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.logo_cache import InstrumentLogos
-from opentradeledger.core.notifier import parse_bark_input
+from opentradeledger.core.notifier import bark_configured, parse_bark_input
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.sync_manager import SyncManager
 from opentradeledger.core.venue_health import VenueHealthTracker, humanize_exchange_error
@@ -521,8 +521,6 @@ def create_app(
         prefs["ai_api_key_set"] = bool(prefs.get("ai_api_key"))
         prefs["ai_api_key"] = ""
         notifs = prefs.get("notifications") or {}
-        notifs["telegram_bot_token_set"] = bool(notifs.get("telegram_bot_token"))
-        notifs["telegram_bot_token"] = ""
         notifs["bark_push_key_set"] = bool(notifs.get("bark_push_key"))
         notifs["bark_push_key"] = ""
         prefs["notifications"] = notifs
@@ -550,9 +548,8 @@ def create_app(
             n_patch["bark_server_url"] = norm_srv
             if norm_key:
                 n_patch["bark_push_key"] = norm_key
-            for sec_k in ("telegram_bot_token", "bark_push_key"):
-                if sec_k in n_patch and not str(n_patch[sec_k] or "").strip():
-                    n_patch.pop(sec_k, None)
+            else:
+                n_patch.pop("bark_push_key", None)
             patch = {**patch, "notifications": {**cur_notifs, **n_patch}}
         ledger_service.update_preferences(patch)
 
@@ -838,6 +835,8 @@ def create_app(
                 slot_alert=body.slot_alert,
                 trade_alert=body.trade_alert,
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"ok": True, **copy_watcher.get_status(demo_mode=False)}
@@ -853,19 +852,12 @@ def create_app(
         if body and isinstance(body.notifications, dict):
             _apply_settings_patch({"notifications": body.notifications})
         prefs = ledger_service.get_preferences()
-        n = prefs.notifications
-        _, clean_bark_key = parse_bark_input(n.bark_server_url, n.bark_push_key)
-        has_any_channel = bool(
-            n.webhook_url.strip()
-            or (n.telegram_bot_token.strip() and n.telegram_chat_id.strip())
-            or clean_bark_key
-        )
-        if not has_any_channel:
+        if not bark_configured(prefs.notifications):
             return JSONResponse(
                 status_code=400,
                 content={
-                    "detail": "No notification channel configured — enter your Bark Key/URL, Telegram, or Webhook first",
-                    "detail_zh": "尚未配置任何有效推送渠道，请先粘贴 Bark 推送链接/Key（或填写 Telegram / Webhook）后再点测试",
+                    "detail": "Configure a Bark device URL or key first",
+                    "detail_zh": "尚未配置 Bark，请先填写设备链接或 Key，再测试推送",
                 },
             )
         res = await copy_watcher.send_test_ring(portfolio_id=body.portfolio_id if body else "")

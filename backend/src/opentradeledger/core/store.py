@@ -313,6 +313,19 @@ class LedgerStore:
                     ON otl_venue_records(venue_id, stream, sort_ts);
                 """
             )
+            # Remove retired destinations without decrypting or rewriting other preferences.
+            conn.execute(
+                """
+                UPDATE otl_preferences
+                SET payload_json = json_remove(payload_json, '$.notifications.webhook_url',
+                    '$.notifications.telegram_bot_token', '$.notifications.telegram_chat_id')
+                WHERE id = 1 AND json_valid(payload_json) AND (
+                    json_type(payload_json, '$.notifications.webhook_url') IS NOT NULL OR
+                    json_type(payload_json, '$.notifications.telegram_bot_token') IS NOT NULL OR
+                    json_type(payload_json, '$.notifications.telegram_chat_id') IS NOT NULL
+                )
+                """
+            )
 
     def _migrate_legacy_tables_to_partitions(self) -> None:
         """Idempotently migrate any pre-existing SQLite records into isolated `venue_id` partitions."""
@@ -374,12 +387,8 @@ class LedgerStore:
                 if raw.get("ai_api_key"):
                     raw["ai_api_key"] = self._vault.decrypt_secret_str(str(raw["ai_api_key"]))
                 notifs = raw.get("notifications")
-                if isinstance(notifs, dict):
-                    notifs = dict(notifs)
-                    for k in ("webhook_url", "telegram_bot_token", "bark_push_key"):
-                        if notifs.get(k):
-                            notifs[k] = self._vault.decrypt_secret_str(str(notifs[k]))
-                    raw["notifications"] = notifs
+                if isinstance(notifs, dict) and notifs.get("bark_push_key"):
+                    notifs["bark_push_key"] = self._vault.decrypt_secret_str(str(notifs["bark_push_key"]))
             return UserPreferences.model_validate(raw)
         except Exception:
             return UserPreferences()
@@ -397,12 +406,8 @@ class LedgerStore:
         if disk_dict.get("ai_api_key"):
             disk_dict["ai_api_key"] = self._vault.encrypt_secret_str(str(disk_dict["ai_api_key"]))
         notifs = disk_dict.get("notifications")
-        if isinstance(notifs, dict):
-            notifs = dict(notifs)
-            for k in ("webhook_url", "telegram_bot_token", "bark_push_key"):
-                if notifs.get(k):
-                    notifs[k] = self._vault.encrypt_secret_str(str(notifs[k]))
-            disk_dict["notifications"] = notifs
+        if notifs and notifs.get("bark_push_key"):
+            notifs["bark_push_key"] = self._vault.encrypt_secret_str(str(notifs["bark_push_key"]))
         payload_str = json.dumps(disk_dict, ensure_ascii=False)
         with self._connect() as conn:
             conn.execute(

@@ -115,9 +115,6 @@ export function SettingsPage({
   const [aiModels, setAiModels] = useState<string[]>([])
   const [fetchingModels, setFetchingModels] = useState(false)
 
-  const [webhookUrl, setWebhookUrl] = useState(settings.notifications?.webhook_url || '')
-  const [tgToken, setTgToken] = useState('')
-  const [tgChat, setTgChat] = useState(settings.notifications?.telegram_chat_id || '')
   const [barkServerUrl, setBarkServerUrl] = useState(
     settings.notifications?.bark_server_url || 'https://api.day.app',
   )
@@ -208,8 +205,6 @@ export function SettingsPage({
     setGoalInput(String(settings.goal_target_usd ?? ''))
     setAiUrl(settings.ai_base_url || '')
     setAiModel(settings.ai_model || '')
-    setWebhookUrl(settings.notifications?.webhook_url || '')
-    setTgChat(settings.notifications?.telegram_chat_id || '')
     setBarkServerUrl(settings.notifications?.bark_server_url || 'https://api.day.app')
     setOutboundProxyUrl(settings.outbound_proxy_url || '')
   }, [
@@ -218,8 +213,6 @@ export function SettingsPage({
     settings.ai_base_url,
     settings.ai_model,
     settings.outbound_proxy_url,
-    settings.notifications?.webhook_url,
-    settings.notifications?.telegram_chat_id,
     settings.notifications?.bark_server_url,
   ])
 
@@ -1357,7 +1350,7 @@ export function SettingsPage({
             </div>
           </div>
 
-          {/* Multi-Channel Notifications (Webhook / Telegram / Bark) */}
+          {/* Bark notifications */}
           <div data-testid="notifications-card" className="otl-card p-5 space-y-3.5">
             <div>
               <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('set_notify_title')}</h3>
@@ -1433,41 +1426,6 @@ export function SettingsPage({
               </div>
             </div>
 
-            <div className="space-y-2 pt-1 border-t border-[var(--border)]">
-              <div className="text-[11.5px] font-medium text-[var(--fg-3)]">
-                {isZh ? '其他渠道（可选：Telegram 机器人 / Webhook）' : 'Other Channels (Optional: Telegram / Webhook)'}
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="password"
-                  value={tgToken}
-                  onChange={e => setTgToken(e.target.value)}
-                  placeholder={
-                    settings.notifications?.telegram_bot_token_set
-                      ? isZh
-                        ? 'Telegram Token（已保存）'
-                        : 'Bot Token (configured)'
-                      : 'Telegram Bot Token'
-                  }
-                  className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                />
-                <input
-                  type="text"
-                  value={tgChat}
-                  onChange={e => setTgChat(e.target.value)}
-                  placeholder="Telegram Chat ID"
-                  className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                />
-              </div>
-              <input
-                type="text"
-                value={webhookUrl}
-                onChange={e => setWebhookUrl(e.target.value)}
-                placeholder="Webhook URL (https://...)"
-                className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-              />
-            </div>
-
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
@@ -1478,9 +1436,6 @@ export function SettingsPage({
                   setErrorMsg('')
                   try {
                     const pendingNotifications = {
-                      webhook_url: webhookUrl.trim(),
-                      telegram_bot_token: tgToken.trim(),
-                      telegram_chat_id: tgChat.trim(),
                       bark_server_url: barkServerUrl.trim() || 'https://api.day.app',
                       bark_push_key: barkKey.trim(),
                     }
@@ -1489,7 +1444,6 @@ export function SettingsPage({
                       setBarkServerUrl(res.settings.notifications?.bark_server_url || 'https://api.day.app')
                       await onUpdateSettings({})
                     }
-                    setTgToken('')
                     setBarkKey('')
                     const sentList = (res.sent || []).join(', ')
                     flashOk(
@@ -1513,14 +1467,10 @@ export function SettingsPage({
                 onClick={async () => {
                   await onUpdateSettings({
                     notifications: {
-                      webhook_url: webhookUrl,
-                      telegram_bot_token: tgToken,
-                      telegram_chat_id: tgChat,
                       bark_server_url: barkServerUrl.trim() || 'https://api.day.app',
                       bark_push_key: barkKey,
                     },
                   })
-                  setTgToken('')
                   setBarkKey('')
                   flashOk(t('set_save_ok'), 2500)
                 }}
