@@ -39,6 +39,7 @@ interface SettingsPageProps {
   settings: UserSettings
   adapters: ExchangeAdapterInfo[]
   demoMode: boolean
+  previewFallback?: boolean
   authStatus?: AuthStatusPayload
   onAuthChanged?: (next: AuthStatusPayload) => void
   onLockNow?: () => Promise<void>
@@ -75,6 +76,7 @@ export function SettingsPage({
   settings,
   adapters,
   demoMode,
+  previewFallback = false,
   authStatus,
   onAuthChanged,
   onLockNow,
@@ -1226,7 +1228,13 @@ export function SettingsPage({
             <div className="pt-3 border-t border-[var(--border)] flex items-center justify-between gap-3">
               <div>
                 <div className="text-[12.5px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
-                <div className="text-[11.5px] text-[var(--fg-3)]">{t('set_demo_sub')}</div>
+                <div className="text-[11.5px] text-[var(--fg-3)]">
+                  {previewFallback
+                    ? isZh
+                      ? '已切换为实盘模式（接入首个只读交易所 API 后，示例预览将自动替换为真实账单）'
+                      : 'Live mode active (sample preview shown until your first read-only exchange API is added)'
+                    : t('set_demo_sub')}
+                </div>
               </div>
               <button
                 type="button"

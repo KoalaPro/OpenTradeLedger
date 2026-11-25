@@ -275,7 +275,7 @@ class LedgerService:
         latest_ai = self.store.load_latest_ai_review(range_key=range_key)
         use_demo = force_demo if force_demo is not None else self.is_demo_active()
         if use_demo:
-            return build_demo_dashboard(
+            payload = build_demo_dashboard(
                 range_key=range_key,
                 venue_filter=venue_filter,
                 symbol_filter=symbol_filter,
@@ -283,7 +283,10 @@ class LedgerService:
                 journals=journals,
                 latest_ai_review=latest_ai,
             )
-        return self._build_live_dashboard(
+            payload["explicit_demo_mode"] = bool(self.demo_mode)
+            payload["has_live_data"] = self.has_live_data()
+            return payload
+        live_payload = self._build_live_dashboard(
             range_key=range_key,
             venue_filter=venue_filter,
             symbol_filter=symbol_filter,
@@ -291,6 +294,9 @@ class LedgerService:
             journals=journals,
             latest_ai_review=latest_ai,
         )
+        live_payload["explicit_demo_mode"] = bool(self.demo_mode)
+        live_payload["has_live_data"] = True
+        return live_payload
 
     def _build_live_dashboard(
         self,

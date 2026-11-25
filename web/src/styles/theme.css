@@ -506,9 +506,31 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 .otl-toast-card {
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   animation: otlToastIn 260ms var(--ease-spring) both;
+}
+
+.otl-toast-card.otl-status-ok {
+  background: rgba(13, 35, 30, 0.95);
+  border-color: rgba(16, 185, 129, 0.42);
+  color: #34d399;
+}
+:root[data-theme="light"] .otl-toast-card.otl-status-ok {
+  background: rgba(236, 253, 245, 0.97);
+  border-color: rgba(5, 150, 105, 0.35);
+  color: #047857;
+}
+
+.otl-toast-card.otl-status-err {
+  background: rgba(42, 16, 22, 0.95);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+}
+:root[data-theme="light"] .otl-toast-card.otl-status-err {
+  background: rgba(254, 242, 242, 0.97);
+  border-color: rgba(220, 38, 38, 0.35);
+  color: #b91c1c;
 }
 
 .otl-toast-card.closing {

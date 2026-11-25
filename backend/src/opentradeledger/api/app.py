@@ -707,7 +707,11 @@ def create_app(
     @app.post("/api/v1/demo")
     async def set_demo_mode(body: DemoToggleRequest) -> dict[str, Any]:
         ledger_service.set_demo_mode(body.enabled)
-        return {"ok": True, "demo_mode": ledger_service.is_demo_active()}
+        return {
+            "ok": True,
+            "demo_mode": ledger_service.is_demo_active(),
+            "explicit_demo_mode": bool(ledger_service.demo_mode),
+        }
 
     @app.post("/api/v1/ai-review")
     async def run_ai_review(body: AiReviewRequest | None = None) -> dict[str, Any]:

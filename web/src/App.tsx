@@ -486,7 +486,14 @@ export default function App() {
                       <SettingsPage
                         settings={settings}
                         adapters={adapters}
-                        demoMode={Boolean(data.demo_mode)}
+                        demoMode={Boolean(
+                          (data as DashboardData & { explicit_demo_mode?: boolean }).explicit_demo_mode ??
+                            data.demo_mode,
+                        )}
+                        previewFallback={Boolean(
+                          data.demo_mode &&
+                            (data as DashboardData & { explicit_demo_mode?: boolean }).explicit_demo_mode === false,
+                        )}
                         authStatus={authStatus}
                         onAuthChanged={setAuthStatus}
                         onLockNow={handleLockLedger}

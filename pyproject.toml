@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opentradeledger"
-version = "1.3.3"
+version = "1.3.4"
 description = "Local-first, read-only multi-exchange trade ledger with per-leg fee/rebate accounting and closed-loop reconciliation."
 readme = "README.md"
 license = { text = "MIT" }
