@@ -535,7 +535,7 @@ def build_spot_holdings_list(
         if explicit_usd > 0 and px <= 0:
             px = explicit_usd / qty
         val = explicit_usd if explicit_usd > 0 else (qty * px)
-        if val < 1.0:
+        if val < 0.01:
             continue
         if asset not in agg:
             agg[asset] = {

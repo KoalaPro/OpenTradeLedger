@@ -470,7 +470,7 @@ async def generate_ai_review(
             "open_positions_count": len(ctx["open_positions"]),
             "spot_holdings_count": len(ctx["spot_holdings"]),
             "has_copy_trading": bool(ctx["copy_trading"].get("invested_usd")),
-            "has_stocks": bool(ctx["stocks"].get("equity_usd") or ctx["stocks"].get("perps_count")),
+            "has_stocks": bool(ctx["stocks"].get("equity_usd") or ctx["stocks"].get("holdings_count")),
             "excluded_secrets": ["API Key / Secret / Passphrase", "Exchange UID", "Wallet Addresses"],
         }
         return {

@@ -35,8 +35,8 @@ export const en: Record<MessageKey, string> = {
   ov_manage_accounts: 'Manage',
   ov_reconcile_title: 'Closed-Loop Reconciliation',
   ov_reconcile_sub: 'Net Principal + Attributed PnL = Live Total Equity',
-  ov_open_positions: 'Open Positions',
-  ov_no_open_positions: 'No open futures positions',
+  ov_open_positions: 'Current Holdings',
+  ov_no_open_positions: 'No active futures, equity, or spot holdings',
 
   th_symbol: 'Symbol',
   th_venue: 'Venue',

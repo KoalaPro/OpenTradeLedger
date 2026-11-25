@@ -302,7 +302,8 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
     fireEvent.click(screen.getByTestId('ext-tab-copy'))
     await waitFor(() => expect(screen.getByTestId('copy-rebates-fullwidth')).toBeTruthy())
     fireEvent.click(screen.getByTestId('ext-tab-stock'))
-    expect(screen.getByTestId('stock-perps-fullwidth').textContent).toContain('SNDK_USDT')
+    await waitFor(() => expect(screen.getByTestId('stock-module-view')).toBeTruthy())
+    expect(screen.queryByTestId('stock-perps-fullwidth')).toBeNull()
 
     // Settings page shows OKX & Bybit adapters and toggles locale & privacy
     fireEvent.click(screen.getByTestId('nav-settings'))

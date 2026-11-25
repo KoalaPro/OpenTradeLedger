@@ -9,7 +9,18 @@ import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
 import { fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
-import type { DashboardData, ExtensionSubTab, NavPage } from '../lib/types'
+import type { DashboardData, ExtensionSubTab, NavPage, SpotHolding } from '../lib/types'
+
+type StockHoldingItem = DashboardData['extensions']['stocks']['holdings'][number]
+
+function formatWalletType(wt: string, isEn: boolean): string {
+  const u = (wt || '').trim().toUpperCase()
+  if (u === 'UNIFIED') return isEn ? 'Unified Account' : '统一账户'
+  if (u === 'SPOT') return isEn ? 'Spot Account' : '现货账户'
+  if (u === 'FUNDING') return isEn ? 'Funding Account' : '资金账户'
+  if (u === 'EARN' || u === 'SAVINGS' || u === 'FINANCE') return isEn ? 'Earn / Savings' : '理财账户'
+  return wt || (isEn ? 'Spot' : '现货')
+}
 
 const BAR_COLORS: Record<string, string> = {
   binance: '#f6cd76',
@@ -23,16 +34,20 @@ const BAR_COLORS: Record<string, string> = {
 
 export function OverviewPage({
   data,
+  enableStockTab = false,
   onNavigate,
   onInspectSymbol,
 }: {
   data: DashboardData
+  enableStockTab?: boolean
   onNavigate: (page: NavPage, extTab?: ExtensionSubTab) => void
   onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
   const [openModal, setOpenModal] = useState<null | 'equity' | 'reconcile'>(null)
+  const [selectedStock, setSelectedStock] = useState<StockHoldingItem | null>(null)
+  const [selectedSpot, setSelectedSpot] = useState<SpotHolding | null>(null)
   const [holdingTab, setHoldingTab] = useState<'all' | 'futures' | 'stocks' | 'spot'>('all')
   const [barsReady, setBarsReady] = useState(false)
 
@@ -563,7 +578,7 @@ export function OverviewPage({
                     <tr
                       key={`stk-${h.venue_id}-${h.symbol}`}
                       className="clickable"
-                      onClick={() => onNavigate('extensions', 'stock')}
+                      onClick={() => setSelectedStock(h)}
                     >
                       <td className="whitespace-nowrap">
                         <span className="inline-flex items-center gap-2 font-semibold">
@@ -601,7 +616,11 @@ export function OverviewPage({
                   spotList.map(sp => {
                     const weightPct = s.total_equity_usd > 0 ? (sp.market_value_usd / s.total_equity_usd) * 100 : 0
                     return (
-                      <tr key={`spot-${sp.venue_id}-${sp.asset}`}>
+                      <tr
+                        key={`spot-${sp.venue_id}-${sp.asset}`}
+                        className="clickable"
+                        onClick={() => setSelectedSpot(sp)}
+                      >
                         <td className="whitespace-nowrap">
                           <span className="inline-flex items-center gap-2 font-semibold">
                             <InstrumentMark instrument={`${sp.asset}_USDT`} exchange={sp.venue_id.toUpperCase()} />
@@ -633,6 +652,257 @@ export function OverviewPage({
           </div>
         )}
       </section>
+
+      {/* Stock / Tokenized Equity Detail Modal */}
+      <FloatingModal
+        open={selectedStock !== null}
+        onClose={() => setSelectedStock(null)}
+        testId="stock-holding-detail-modal"
+        maxWidthClass="max-w-[660px]"
+        title={
+          selectedStock
+            ? `${selectedStock.symbol}${
+                selectedStock.name && selectedStock.name !== selectedStock.symbol ? ` · ${selectedStock.name}` : ''
+              }`
+            : ''
+        }
+        subtitle={
+          selectedStock ? (
+            <span className="inline-flex items-center gap-2 flex-wrap">
+              <VenueBadge
+                venueId={selectedStock.venue_id}
+                name={locale === 'en' ? selectedStock.venue_name : selectedStock.venue_name_zh || selectedStock.venue_name}
+              />
+              <span
+                className="px-2 py-0.5 rounded text-[11px] font-semibold"
+                style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+              >
+                {locale === 'en' ? selectedStock.channel : selectedStock.channel_zh}
+              </span>
+            </span>
+          ) : undefined
+        }
+      >
+        {selectedStock && (() => {
+          const stkWeightPct = s.total_equity_usd > 0 ? (selectedStock.market_value_usd / s.total_equity_usd) * 100 : 0
+          const venueRate = data.extensions?.stocks?.venue_fee_rates?.find(
+            r => r.venue_id.toLowerCase() === selectedStock.venue_id.toLowerCase(),
+          )
+          const relatedLedger = (data.extensions?.stocks?.cash_ledger || []).filter(
+            tx =>
+              tx.venue_id.toLowerCase() === selectedStock.venue_id.toLowerCase() &&
+              (tx.symbol === selectedStock.symbol || tx.symbol === 'USDT' || !tx.symbol),
+          )
+          return (
+            <div className="p-5 space-y-4 text-[12.5px]">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Shares / Qty' : '持仓数量'}</div>
+                  <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">{selectedStock.shares}</div>
+                </div>
+                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Market Value' : '实时市值'}</div>
+                  <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">
+                    {cur.money(selectedStock.market_value_usd)}
+                  </div>
+                  <div className="text-[11px] text-[var(--fg-3)]">
+                    {locale === 'en' ? `${stkWeightPct.toFixed(2)}% of total` : `占总净资产 ${stkWeightPct.toFixed(2)}%`}
+                  </div>
+                </div>
+                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Avg Cost → Live' : '均价 → 现价'}</div>
+                  <div className="text-[13.5px] font-semibold text-[var(--fg)]">
+                    {fmtPrice(selectedStock.avg_cost_usd)} → {fmtPrice(selectedStock.current_price_usd)}
+                  </div>
+                </div>
+                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Unrealized PnL' : '持仓浮盈亏'}</div>
+                  <div className={`text-[15px] font-semibold sensitive ${pnlTone(selectedStock.pnl_usd)}`}>
+                    {cur.signedMoney(selectedStock.pnl_usd)} ({fmtSignedPct(selectedStock.pnl_pct)})
+                  </div>
+                  {venueRate && (
+                    <div className="text-[11px] text-[var(--fg-3)]">
+                      {locale === 'en'
+                        ? `Fee: ${venueRate.summary}`
+                        : `费率：${venueRate.summary_zh || venueRate.summary}`}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {relatedLedger.length > 0 && (
+                <div className="border border-[var(--border)] rounded-xl overflow-hidden">
+                  <div className="px-4 py-2.5 bg-[var(--surface-2)] border-b border-[var(--border)] text-[12px] font-semibold text-[var(--fg)]">
+                    {locale === 'en' ? 'Subscription & Cash Ledger' : '关联认购与资金交割流水'}
+                  </div>
+                  <div className="overflow-x-auto max-h-52">
+                    <table className="otl-table">
+                      <thead>
+                        <tr>
+                          <th>{t('th_time')}</th>
+                          <th>{locale === 'en' ? 'Event' : '类型'}</th>
+                          <th>{t('th_symbol')}</th>
+                          <th className="text-right">{t('th_change')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {relatedLedger.map((tx, idx) => (
+                          <tr key={idx}>
+                            <td className="whitespace-nowrap text-[var(--fg-2)]">{tx.time_str}</td>
+                            <td>{locale === 'en' ? tx.type : tx.type_zh || tx.type}</td>
+                            <td className="font-medium whitespace-nowrap">{tx.symbol}</td>
+                            <td className="text-right font-semibold whitespace-nowrap sensitive">
+                              {cur.convertText(tx.change)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {enableStockTab && (
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    data-testid="stock-detail-open-ext-btn"
+                    onClick={() => {
+                      setSelectedStock(null)
+                      onNavigate('extensions', 'stock')
+                    }}
+                    className="h-8 px-3.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                  >
+                    {locale === 'en' ? 'Open Equities Account →' : '查看完整股票与代币专账 →'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })()}
+      </FloatingModal>
+
+      {/* Spot Holding Detail Modal */}
+      <FloatingModal
+        open={selectedSpot !== null}
+        onClose={() => setSelectedSpot(null)}
+        testId="spot-holding-detail-modal"
+        maxWidthClass="max-w-[640px]"
+        title={
+          selectedSpot
+            ? locale === 'en'
+              ? `${selectedSpot.asset} · Spot Holding`
+              : `${selectedSpot.asset} · 现货资产明细`
+            : ''
+        }
+        subtitle={
+          selectedSpot ? (
+            <span className="inline-flex items-center gap-2 flex-wrap">
+              <VenueBadge venueId={selectedSpot.venue_id} name={selectedSpot.venue_name} />
+              <span className="px-2 py-0.5 rounded text-[11px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)]">
+                {formatWalletType(selectedSpot.wallet_type, locale === 'en')}
+              </span>
+            </span>
+          ) : undefined
+        }
+      >
+        {selectedSpot && (() => {
+          const spWeightPct = s.total_equity_usd > 0 ? (selectedSpot.market_value_usd / s.total_equity_usd) * 100 : 0
+          const listedSpotSum = spotList.reduce((acc, item) => acc + item.market_value_usd, 0)
+          const idleCashAndDust = Math.max(0, spotTotalVal - listedSpotSum)
+          return (
+            <div className="p-5 space-y-4 text-[12.5px]">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Quantity' : '持仓数量'}</div>
+                  <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">
+                    {selectedSpot.qty} {selectedSpot.asset}
+                  </div>
+                </div>
+                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Market Value' : '折合市值'}</div>
+                  <div className="text-[15px] font-semibold text-[var(--fg)] sensitive">
+                    {cur.money(selectedSpot.market_value_usd)}
+                  </div>
+                </div>
+                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Reference Price' : '实时参考单价'}</div>
+                  <div className="text-[14px] font-semibold text-[var(--fg)]">
+                    {selectedSpot.price_usd > 0 ? fmtPrice(selectedSpot.price_usd) : '—'}
+                  </div>
+                </div>
+                <div className="otl-surface-2 rounded-lg p-3 space-y-1">
+                  <div className="text-[11px] text-[var(--fg-3)]">{locale === 'en' ? 'Portfolio Share' : '占总净资产'}</div>
+                  <div className="text-[15px] font-semibold text-[var(--fg)]">{spWeightPct.toFixed(2)}%</div>
+                </div>
+              </div>
+
+              <div className="border border-[var(--border)] rounded-xl overflow-hidden">
+                <div className="px-4 py-2.5 bg-[var(--surface-2)] border-b border-[var(--border)] flex items-center justify-between gap-2 text-[12px]">
+                  <span className="font-semibold text-[var(--fg)]">
+                    {locale === 'en' ? 'All Spot, Earn & Dust Assets' : '全账户现货、理财与尾仓构成'}
+                  </span>
+                  <span className="text-[var(--fg-2)] sensitive">
+                    {locale === 'en' ? 'Total' : '合计'} {cur.money(spotTotalVal)}
+                  </span>
+                </div>
+                <div className="overflow-x-auto max-h-56">
+                  <table className="otl-table">
+                    <thead>
+                      <tr>
+                        <th>{locale === 'en' ? 'Asset' : '币种 / 项目'}</th>
+                        <th>{t('th_venue')}</th>
+                        <th>{locale === 'en' ? 'Account' : '所在账户'}</th>
+                        <th className="text-right">{locale === 'en' ? 'Qty' : '数量'}</th>
+                        <th className="text-right">{locale === 'en' ? 'Value' : '估值'}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {spotList.map(item => (
+                        <tr
+                          key={`${item.venue_id}-${item.asset}`}
+                          className={
+                            item.venue_id === selectedSpot.venue_id && item.asset === selectedSpot.asset
+                              ? 'bg-[var(--accent-soft)]'
+                              : undefined
+                          }
+                        >
+                          <td className="font-semibold whitespace-nowrap">{item.asset}</td>
+                          <td>
+                            <VenueBadge venueId={item.venue_id} name={item.venue_name} />
+                          </td>
+                          <td className="text-[var(--fg-2)] whitespace-nowrap">
+                            {formatWalletType(item.wallet_type, locale === 'en')}
+                          </td>
+                          <td className="text-right whitespace-nowrap sensitive">{item.qty}</td>
+                          <td className="text-right font-semibold whitespace-nowrap sensitive">
+                            {cur.money(item.market_value_usd)}
+                          </td>
+                        </tr>
+                      ))}
+                      {idleCashAndDust >= 0.01 && (
+                        <tr>
+                          <td className="text-[var(--fg-2)] whitespace-nowrap">
+                            {locale === 'en' ? 'Idle Stablecoin / Earn & Sub-cent Dust' : '现货/理财闲置稳定币及微额尾仓'}
+                          </td>
+                          <td className="text-[var(--fg-3)]">—</td>
+                          <td className="text-[var(--fg-3)]">
+                            {locale === 'en' ? 'Spot / Earn' : '现货与理财'}
+                          </td>
+                          <td className="text-right text-[var(--fg-3)]">—</td>
+                          <td className="text-right font-medium whitespace-nowrap sensitive">
+                            {cur.money(idleCashAndDust)}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+      </FloatingModal>
     </div>
   )
 }

@@ -452,12 +452,14 @@ describe('Audit Bugfixes: Calendar, Add-Account Modal, Privacy, Currency, Drafts
     // 1. No double currency code "-HK$2,340.00 HKD" on overview curve headline
     expect(screen.getByTestId('overview-page').textContent).not.toMatch(/HK\$[\d,.]+\s+HKD/)
 
-    // 2. Clicking ANT stock row jumps directly to Extensions -> Stock tab (not Copy tab!) and shows empty perps hint
+    // 2. Clicking ANT stock row opens Stock Holding Detail modal on Overview, and optional button navigates to Stock tab
     fireEvent.click(screen.getByText('ANT'))
+    const stkModal = await screen.findByTestId('stock-holding-detail-modal')
+    expect(stkModal.textContent).not.toMatch(/HK\$[\d,.]+\s+HKD/)
+    fireEvent.click(screen.getByTestId('stock-detail-open-ext-btn'))
     await waitFor(() => expect(screen.getByTestId('stock-module-view')).toBeTruthy())
     expect(window.location.hash).toBe('#/extensions/stock')
     expect(screen.getByTestId('stock-module-view').textContent).not.toMatch(/HK\$[\d,.]+\s+HKD/)
-    expect(screen.getByTestId('stock-perps-empty')).toBeTruthy()
 
     // 3. Copy trading floating PnL subtitle has .sensitive class
     fireEvent.click(screen.getByTestId('ext-tab-copy'))

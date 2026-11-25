@@ -189,6 +189,9 @@ async def test_copy_watcher_readding_existing_target_preserves_disabled_toggles(
     mock_http = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
     try:
         store = LedgerStore(tmp_path)
+        prefs = store.get_preferences()
+        prefs.notifications.bark_push_key = "bark_test_key"
+        store.save_preferences(prefs)
         watcher = CopyWatcherService(store=store, http_client=mock_http)
         await watcher.add_targets(pid, slot_alert=True, trade_alert=True)
         watcher.update_target(pid, enabled=False, slot_alert=False, trade_alert=False)

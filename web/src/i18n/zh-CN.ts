@@ -34,7 +34,7 @@ export const zhCN = {
   ov_reconcile_title: '全账户闭环对账',
   ov_reconcile_sub: '净投入本金 + 归因项净贡献 = 当前实时总资产',
   ov_open_positions: '当前持仓',
-  ov_no_open_positions: '当前无在途合约持仓',
+  ov_no_open_positions: '当前无合约、正股或非U现货持仓',
 
   th_symbol: '标的',
   th_venue: '平台',

@@ -336,6 +336,17 @@ export default function App() {
 
   const showExtensions =
     settings.modules.copy_watcher !== false || settings.modules.copy_trading || settings.modules.stocks
+  const effectivePage: NavPage = page === 'extensions' && !showExtensions ? 'overview' : page
+
+  useEffect(() => {
+    if (page === 'extensions' && !showExtensions) {
+      setPage('overview')
+      if (typeof window !== 'undefined' && window.location.hash.startsWith('#/extensions')) {
+        window.location.hash = '#/overview'
+      }
+    }
+  }, [page, showExtensions])
+
   const activeCurrency: CurrencyCode = settings.display_currency || 'USDT'
 
   return (
@@ -417,15 +428,16 @@ export default function App() {
                 {!data ? (
                   <div className="py-20 text-center text-[13px] text-[var(--fg-3)]">Loading…</div>
                 ) : (
-                  <div key={page} className="otl-page-enter">
-                    {page === 'overview' && (
+                  <div key={effectivePage} className="otl-page-enter">
+                    {effectivePage === 'overview' && (
                       <OverviewPage
                         data={data}
+                        enableStockTab={Boolean(settings.modules.stocks)}
                         onNavigate={navigateTo}
                         onInspectSymbol={handleInspectSymbol}
                       />
                     )}
-                    {page === 'trades' && (
+                    {effectivePage === 'trades' && (
                       <TradesPage
                         data={data}
                         venueFilter={venueFilter}
@@ -435,7 +447,7 @@ export default function App() {
                         onSaveJournal={handleSaveJournal}
                       />
                     )}
-                    {page === 'analytics' && (
+                    {effectivePage === 'analytics' && (
                       <AnalyticsPage
                         data={data}
                         rangeKey={rangeKey}
@@ -445,7 +457,7 @@ export default function App() {
                         onUpdateSettings={handleUpdateSettings}
                       />
                     )}
-                    {page === 'fees' && (
+                    {effectivePage === 'fees' && (
                       <FeesAiPage
                         data={data}
                         settings={settings}
@@ -454,7 +466,7 @@ export default function App() {
                         onGoConfigureAi={() => navigateTo('settings')}
                       />
                     )}
-                    {page === 'extensions' && showExtensions && (
+                    {effectivePage === 'extensions' && showExtensions && (
                       <ExtensionsPage
                         data={data}
                         enableWatcher={settings.modules.copy_watcher !== false}
@@ -482,7 +494,7 @@ export default function App() {
                         }}
                       />
                     )}
-                    {page === 'settings' && (
+                    {effectivePage === 'settings' && (
                       <SettingsPage
                         settings={settings}
                         adapters={adapters}
