@@ -28,9 +28,6 @@ const baseSettings: UserSettings = {
   copy_watcher_targets: [],
   modules: { copy_trading: true, stocks: true },
   notifications: {
-    webhook_url: '',
-    telegram_bot_token: '',
-    telegram_chat_id: '',
     bark_server_url: 'https://api.day.app',
     bark_push_key: '',
   },

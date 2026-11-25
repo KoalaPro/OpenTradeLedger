@@ -90,6 +90,8 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
     return () => window.clearInterval(timer)
   }, [fetchStatus])
 
+  const hasBark = Boolean(status?.channels?.bark)
+
   const handleAdd = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
     if (!rawInput.trim() || adding) return
@@ -99,7 +101,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
     setAdding(true)
     setFeedback(null)
     try {
-      const res = await api.addCopyWatcherTargets(rawInput.trim(), newSlotAlert, newTradeAlert)
+      const res = await api.addCopyWatcherTargets(rawInput.trim(), hasBark && newSlotAlert, hasBark && newTradeAlert)
       setStatus(res)
       setRawInput('')
       if (!userToggledGuide) setGuideOpen(false)
@@ -109,15 +111,15 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
         flash(
           'ok',
           isZh
-            ? '该带单员已在盯盘列表中：已刷新最新快照，并完整保留你原有的监控、响铃与推送开关设置'
-            : 'Already in watch list: refreshed snapshot and preserved your existing alert & monitoring toggles',
+            ? '盯盘目标已保存：已刷新最新快照，并完整保留你原有的监控、响铃与推送开关设置'
+            : 'Watch target saved: refreshed snapshot and preserved your existing alert & monitoring toggles',
         )
       } else {
         flash(
           'ok',
           isZh
-            ? `带单员添加成功！已接入后台 ${slotSec} 秒空位扫描与 ${tradeSec} 秒持仓推算雷达`
-            : `Lead trader added to ${slotSec}s slot & ${tradeSec}s position radar`,
+            ? `盯盘目标已保存！已接入后台 ${slotSec} 秒空位扫描与 ${tradeSec} 秒持仓推算雷达`
+            : `Watch target saved · Active on ${slotSec}s slot & ${tradeSec}s position radar`,
         )
       }
     } catch (err) {
@@ -242,15 +244,12 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
     }
   }
 
-  const hasAnyPushChannel = Boolean(
-    status?.channels?.bark || status?.channels?.telegram || status?.channels?.webhook,
-  )
   const items = status?.items || []
 
   return (
     <div data-testid="public-watcher-view" className="otl-panel-swap space-y-4">
       {/* Unconfigured Bark/Push Reminder Banner */}
-      {status && !status.demo_mode && !hasAnyPushChannel && (
+      {status && !hasBark && (
         <div
           data-testid="watcher-bark-unconfigured-banner"
           className="px-4 py-3 rounded-xl flex flex-wrap items-center justify-between gap-3 text-[12.5px]"
@@ -264,8 +263,8 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
             <Bell size={15} className="text-[var(--warn)] shrink-0" />
             <span>
               {isZh
-                ? '尚未配置手机推送通知：建议先配置 iPhone Bark（或 Telegram），当满员带单员空出车位或新开平仓时可立即响铃通知手机。'
-                : 'No push channel configured yet: set up Bark (iOS) or Telegram in Settings to receive instant slot & trade alerts.'}
+                ? '尚未配置 Bark。盯盘可正常使用，仅在页面更新，手机不会收到空位或调仓提醒。'
+                : 'Bark is not configured. You can monitor traders on this page. Configure Bark to receive slot and trade alerts on your phone.'}
             </span>
           </div>
           {onGoConfigureBark && (
@@ -276,7 +275,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
               className="h-7 px-3 rounded-lg text-[12px] font-semibold cursor-pointer whitespace-nowrap"
               style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
             >
-              {isZh ? '去配置 Bark 推送 →' : 'Configure Push →'}
+              {isZh ? '去配置 Bark 推送 →' : 'Configure Bark →'}
             </button>
           )}
         </div>
@@ -475,7 +474,8 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
               <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={newSlotAlert}
+                  disabled={!hasBark}
+                  checked={hasBark && newSlotAlert}
                   onChange={e => setNewSlotAlert(e.target.checked)}
                 />
                 <span>
@@ -487,7 +487,8 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
               <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={newTradeAlert}
+                  disabled={!hasBark}
+                  checked={hasBark && newTradeAlert}
                   onChange={e => setNewTradeAlert(e.target.checked)}
                 />
                 <span>
@@ -729,16 +730,20 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                   {/* Per-Target Granular Switches & Actions */}
                   {!status?.demo_mode && (
                     <div className="flex flex-wrap items-center gap-3 text-[12px]">
+                      {!hasBark && (
+                        <span className="text-[var(--fg-3)]">{isZh ? '手机提醒待配置' : 'Set up Bark for mobile alerts'}</span>
+                      )}
                       <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-[var(--fg-2)]">
                         <span>{isZh ? '空位响铃' : 'Slot Alarm'}</span>
                         <button
                           type="button"
                           role="switch"
                           aria-label={isZh ? '空位响铃' : 'Slot Alarm'}
-                          aria-checked={item.slot_alert}
+                          disabled={!hasBark}
+                          aria-checked={hasBark && item.slot_alert}
                           data-testid={`toggle-slot-alert-${item.portfolio_id}`}
                           onClick={() => void handlePatch(item, { slot_alert: !item.slot_alert })}
-                          className="otl-switch"
+                          className="otl-switch disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <span className="otl-switch-knob" />
                         </button>
@@ -750,10 +755,11 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                           type="button"
                           role="switch"
                           aria-label={isZh ? '调仓推送' : 'Trade Chime'}
-                          aria-checked={item.trade_alert}
+                          disabled={!hasBark}
+                          aria-checked={hasBark && item.trade_alert}
                           data-testid={`toggle-trade-alert-${item.portfolio_id}`}
                           onClick={() => void handlePatch(item, { trade_alert: !item.trade_alert })}
-                          className="otl-switch"
+                          className="otl-switch disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <span className="otl-switch-knob" />
                         </button>
@@ -777,7 +783,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                       <button
                         type="button"
                         data-testid={`test-ring-${item.portfolio_id}`}
-                        disabled={testingId === item.portfolio_id}
+                        disabled={!hasBark || testingId === item.portfolio_id}
                         onClick={() => void handleTestRing(item.portfolio_id)}
                         className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
                       >

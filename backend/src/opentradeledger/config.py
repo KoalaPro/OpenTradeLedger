@@ -16,9 +16,6 @@ class ModuleSettings(BaseModel):
 
 
 class NotificationSettings(BaseModel):
-    webhook_url: str = ""
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
     bark_server_url: str = "https://api.day.app"
     bark_push_key: str = ""
 

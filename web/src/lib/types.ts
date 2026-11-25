@@ -484,8 +484,6 @@ export interface CopyWatcherStatusPayload {
   last_error_zh?: string
   open_slot_count: number
   channels: {
-    webhook: boolean
-    telegram: boolean
     bark: boolean
   }
   configured_targets: string[]
@@ -517,10 +515,6 @@ export interface UserSettings {
     stocks: boolean
   }
   notifications: {
-    webhook_url: string
-    telegram_bot_token: string
-    telegram_bot_token_set?: boolean
-    telegram_chat_id: string
     bark_server_url: string
     bark_push_key: string
     bark_push_key_set?: boolean

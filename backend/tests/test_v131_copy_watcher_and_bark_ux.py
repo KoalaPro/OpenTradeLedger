@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from opentradeledger.core.notifier import dispatch_notification, parse_bark_inpu
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.venue_health import humanize_exchange_error
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
+from opentradeledger.security.vault import CredentialVault
 
 
 def test_parse_bark_input_handles_plain_key_and_full_app_urls():
@@ -249,6 +251,7 @@ def test_api_copy_watcher_demo_and_save_on_test_notify(tmp_path: Path):
         assert r_demo.status_code == 200
         body = r_demo.json()
         assert body["demo_mode"] is True
+        assert body["channels"] == {"bark": False}
         assert len(body["items"]) >= 2
         assert any(it["has_open_slot"] for it in body["items"])
 
@@ -303,3 +306,98 @@ def test_copy_watcher_custom_polling_intervals_and_validation(tmp_path: Path):
         assert prefs["watcher_trade_interval_sec"] == 20
         assert prefs["watcher_cooldown_sec"] == 120
 
+
+@pytest.mark.parametrize("with_bark", [False, True])
+def test_legacy_notification_settings_migrate_to_bark_only(tmp_path: Path, with_bark: bool):
+    store = LedgerStore(tmp_path)
+    old = {
+        "webhook_url": "https://old.example.test/hooks/fixture",
+        "telegram_bot_token": "retired-token",
+        "telegram_chat_id": "123",
+    }
+    prefs = store.get_preferences()
+    prefs.locale = "en"
+    if with_bark:
+        prefs.notifications.bark_push_key = "saved-device"
+    store.save_preferences(prefs)
+    with sqlite3.connect(store.db_path) as conn:
+        raw = json.loads(conn.execute("SELECT payload_json FROM otl_preferences").fetchone()[0])
+        retired_fields = dict(old)
+        vault = CredentialVault(tmp_path)
+        for key in ("webhook_url", "telegram_bot_token"):
+            retired_fields[key] = vault.encrypt_secret_str(old[key])
+        raw["notifications"].update(retired_fields)
+        conn.execute("UPDATE otl_preferences SET payload_json = ?", (json.dumps(raw),))
+
+    app = create_app(data_dir=tmp_path, demo_mode=False, enable_background_sync=False)
+    client = TestClient(app)
+    assert client.post("/api/v1/auth/skip").status_code == 200
+    settings = client.get("/api/v1/settings").json()
+    assert settings["locale"] == "en"
+    assert settings["notifications"] == {
+        "bark_server_url": "https://api.day.app", "bark_push_key": "", "bark_push_key_set": with_bark,
+    }
+    with sqlite3.connect(store.db_path) as conn:
+        migrated = json.loads(conn.execute("SELECT payload_json FROM otl_preferences").fetchone()[0])
+    assert migrated["notifications"] == {k: v for k, v in raw["notifications"].items() if k not in old}
+    updated = client.put("/api/v1/settings", json={"notifications": old}).json()
+    assert updated["notifications"] == settings["notifications"]
+    assert store.get_preferences().notifications.bark_push_key == ("saved-device" if with_bark else "")
+    assert client.get("/api/v1/extensions/copy-watcher").json()["channels"] == {"bark": with_bark}
+    if not with_bark:
+        response = client.post("/api/v1/extensions/copy-watcher/test-notify")
+        assert response.status_code == 400
+        assert "Bark" in response.json()["detail_zh"]
+
+
+def test_unbound_watcher_allows_monitoring_without_enabling_mobile_alerts(tmp_path: Path):
+    client = TestClient(create_app(data_dir=tmp_path, demo_mode=False, enable_background_sync=False))
+    assert client.post("/api/v1/auth/skip").status_code == 200
+    route = "/api/v1/extensions/copy-watcher"
+    pid = "3988776655443322110"
+    target = client.put(route, json={"targets": [pid]}).json()["items"][0]
+    assert target["enabled"] and not target["slot_alert"] and not target["trade_alert"]
+    url = f"{route}/targets/{pid}"
+    assert client.patch(url, json={"slot_alert": True}).status_code == 400
+    assert client.patch(url, json={"enabled": False}).status_code == 200
+    client.put("/api/v1/settings", json={"notifications": {"bark_push_key": "demo-device"}})
+    target = client.patch(url, json={"trade_alert": True}).json()["items"][0]
+    assert target["trade_alert"] and not target["slot_alert"] and not target["enabled"]
+
+
+def test_inflight_slot_poll_respects_saved_alert_switch(tmp_path: Path):
+    pid = "3988776655443322110"
+    store = LedgerStore(tmp_path)
+    prefs = store.get_preferences()
+    prefs.notifications.bark_push_key = "fixture-device"
+    store.save_preferences(prefs)
+    sent = []
+
+    async def scenario():
+        scanning, resume = asyncio.Event(), asyncio.Event()
+
+        async def market(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "api.day.app":
+                sent.append(request.url)
+                return httpx.Response(200)
+            if request.url.path.endswith("/lead-portfolio/detail"):
+                scanning.set()
+                await resume.wait()
+                data = {"leadPortfolioId": pid, "nickname": "Fixture", "status": "ACTIVE",
+                        "currentCopyCount": 398, "maxCopyCount": 400}
+                return httpx.Response(200, json={"code": "000000", "data": data})
+            return httpx.Response(200, json={"code": "000000", "data": {"list": []}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(market)) as client:
+            watcher = CopyWatcherService(store=store, http_client=client)
+            watcher.set_target_ids_bulk([pid])
+            poll = asyncio.create_task(watcher.poll_once())
+            await asyncio.wait_for(scanning.wait(), timeout=2)
+            watcher.update_target(pid, slot_alert=False)
+            resume.set()
+            target = (await poll)["items"][0]
+            assert not target["slot_alert"]
+            assert target["available_slots"] == 2
+            assert not sent
+
+    asyncio.run(scenario())

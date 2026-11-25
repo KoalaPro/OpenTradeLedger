@@ -104,18 +104,13 @@ def test_preferences_secrets_encrypted_at_rest_in_sqlite_and_db_chmod_600(tmp_pa
     svc = LedgerService(store, vault, build_default_registry(), default_demo_mode=True)
 
     ai_sec = "sk-plaintext-must-not-hit-sqlite-disk-999"
-    tg_sec = "888777666:AAH_SUPER_SECRET_TG_BOT_TOKEN"
     bark_sec = "BARK_PRIVATE_DEVICE_PUSH_KEY_777"
-    hook_sec = "https://hooks.example.com/services/SECRET_WEBHOOK_TOKEN"
 
     svc.update_preferences(
         {
             "ai_base_url": "https://api.deepseek.com/v1",
             "ai_api_key": ai_sec,
             "notifications": {
-                "webhook_url": hook_sec,
-                "telegram_bot_token": tg_sec,
-                "telegram_chat_id": "12345",
                 "bark_push_key": bark_sec,
             },
         }
@@ -130,19 +125,15 @@ def test_preferences_secrets_encrypted_at_rest_in_sqlite_and_db_chmod_600(tmp_pa
     for p in tmp_path.glob("opentradeledger.db*"):
         raw_blob += p.read_bytes()
     assert ai_sec.encode() not in raw_blob
-    assert tg_sec.encode() not in raw_blob
     assert bark_sec.encode() not in raw_blob
-    assert hook_sec.encode() not in raw_blob
 
     # Decrypted read works transparently
     loaded = svc.get_preferences()
     assert loaded.ai_api_key == ai_sec
-    assert loaded.notifications.telegram_bot_token == tg_sec
     assert loaded.notifications.bark_push_key == bark_sec
-    assert loaded.notifications.webhook_url == hook_sec
 
 
-def test_notifier_sanitizes_bot_token_and_bark_key_from_error_messages():
+def test_notifier_sanitizes_bark_key_from_error_messages():
     import asyncio
 
     def _failing_handler(request: httpx.Request) -> httpx.Response:
@@ -154,9 +145,6 @@ def test_notifier_sanitizes_bot_token_and_bark_key_from_error_messages():
         async with httpx.AsyncClient(transport=transport) as c:
             return await dispatch_notification(
                 NotificationSettings(
-                    webhook_url="https://hooks.example.com/secret_hook_token_abc123",
-                    telegram_bot_token="999888:SECRET_TG_TOKEN_VALUE_XYZ",
-                    telegram_chat_id="10001",
                     bark_server_url="https://api.day.app",
                     bark_push_key="SECRET_BARK_PUSH_KEY_UVW",
                 ),
@@ -168,9 +156,7 @@ def test_notifier_sanitizes_bot_token_and_bark_key_from_error_messages():
     res = asyncio.run(_run())
     assert res["ok"] is False
     combined_err = " ".join(res["errors"].values())
-    assert "SECRET_TG_TOKEN_VALUE_XYZ" not in combined_err
     assert "SECRET_BARK_PUSH_KEY_UVW" not in combined_err
-    assert "secret_hook_token_abc123" not in combined_err
 
 
 def test_readonly_guard_blocks_dotdot_path_traversal():

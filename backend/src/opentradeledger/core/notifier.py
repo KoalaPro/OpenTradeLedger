@@ -1,4 +1,4 @@
-"""Pluggable notification dispatcher supporting Webhook, Telegram Bot, and Bark (with smart URL parsing)."""
+"""Bark notifications with support for pasted device URLs and self-hosted servers."""
 
 from __future__ import annotations
 
@@ -51,7 +51,12 @@ def parse_bark_input(raw_server: str, raw_key: str) -> tuple[str, str]:
     return final_server, key
 
 
-def _sanitize_notify_error(raw_err: Any, secrets_list: list[str], webhook_url: str = "") -> str:
+def bark_configured(settings: NotificationSettings) -> bool:
+    _, device_key = parse_bark_input(settings.bark_server_url, settings.bark_push_key)
+    return bool(device_key)
+
+
+def _sanitize_notify_error(raw_err: Any, secrets_list: list[str]) -> str:
     msg = str(raw_err or "Notification request failed")
     for sec in secrets_list:
         s = (sec or "").strip()
@@ -61,13 +66,6 @@ def _sanitize_notify_error(raw_err: Any, secrets_list: list[str], webhook_url: s
         encoded = quote(s, safe="")
         if encoded and encoded != s:
             msg = msg.replace(encoded, "***")
-    wh = (webhook_url or "").strip()
-    if wh:
-        parts = urlsplit(wh)
-        safe_wh = f"{parts.scheme}://{parts.netloc}/***" if parts.scheme and parts.netloc else "***"
-        msg = msg.replace(wh, safe_wh)
-        if parts.path and len(parts.path) > 1:
-            msg = msg.replace(parts.path, "/***")
     return msg
 
 
@@ -80,57 +78,25 @@ async def dispatch_notification(
     bark_params: dict[str, str] | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    sent_channels: list[str] = []
-    errors: dict[str, str] = {}
-    wh = settings.webhook_url.strip()
-    tg_tok = settings.telegram_bot_token.strip()
-    raw_bark_srv = settings.bark_server_url
-    raw_bark_k = settings.bark_push_key
-    bark_srv, bark_k = parse_bark_input(raw_bark_srv, raw_bark_k)
-    secrets_list = [tg_tok, bark_k, raw_bark_k.strip()]
+    bark_srv, bark_key = parse_bark_input(settings.bark_server_url, settings.bark_push_key)
+    if not bark_key:
+        return {"ok": False, "sent": [], "errors": {}}
 
-    async def _run(c: httpx.AsyncClient) -> None:
-        if wh:
-            try:
-                r = await c.post(
-                    wh,
-                    json={"title": title, "body": body, "url": url},
-                )
-                r.raise_for_status()
-                sent_channels.append("webhook")
-            except Exception as exc:
-                errors["webhook"] = _sanitize_notify_error(exc, secrets_list, webhook_url=wh)
+    safe_title = (title or "").replace("/", "／").strip()
+    safe_body = (body or "").replace("/", "／").strip()
+    bark_url = f"{bark_srv}/{quote(bark_key, safe='')}/{quote(safe_title, safe='')}/{quote(safe_body, safe='')}"
+    params = {k: str(v) for k, v in (bark_params or {}).items() if v is not None and str(v) != ""}
+    if url:
+        params.setdefault("url", url)
 
-        if tg_tok and settings.telegram_chat_id.strip():
-            try:
-                tg_url = f"https://api.telegram.org/bot{tg_tok}/sendMessage"
-                text = f"{title}\n{body}" + (f"\n{url}" if url else "")
-                r = await c.post(tg_url, json={"chat_id": settings.telegram_chat_id.strip(), "text": text})
-                r.raise_for_status()
-                sent_channels.append("telegram")
-            except Exception as exc:
-                errors["telegram"] = _sanitize_notify_error(exc, secrets_list)
-
-        if bark_k:
-            try:
-                safe_title = (title or "").replace("/", "／").strip()
-                safe_body = (body or "").replace("/", "／").strip()
-                bark_url = f"{bark_srv}/{quote(bark_k, safe='')}/{quote(safe_title, safe='')}/{quote(safe_body, safe='')}"
-                params: dict[str, str] = {}
-                if bark_params:
-                    params.update({k: str(v) for k, v in bark_params.items() if v is not None and str(v) != ""})
-                if url and "url" not in params:
-                    params["url"] = url
-                r = await c.get(bark_url, params=params or None)
-                r.raise_for_status()
-                sent_channels.append("bark")
-            except Exception as exc:
-                errors["bark"] = _sanitize_notify_error(exc, secrets_list)
-
-    if client is not None:
-        await _run(client)
-    else:
-        async with httpx.AsyncClient(timeout=8.0) as c:
-            await _run(c)
-
-    return {"ok": bool(sent_channels) and not errors, "sent": sent_channels, "errors": errors}
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=8.0) as bark_client:
+                response = await bark_client.get(bark_url, params=params)
+        else:
+            response = await client.get(bark_url, params=params)
+        response.raise_for_status()
+    except Exception as exc:
+        error = _sanitize_notify_error(exc, [bark_key, settings.bark_push_key])
+        return {"ok": False, "sent": [], "errors": {"bark": error}}
+    return {"ok": True, "sent": ["bark"], "errors": {}}

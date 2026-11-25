@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from opentradeledger.core.notifier import dispatch_notification, parse_bark_input
+from opentradeledger.core.notifier import bark_configured, dispatch_notification
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 
 if TYPE_CHECKING:
@@ -445,6 +445,7 @@ def build_demo_copy_watcher_status(
     interval_sec: int = 10,
     trade_poll_sec: int = 30,
     cooldown_sec: int = 180,
+    has_bark: bool = False,
 ) -> dict[str, Any]:
     """Sanitized demonstration radar payload for Demo Mode (zero personal IDs)."""
     now_ms = int(time.time() * 1000)
@@ -460,7 +461,7 @@ def build_demo_copy_watcher_status(
         "last_error": "",
         "last_error_zh": "",
         "open_slot_count": 2,
-        "channels": {"webhook": False, "telegram": False, "bark": True},
+        "channels": {"bark": has_bark},
         "configured_targets": [demo_id_1, demo_id_2],
         "items": [
             {
@@ -720,16 +721,15 @@ class CopyWatcherService:
 
     def get_status(self, *, demo_mode: bool = False) -> dict[str, Any]:
         slot_s, trade_s, cool_s = self._effective_timings()
+        has_bark = bark_configured(self.store.get_preferences().notifications)
         if demo_mode:
             return build_demo_copy_watcher_status(
+                has_bark=has_bark,
                 interval_sec=int(round(slot_s)),
                 trade_poll_sec=int(round(trade_s)),
                 cooldown_sec=int(round(cool_s)),
             )
 
-        prefs = self.store.get_preferences()
-        n = prefs.notifications
-        _, clean_bark_key = parse_bark_input(n.bark_server_url, n.bark_push_key)
         state = self._load_state()
         targets = state["targets"]
         snapshots = state["snapshots"]
@@ -755,8 +755,8 @@ class CopyWatcherService:
                     "status": str(cached.get("status") or ("PAUSED" if not enabled else "PENDING")),
                     "portfolio_type": str(cached.get("portfolio_type") or "PUBLIC"),
                     "enabled": enabled,
-                    "slot_alert": bool(t.get("slot_alert", True)),
-                    "trade_alert": bool(t.get("trade_alert", True)),
+                    "slot_alert": has_bark and bool(t.get("slot_alert", True)),
+                    "trade_alert": has_bark and bool(t.get("trade_alert", True)),
                     "current_copy_count": int(cached.get("current_copy_count") or 0),
                     "max_copy_count": int(cached.get("max_copy_count") or 0),
                     "available_slots": int(cached.get("available_slots") or 0),
@@ -783,11 +783,7 @@ class CopyWatcherService:
             "last_error": self._last_error,
             "last_error_zh": self._last_error_zh,
             "open_slot_count": open_slot_total,
-            "channels": {
-                "webhook": bool(n.webhook_url.strip()),
-                "telegram": bool(n.telegram_bot_token.strip() and n.telegram_chat_id.strip()),
-                "bark": bool(clean_bark_key),
-            },
+            "channels": {"bark": has_bark},
             "configured_targets": [str(t.get("portfolio_id")) for t in targets if t.get("portfolio_id")],
             "items": items,
         }
@@ -826,6 +822,7 @@ class CopyWatcherService:
             watermarks: dict[str, Any] = dict(state["watermarks"])
             now_ms = int(time.time() * 1000)
 
+            has_bark = bark_configured(self.store.get_preferences().notifications)
             existing_by_id = {str(t.get("portfolio_id")): t for t in targets}
             added_rows: list[dict[str, Any]] = []
             for snap, act in probed:
@@ -839,16 +836,16 @@ class CopyWatcherService:
                 if pid in existing_by_id:
                     existing_by_id[pid]["nickname"] = snap.nickname
                     existing_by_id[pid].setdefault("enabled", True)
-                    existing_by_id[pid].setdefault("slot_alert", bool(slot_alert))
-                    existing_by_id[pid].setdefault("trade_alert", bool(trade_alert))
+                    existing_by_id[pid].setdefault("slot_alert", has_bark and bool(slot_alert))
+                    existing_by_id[pid].setdefault("trade_alert", has_bark and bool(trade_alert))
                 else:
                     row = {
                         "portfolio_id": pid,
                         "venue": "binance",
                         "nickname": snap.nickname,
                         "enabled": True,
-                        "slot_alert": bool(slot_alert),
-                        "trade_alert": bool(trade_alert),
+                        "slot_alert": has_bark and slot_alert,
+                        "trade_alert": has_bark and trade_alert,
                         "added_at_ms": now_ms,
                     }
                     targets.append(row)
@@ -873,6 +870,7 @@ class CopyWatcherService:
         state = self._load_state()
         existing = {str(t.get("portfolio_id")): t for t in state["targets"]}
         now_ms = int(time.time() * 1000)
+        has_bark = bark_configured(self.store.get_preferences().notifications)
         new_targets: list[dict[str, Any]] = []
         for pid in pids:
             if pid in existing:
@@ -884,8 +882,8 @@ class CopyWatcherService:
                         "venue": "binance",
                         "nickname": pid,
                         "enabled": True,
-                        "slot_alert": True,
-                        "trade_alert": True,
+                        "slot_alert": has_bark,
+                        "trade_alert": has_bark,
                         "added_at_ms": now_ms,
                     }
                 )
@@ -910,6 +908,8 @@ class CopyWatcherService:
         found = None
         for t in state["targets"]:
             if str(t.get("portfolio_id")) == pid:
+                if (slot_alert or trade_alert) and not bark_configured(self.store.get_preferences().notifications):
+                    raise ValueError("请先配置 Bark，再开启手机提醒 / Configure Bark to enable mobile alerts")
                 if enabled is not None:
                     t["enabled"] = bool(enabled)
                 if slot_alert is not None:
@@ -956,6 +956,13 @@ class CopyWatcherService:
         row["probe_error_zh"] = ""
         return row
 
+    def _alert_enabled(self, portfolio_id: str, setting: str) -> bool:
+        # A user can pause or remove a target while a public market request is in flight.
+        return any(
+            t.get("portfolio_id") == portfolio_id and t.get("enabled", True) and t.get(setting, True)
+            for t in self._load_state()["targets"]
+        )
+
     async def poll_once(self, *, force_trades: bool = False) -> dict[str, Any]:
         async with self._lock:
             state = self._load_state()
@@ -970,12 +977,7 @@ class CopyWatcherService:
             wall_ms = int(time.time() * 1000)
             prefs = self.store.get_preferences()
             notifs = prefs.notifications
-            _, clean_bark_key = parse_bark_input(notifs.bark_server_url, notifs.bark_push_key)
-            has_any_channel = bool(
-                notifs.webhook_url.strip()
-                or (notifs.telegram_bot_token.strip() and notifs.telegram_chat_id.strip())
-                or clean_bark_key
-            )
+            has_bark = bark_configured(notifs)
 
             snapshots: dict[str, Any] = dict(state["snapshots"])
             watermarks: dict[str, Any] = dict(state["watermarks"])
@@ -990,7 +992,6 @@ class CopyWatcherService:
                     prev_cached = snapshots.get(pid) if isinstance(snapshots.get(pid), dict) else {}
                     try:
                         snap = await watcher_client.fetch_slot_snapshot(pid)
-                        t["nickname"] = snap.nickname
                     except Exception as exc:
                         cycle_had_error = True
                         en_err, zh_err = humanize_watcher_error(exc)
@@ -1010,9 +1011,10 @@ class CopyWatcherService:
                     # 1. Slot availability alarm check
                     if not snap.has_open_slot:
                         self._last_slot_alert_mono.pop(pid, None)
-                    elif bool(t.get("slot_alert", True)) and has_any_channel:
+                    elif has_bark:
                         prev_mono = self._last_slot_alert_mono.get(pid)
-                        if prev_mono is None or (now_mono - prev_mono) >= eff_cool_s:
+                        alarm_due = prev_mono is None or (now_mono - prev_mono) >= eff_cool_s
+                        if alarm_due and self._alert_enabled(pid, "slot_alert"):
                             title = f"🚨 {snap.nickname} 空出 {snap.available_slots} 个跟单名额！"
                             body = (
                                 f"当前 {snap.current_copy_count}/{snap.max_copy_count} "
@@ -1060,7 +1062,7 @@ class CopyWatcherService:
                             fresh = [o for o in act.recent_orders if o.order_time_ms > cur_wm]
                             if fresh:
                                 fresh.sort(key=lambda o: o.order_time_ms)
-                                if bool(t.get("trade_alert", True)) and has_any_channel:
+                                if has_bark and self._alert_enabled(pid, "trade_alert"):
                                     grouped: dict[tuple[str, str, str], list[LeadOrderRecord]] = {}
                                     for o in fresh:
                                         grouped.setdefault((o.symbol, o.action_zh, o.action_en), []).append(o)
@@ -1116,10 +1118,12 @@ class CopyWatcherService:
                 self._last_error_zh = ""
 
             self._updated_at_ms = wall_ms
-            state["targets"] = targets
-            state["snapshots"] = snapshots
-            state["watermarks"] = watermarks
-            self._save_state(state)
+            # Polling owns observations, while user actions own the list of targets and their switches.
+            current = self._load_state()
+            current_ids = {t["portfolio_id"] for t in current["targets"]}
+            current["snapshots"] = {pid: snap for pid, snap in snapshots.items() if pid in current_ids}
+            current["watermarks"] = {pid: wm for pid, wm in watermarks.items() if pid in current_ids}
+            self._save_state(current)
             return self.get_status(demo_mode=False)
 
     async def send_test_ring(self, portfolio_id: str = "") -> dict[str, Any]:

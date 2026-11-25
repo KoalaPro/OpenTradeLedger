@@ -12,7 +12,7 @@ from typing import Any
 
 from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.core.ledger_service import LedgerService
-from opentradeledger.core.notifier import dispatch_notification
+from opentradeledger.core.notifier import bark_configured, dispatch_notification
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.venue_health import VenueHealthTracker
 from opentradeledger.core.venue_primitives import STABLECOINS
@@ -431,11 +431,7 @@ class SyncManager:
         try:
             prefs = self.ledger_service.get_preferences()
             n = prefs.notifications
-            if not (
-                n.webhook_url.strip()
-                or (n.telegram_bot_token.strip() and n.telegram_chat_id.strip())
-                or n.bark_push_key.strip()
-            ):
+            if not bark_configured(n):
                 return
             await dispatch_notification(n, title=title, body=body)
         except Exception as exc:
