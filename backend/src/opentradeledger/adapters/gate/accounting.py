@@ -1120,8 +1120,17 @@ def build_gate_venue_ledger(
 
     uni_balances = uni.get("balances") if isinstance(uni, Mapping) else None
     usdt_bal_obj = (uni_balances or {}).get("USDT") if isinstance(uni_balances, Mapping) else None
-    if isinstance(usdt_bal_obj, Mapping) and (usdt_bal_obj.get("available") is not None or usdt_bal_obj.get("equity") is not None):
-        usdt_spot_cash = dec(usdt_bal_obj.get("available") or usdt_bal_obj.get("equity"))
+    if isinstance(usdt_bal_obj, Mapping) and (
+        usdt_bal_obj.get("equity") is not None
+        or usdt_bal_obj.get("available") is not None
+        or usdt_bal_obj.get("freeze") is not None
+    ):
+        usdt_eq_val = dec(usdt_bal_obj.get("equity"))
+        usdt_spot_cash = (
+            usdt_eq_val
+            if usdt_eq_val > 0
+            else (dec(usdt_bal_obj.get("available")) + dec(usdt_bal_obj.get("freeze") or usdt_bal_obj.get("locked")))
+        )
         non_usdt_tokens_usd = max(Decimal("0"), unified_equity_usd - usdt_spot_cash - gate_spot_stk_val)
     else:
         non_usdt_tokens_usd = Decimal("0")
@@ -1397,26 +1406,27 @@ def build_gate_venue_ledger(
         excluded_symbols={h["symbol"] for h in stock_bundle.holdings},
     )
 
-    fa_total_raw = fa.get("total") if isinstance(fa, Mapping) else None
     fa_pos_m = dec(fa.get("position_margin")) if isinstance(fa, Mapping) else Decimal("0")
     fa_ord_m = dec(fa.get("order_margin")) if isinstance(fa, Mapping) else Decimal("0")
     fa_upnl = dec(fa.get("unrealised_pnl")) if isinstance(fa, Mapping) else Decimal("0")
+    fa_tot_plus_upnl = (dec(fa.get("total")) + fa_upnl) if (isinstance(fa, Mapping) and fa.get("total") is not None) else Decimal("0")
+    fa_comp_sum = gate_futures_available_usd + fa_pos_m + fa_ord_m + fa_upnl
     wt_fut_amt = dec((wt_details.get("futures") or {}).get("amount"))
-    if wt_fut_amt > 0:
-        raw_gate_fut_eq = wt_fut_amt
-    elif fa_total_raw is not None:
-        raw_gate_fut_eq = dec(fa_total_raw) + fa_upnl
-    elif gate_futures_available_usd > 0 or fa_pos_m > 0 or fa_ord_m > 0:
-        raw_gate_fut_eq = gate_futures_available_usd + fa_pos_m + fa_ord_m + fa_upnl
-    elif bool(fa) and isinstance(usdt_bal_obj, Mapping) and usdt_bal_obj.get("equity") is not None:
-        raw_gate_fut_eq = dec(usdt_bal_obj.get("equity"))
-    else:
-        raw_gate_fut_eq = Decimal("0")
+    uni_credit_mode = bool(
+        (isinstance(fa, Mapping) and fa.get("enable_credit"))
+        or str(uni.get("mode") or "").strip().lower() in {"multi_currency", "portfolio", "single_currency"}
+    )
+    uni_usdt_eq = (
+        dec(usdt_bal_obj.get("equity") or usdt_bal_obj.get("cross_balance"))
+        if (uni_credit_mode and isinstance(usdt_bal_obj, Mapping))
+        else Decimal("0")
+    )
+    raw_gate_fut_eq = max(Decimal("0"), wt_fut_amt, fa_tot_plus_upnl, fa_comp_sum, uni_usdt_eq)
     gate_max_fut = max(
         Decimal("0"),
         gate_total_equity_usd - quant_equity_usd - stock_equity_usd - gate_spot_stk_val - finance_equity_usd - non_usdt_tokens_usd,
     )
-    gate_futures_equity_usd = min(gate_max_fut, max(Decimal("0"), raw_gate_fut_eq))
+    gate_futures_equity_usd = min(gate_max_fut, raw_gate_fut_eq)
 
     return VenueLedgerBundle(
         venue_id="gate",

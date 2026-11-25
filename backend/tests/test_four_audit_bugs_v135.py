@@ -51,6 +51,37 @@ def test_bug1_futures_equity_never_misclassified_as_spot_when_available_margin_d
         assert eb["futures_margin_usd"] == 2500.0, f"Expected 2500 futures when available={avail_str}, got {eb}"
         assert eb["spot_and_other_usd"] == 0.0, f"Expected 0 spot when available={avail_str}, got {eb}"
 
+    # Gate Unified Margin (enable_credit=True, fa.total="0.000000007", available=1500 or 0, uni USDT equity=2500)
+    for avail_str in ("1500.00", "0.00"):
+        u_dir = tmp_path / f"gate_uni_{avail_str}"
+        u_store = LedgerStore(u_dir)
+        u_store.venue_scope("gate").set_kv(
+            "live_bundle",
+            {
+                "wallet_total": {
+                    "total": {"amount": "2500.00"},
+                    "details": {"futures": {"amount": "0"}, "spot": {"amount": "2500.00"}},
+                },
+                "futures_account": {
+                    "total": "0.000000007",
+                    "available": avail_str,
+                    "position_margin": "0",
+                    "order_margin": "0",
+                    "unrealised_pnl": "0",
+                    "enable_credit": True,
+                },
+                "unified": {
+                    "mode": "multi_currency",
+                    "unified_account_total_equity": "2500.00",
+                    "balances": {"USDT": {"available": avail_str, "freeze": str(2500.0 - float(avail_str)), "equity": "2500.00"}},
+                },
+            },
+        )
+        u_dash = LedgerService(u_store, CredentialVault(u_dir), build_default_registry(), default_demo_mode=False).get_dashboard()
+        assert u_dash["summary"]["total_equity_usd"] == 2500.0
+        assert u_dash["equity_breakdown"]["futures_margin_usd"] == 2500.0
+        assert u_dash["equity_breakdown"]["spot_and_other_usd"] == 0.0
+
     # Also verify across Binance / OKX / Bybit unified/PM accounts with 2,500 futures equity and 0 available
     b_dir = tmp_path / "bn_zero_avail"
     b_store = LedgerStore(b_dir)
