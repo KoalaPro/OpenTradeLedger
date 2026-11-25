@@ -4,7 +4,7 @@ export const zhCN = {
   nav_trades: '合约交易',
   nav_analytics: '收益分析',
   nav_fees: '成本与复盘',
-  nav_extensions: '盯盘与专账',
+  nav_extensions: '扩展模块',
   nav_settings: '设置与连接',
 
   read_only: '只读模式',

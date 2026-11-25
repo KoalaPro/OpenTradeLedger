@@ -406,7 +406,7 @@ export default function App() {
         {!isAuthLocked && (
           <div
             data-testid="otl-root"
-            className="min-h-screen flex flex-col md:flex-row bg-[var(--bg)] text-[var(--fg)] transition-colors duration-200"
+            className="min-h-screen flex flex-col md:flex-row bg-[var(--bg)] text-[var(--fg)]"
           >
             <Sidebar
               page={page}
@@ -453,11 +453,11 @@ export default function App() {
                 onInspectErrors={() => navigateTo('settings')}
               />
 
-              <main className="flex-1 px-6 py-5 max-w-[1440px] w-full mx-auto">
-                <AnimatedCollapse open={Boolean(visibleError)} innerClassName="pb-4">
+              <main className="flex-1 px-4 sm:px-7 pb-10 max-w-[1440px] w-full mx-auto">
+                <AnimatedCollapse open={Boolean(visibleError)} innerClassName="pt-4">
                   <div
                     data-testid="global-error-banner"
-                    className="otl-status-err px-4 py-2.5 rounded-lg text-[12.5px] font-medium"
+                    className="otl-status-err px-4 py-2.5 rounded-lg text-[13px] font-medium"
                   >
                     {visibleError}
                   </div>

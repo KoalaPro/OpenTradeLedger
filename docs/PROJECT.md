@@ -32,11 +32,12 @@ OpenTradeLedger/
 │   └── tests/               # 后端单元测试与隐私/架构 AST 守卫测试
 ├── web/
 │   └── src/
-│       ├── components/      # 通用 UI 组件、持仓/现货明细表与 settings/ 独立设置卡片
-│       ├── pages/           # 总览、交易流水、收益分析、费率与 AI、盯盘与专账、对账、设置页
-│       ├── lib/             # API 客户端、7 币种实时汇率换算、品类与工具函数
-│       ├── i18n.tsx         # 简体中文 / English 双语字典
-│       └── __tests__/       # Vitest + Testing Library 前端交互测试
+│       ├── components/      # 细线账本通用组件、自适应滤镜品牌标与圆标交易对矢量图库
+│       ├── pages/           # 总览、合约交易、收益分析、成本与复盘、扩展模块、设置与连接六大页面
+│       ├── styles/          # 曜石暗色 / 深海蓝 / 极简浅色主题令牌、字号标尺与高阻尼桌面微动效
+│       ├── lib/             # API 客户端、7 币种实时汇率换算、聚光涟漪与工具函数
+│       ├── i18n/            # 简体中文 / English 双语字典
+│       └── __tests__/       # Vitest + Testing Library 前端交互与模块契约测试
 ├── scripts/
 │   ├── run_server.py        # 生产启动入口（支持 /app/data/.ota/ 热更新槽位自动挂载）
 │   └── privacy_audit.py     # 提交前隐私与敏感凭证扫描脚本

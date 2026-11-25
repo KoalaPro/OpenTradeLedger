@@ -1,7 +1,7 @@
 /**
- * Lightweight global pointerdown listener for Style 2 Velvet Spotlight Ripples.
- * Spawns a restrained radial shimmer from the exact click coordinate on interactive
- * buttons and clickable KPI cards (skipping TradesPage table rows & reduced-motion).
+ * Lightweight global pointerdown listener for restrained desktop spotlight ripples.
+ * Spawns a damped radial highlight using the active theme's `--accent-glow` token
+ * on interactive ledger cells and buttons (skipping table rows, switches & reduced-motion).
  */
 export function attachVelvetRippleListener(): () => void {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -25,9 +25,8 @@ export function attachVelvetRippleListener(): () => void {
     ) as HTMLElement | null
     if (!host || host.hasAttribute('data-no-ripple')) return
 
-    // Skip tiny icon-only buttons (< 26px) to keep micro-controls crisp
     const rect = host.getBoundingClientRect()
-    if (rect.width < 26 || rect.height < 22) return
+    if (rect.width < 28 || rect.height < 22) return
 
     const computed = window.getComputedStyle(host)
     if (computed.position === 'static') {
@@ -40,7 +39,7 @@ export function attachVelvetRippleListener(): () => void {
 
     const ripple = document.createElement('span')
     ripple.className = 'otl-velvet-ripple'
-    const diameter = Math.min(260, Math.max(rect.width, rect.height) * 1.15)
+    const diameter = Math.min(220, Math.max(rect.width, rect.height) * 1.1)
     ripple.style.width = `${diameter}px`
     ripple.style.height = `${diameter}px`
     ripple.style.left = `${e.clientX - rect.left}px`
@@ -52,7 +51,7 @@ export function attachVelvetRippleListener(): () => void {
       if (!host.querySelector('.otl-velvet-ripple') && prevOverflow === '') {
         host.style.overflow = ''
       }
-    }, 540)
+    }, 390)
   }
 
   document.addEventListener('pointerdown', onPointerDown, { passive: true })

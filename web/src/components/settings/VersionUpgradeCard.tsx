@@ -47,7 +47,7 @@ export function VersionUpgradeCard({
             flashOk(
               isZh
                 ? `已成功升级至 v${h.version}，正在自动加载新版界面…`
-                : `Upgraded to v${h.version} — reloading…`,
+                : `Upgraded to v${h.version} · reloading…`,
               3000,
             )
             window.setTimeout(() => {
@@ -94,14 +94,13 @@ export function VersionUpgradeCard({
   }
 
   return (
-    <div data-testid="version-update-card" className="otl-card p-5 space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <ArrowUpCircle size={15} className="text-[var(--accent)] shrink-0" />
-          <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)] truncate">
+    <div data-testid="version-update-card" className="py-6 space-y-3.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <h3 className="t-h2 truncate">
             {isZh ? '版本与更新' : 'Version & Updates'}
           </h3>
-          <span className="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--border)] font-mono text-[11px] text-[var(--fg-2)]">
+          <span className="font-mono text-[13px] text-[var(--fg-3)]">
             v{versionStatus?.current_version || '1.3.7'}
           </span>
         </div>
@@ -109,7 +108,7 @@ export function VersionUpgradeCard({
         {versionStatus?.update_available ? (
           <span
             data-testid="version-status-badge"
-            className="otl-status-warn px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0"
+            className="text-[13px] font-semibold text-[var(--warn)] shrink-0"
           >
             {isZh
               ? `新版本 v${versionStatus.latest_version}`
@@ -118,21 +117,21 @@ export function VersionUpgradeCard({
         ) : versionStatus?.error && !versionStatus.checked_sec ? (
           <span
             data-testid="version-status-badge"
-            className="otl-status-err px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0"
+            className="text-[13px] font-semibold text-[var(--err)] shrink-0"
           >
             {isZh ? '检测失败' : 'Check Error'}
           </span>
         ) : versionStatus?.checked_sec ? (
           <span
             data-testid="version-status-badge"
-            className="otl-status-ok px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0"
+            className="text-[13px] font-medium text-[var(--ok)] shrink-0"
           >
             {isZh ? '已是最新' : 'Up to Date'}
           </span>
         ) : (
           <span
             data-testid="version-status-badge"
-            className="px-2 py-0.5 rounded-md border border-[var(--border)] bg-[var(--surface-2)] text-[11px] text-[var(--fg-3)] shrink-0"
+            className="text-[13px] text-[var(--fg-3)] shrink-0"
           >
             {settings.update_check_enabled === false
               ? isZh
@@ -148,7 +147,7 @@ export function VersionUpgradeCard({
       {versionStatus?.error && (
         <div
           data-testid="version-error-box"
-          className="otl-status-err rounded-lg px-3 py-2 text-[11.5px]"
+          className="otl-status-err rounded-md px-3 py-2 text-[13px]"
         >
           {isZh ? versionStatus.error_zh || versionStatus.error : versionStatus.error}
         </div>
@@ -157,9 +156,9 @@ export function VersionUpgradeCard({
       {versionStatus?.update_available && (
         <div
           data-testid="version-release-box"
-          className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] p-3.5 space-y-3"
+          className="otl-surface-2 p-4 space-y-3"
         >
-          <div className="flex items-center justify-between gap-2 text-[12px]">
+          <div className="flex items-center justify-between gap-2 text-[13px]">
             <span className="font-semibold text-[var(--fg)] truncate">
               {versionStatus.release_name || `v${versionStatus.latest_version}`}
             </span>
@@ -167,29 +166,30 @@ export function VersionUpgradeCard({
               href={versionStatus.release_url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--accent)] hover:underline shrink-0"
+              className="inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline shrink-0"
             >
               <span>{isZh ? '更新日志' : 'Release Notes'}</span>
-              <ExternalLink size={11} />
+              <ExternalLink size={12} />
             </a>
           </div>
           {versionStatus.release_notes && (
-            <pre className="m-0 max-h-32 overflow-y-auto whitespace-pre-wrap font-sans text-[11.5px] leading-relaxed text-[var(--fg-2)]">
+            <pre className="m-0 max-h-32 overflow-y-auto whitespace-pre-wrap font-sans text-[13px] leading-relaxed text-[var(--fg-2)]">
               {versionStatus.release_notes}
             </pre>
           )}
 
-          <div className="pt-2 border-t border-[var(--border)] space-y-2">
+          <div className="pt-2.5 border-t border-[var(--border)] space-y-2">
             <button
               type="button"
               data-testid="one-click-upgrade-btn"
               disabled={Boolean(upgradingStep)}
               onClick={() => void handleSelfUpgrade()}
-              className="w-full h-9 px-4 rounded-lg text-[12.5px] font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-70 transition-all"
-              style={{
-                background: upgradingStep === 'done' ? '#10b981' : 'var(--accent)',
-                color: upgradingStep === 'done' ? '#ffffff' : 'var(--accent-fg)',
-              }}
+              className="otl-btn otl-btn-primary w-full h-9 text-[13px]"
+              style={
+                upgradingStep === 'done'
+                  ? { background: 'var(--ok)', color: '#ffffff' }
+                  : undefined
+              }
             >
               {upgradingStep === 'done' ? (
                 <>
@@ -229,10 +229,10 @@ export function VersionUpgradeCard({
                 <div className="otl-ceremony-indeterminate" />
               </div>
             )}
-            <p className="m-0 text-[11px] text-[var(--fg-3)] text-center">
+            <p className="m-0 text-[13px] text-[var(--fg-3)] text-center">
               {isZh
-                ? '兼容极空间、绿联、飞牛 fnOS、群晖、威联通及本地 Docker，无需敲命令或进 NAS 后台，密钥与历史账单 100% 保留'
-                : 'Works across all NAS platforms without SSH or Docker socket access; 100% of keys & ledger history are preserved.'}
+                ? '兼容各品牌 NAS 及本地 Docker，无需进终端，密钥与历史账单 100% 保留'
+                : 'Works across all NAS platforms without SSH; 100% of keys & ledger history are preserved.'}
             </p>
           </div>
         </div>
@@ -244,7 +244,7 @@ export function VersionUpgradeCard({
           type="button"
           data-testid="manual-upgrade-guide-toggle"
           onClick={() => setManualGuideOpen(v => !v)}
-          className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
+          className="w-full flex items-center justify-between gap-2 py-1.5 text-[13px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer text-left"
         >
           <span>
             {isZh
@@ -253,12 +253,12 @@ export function VersionUpgradeCard({
           </span>
           <ChevronDown
             size={13}
-            className={`shrink-0 transition-transform duration-200 ${manualGuideOpen ? 'rotate-180' : ''}`}
+            className={`shrink-0 transition-transform duration-150 ${manualGuideOpen ? 'rotate-180' : ''}`}
           />
         </button>
 
         <AnimatedCollapse open={manualGuideOpen}>
-          <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-3 space-y-2.5 text-[11.5px] text-[var(--fg-2)]">
+          <div className="otl-surface-2 p-3.5 space-y-2.5 text-[13px] text-[var(--fg-2)]">
             <div className="space-y-1 leading-relaxed">
               <div className="font-semibold text-[var(--fg)]">
                 {isZh
@@ -272,12 +272,12 @@ export function VersionUpgradeCard({
               </p>
             </div>
 
-            <div className="space-y-1 pt-2 border-t border-[var(--border)]">
-              <div className="text-[11px] text-[var(--fg-3)]">
+            <div className="space-y-1.5 pt-2 border-t border-[var(--border)]">
+              <div className="text-[var(--fg-3)]">
                 {isZh ? '方式二：SSH 终端命令（进阶可选）' : 'Option 2: SSH / Docker Compose CLI'}
               </div>
-              <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5">
-                <code className="flex-1 font-mono text-[11.5px] text-[var(--fg)] truncate select-all">
+              <div className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5">
+                <code className="flex-1 font-mono text-[13px] text-[var(--fg)] truncate select-all">
                   docker compose pull &amp;&amp; docker compose up -d
                 </code>
                 <button
@@ -288,16 +288,16 @@ export function VersionUpgradeCard({
                   }
                   title={isZh ? '复制命令' : 'Copy command'}
                   aria-label={isZh ? '复制命令' : 'Copy command'}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-[var(--border)] bg-[var(--surface-2)] text-[11px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer shrink-0 transition-colors"
+                  className="otl-btn h-7 px-2 shrink-0"
                 >
                   {copiedKey === 'nas_pull' ? (
                     <>
-                      <Check size={11} className="text-emerald-500" />
-                      <span className="text-emerald-500">{isZh ? '已复制' : 'Copied'}</span>
+                      <Check size={12} style={{ color: 'var(--ok)' }} />
+                      <span style={{ color: 'var(--ok)' }}>{isZh ? '已复制' : 'Copied'}</span>
                     </>
                   ) : (
                     <>
-                      <Copy size={11} />
+                      <Copy size={12} />
                       <span>{isZh ? '复制' : 'Copy'}</span>
                     </>
                   )}
@@ -308,7 +308,7 @@ export function VersionUpgradeCard({
         </AnimatedCollapse>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--border)] text-[12px]">
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[13px]">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -327,7 +327,7 @@ export function VersionUpgradeCard({
           </button>
           <span className="text-[var(--fg-2)]">{isZh ? '自动检查更新' : 'Auto-check'}</span>
           {versionStatus?.checked_at && (
-            <span className="text-[11px] text-[var(--fg-3)] hidden sm:inline">
+            <span className="text-[var(--fg-3)] hidden sm:inline">
               · {versionStatus.checked_at}
             </span>
           )}
@@ -364,7 +364,7 @@ export function VersionUpgradeCard({
               setCheckingVersion(false)
             }
           }}
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
+          className="otl-btn h-7 px-2.5"
         >
           <RefreshCw size={12} className={checkingVersion ? 'animate-spin' : ''} />
           <span>

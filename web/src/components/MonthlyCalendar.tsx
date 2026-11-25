@@ -70,13 +70,13 @@ export function MonthlyCalendar({
     <div className="flex flex-col gap-3 h-full">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-[14px] font-semibold text-[var(--fg)] whitespace-nowrap">{activeMonth}</span>
-            <span className="text-[11px] text-[var(--fg-3)] whitespace-nowrap">
-              {locale === 'en' ? '· Portfolio Daily Net' : '· 全账户日净值'}
+          <div className="flex items-baseline gap-2">
+            <h2 className="t-h2 whitespace-nowrap">{t('an_cal_title')}</h2>
+            <span className="text-[13px] text-[var(--fg-3)] whitespace-nowrap">
+              {activeMonth}
             </span>
           </div>
-          <div className="text-[12px] text-[var(--fg-3)] whitespace-nowrap mt-0.5">
+          <div className="text-[13px] text-[var(--fg-3)] whitespace-nowrap mt-0.5">
             {winDays} {t('an_cal_win_days')} · {lossDays} {t('an_cal_loss_days')} · {t('an_cal_month_sum')}{' '}
             <b className={`sensitive ${pnlTone(monthSum)}`}>{cur.signedMoney(monthSum, 2)}</b>
           </div>
@@ -85,7 +85,7 @@ export function MonthlyCalendar({
           aria-label={t('an_cal_title')}
           value={/^\d{4}-\d{2}$/.test(selectedMonth) ? selectedMonth : months[0]}
           onChange={e => onSelectMonth(e.target.value)}
-          className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)] cursor-pointer"
+          className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
         >
           {months.map(m => (
             <option key={m} value={m}>
@@ -97,7 +97,7 @@ export function MonthlyCalendar({
 
       <div key={activeMonth} className="otl-panel-swap grid grid-cols-7 gap-1.5">
         {weekdays.map((w, i) => (
-          <div key={i} className="text-center text-[11px] text-[var(--fg-3)] pb-0.5">
+          <div key={i} className="text-center text-[13px] text-[var(--fg-3)] pb-0.5">
             {w}
           </div>
         ))}
@@ -113,7 +113,7 @@ export function MonthlyCalendar({
           return (
             <div
               key={c.day}
-              className="min-h-[48px] rounded-lg border p-1.5 flex flex-col justify-between text-[11px] transition-transform duration-150 hover:-translate-y-0.5"
+              className="min-h-[48px] rounded-[5px] border p-1.5 flex flex-col justify-between text-[13px]"
               style={{
                 background: isSignificant ? (isPos ? 'var(--pos-soft)' : 'var(--neg-soft)') : 'var(--surface-2)',
                 borderColor: isSignificant ? (isPos ? 'var(--pos-bd)' : 'var(--neg-bd)') : 'var(--border)',
@@ -122,7 +122,7 @@ export function MonthlyCalendar({
               <span className="text-[var(--fg-3)] leading-none">{c.day}</span>
               {has && !isZeroNoise ? (
                 <strong
-                  className={`sensitive text-[11px] leading-none whitespace-nowrap ${
+                  className={`sensitive leading-none whitespace-nowrap ${
                     isSignificant ? pnlTone(rawPnl) : 'text-[var(--fg-3)] font-medium'
                   }`}
                 >

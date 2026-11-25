@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, Check } from 'lucide-react'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { SegmentedPills } from '../components/SegmentedPills'
@@ -45,30 +45,28 @@ function LegFeeCard({
   const cur = useCurrency()
   const feeUnknown = leg.fee_known === false
   return (
-    <div data-testid={testId} className="otl-surface-2 rounded-xl p-3.5 flex flex-col gap-2.5">
-      <div className="flex items-center justify-between gap-2">
+    <div data-testid={testId} className="py-3 border-b border-[var(--border)] flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2 text-[13px]">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-[var(--surface)] border border-[var(--border)] text-[var(--fg)] whitespace-nowrap">
-            {title}
-          </span>
-          <span className="text-[12.5px] font-medium text-[var(--fg)] truncate">
-            {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
+          <span className="font-semibold text-[var(--fg-2)] whitespace-nowrap">{title}</span>
+          <span className="text-[var(--fg)] truncate">
+            · {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
           </span>
         </div>
-        <span className="text-[11.5px] text-[var(--fg-3)] whitespace-nowrap">
+        <span className="text-[var(--fg-3)] whitespace-nowrap">
           {leg.time_str} {leg.avg_price > 0 ? `· ${fmtPrice(leg.avg_price)}` : ''}
         </span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[var(--border)] text-[12px]">
+      <div className="grid grid-cols-3 gap-2 text-[13px]">
         <div>
-          <div className="text-[11px] text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
+          <div className="text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
           <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
             {feeUnknown ? t('leg_fee_unknown') : leg.gross_fee_usd > 0 ? `-${cur.money(leg.gross_fee_usd, 3)}` : cur.money(0, 3)}
           </div>
         </div>
         <div>
-          <div className="text-[11px] text-[var(--fg-3)]">{t('leg_rebate_disc')}</div>
+          <div className="text-[var(--fg-3)]">{t('leg_rebate_disc')}</div>
           <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
             {feeUnknown
               ? '—'
@@ -79,7 +77,7 @@ function LegFeeCard({
                   : cur.money(0, 3)}
           </div>
           {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
-            <div className="text-[10.5px] txt-pos mt-0.5 sensitive whitespace-nowrap">
+            <div className="txt-pos mt-0.5 sensitive whitespace-nowrap">
               {locale === 'en'
                 ? `Pre-disc +${cur.money(leg.discount_saved_usd, 3)}`
                 : `抵扣已省 +${cur.money(leg.discount_saved_usd, 3)}`}
@@ -87,7 +85,7 @@ function LegFeeCard({
           )}
         </div>
         <div className="text-right">
-          <div className="text-[11px] text-[var(--fg-3)]">{netLabel}</div>
+          <div className="text-[var(--fg-3)]">{netLabel}</div>
           <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
             {feeUnknown ? '—' : leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
           </div>
@@ -123,7 +121,13 @@ export function TradesPage({
   const [draftMap, setDraftMap] = useState<Record<string, { tags: string[]; note: string }>>({})
   const [saving, setSaving] = useState(false)
   const [savedAck, setSavedAck] = useState(false)
+  const tableWrapRef = useRef<HTMLDivElement | null>(null)
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
+  const [rowGlider, setRowGlider] = useState<{ top: number; height: number; visible: boolean }>({
+    top: 0,
+    height: 0,
+    visible: false,
+  })
 
   useEffect(() => {
     setSelectedId('')
@@ -156,6 +160,28 @@ export function TradesPage({
       rowRefs.current[selected.trade_id]?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
     }
   }, [selected?.trade_id])
+
+  useLayoutEffect(() => {
+    const syncRowBar = () => {
+      const wrap = tableWrapRef.current
+      const activeRow = selected ? rowRefs.current[selected.trade_id] : null
+      if (!wrap || !activeRow || activeRow.offsetHeight === 0) {
+        setRowGlider(g => (g.visible ? { ...g, visible: false } : g))
+        return
+      }
+      setRowGlider({
+        top: activeRow.offsetTop + 6,
+        height: Math.max(12, activeRow.offsetHeight - 12),
+        visible: true,
+      })
+    }
+    syncRowBar()
+    if (typeof ResizeObserver !== 'undefined' && tableWrapRef.current) {
+      const ro = new ResizeObserver(() => syncRowBar())
+      ro.observe(tableWrapRef.current)
+      return () => ro.disconnect()
+    }
+  }, [selected?.trade_id, detailed, sortedTrades.length])
 
   const selectTradeAt = (nextId: string, nextIdx: number) => {
     setSwapDir(nextIdx < selectedIndex ? 'prev' : 'next')
@@ -206,15 +232,16 @@ export function TradesPage({
     [data.exchanges, locale, t],
   )
 
-  const perpHistory = data.extensions.stocks.perpetuals.filter(row =>
-    (venueFilter === 'ALL' || row.venue_id.toLowerCase() === venueFilter.toLowerCase()) &&
-    (symbolFilter === 'ALL' || row.symbol.toUpperCase() === symbolFilter.toUpperCase()),
+  const perpHistory = data.extensions.stocks.perpetuals.filter(
+    row =>
+      (venueFilter === 'ALL' || row.venue_id.toLowerCase() === venueFilter.toLowerCase()) &&
+      (symbolFilter === 'ALL' || row.symbol.toUpperCase() === symbolFilter.toUpperCase()),
   )
 
   return (
-    <div data-testid="trades-page" className="otl-stagger space-y-4">
-      {/* Filter Toolbar — fully glider-backed venue & view density pills */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5">
+    <div data-testid="trades-page" className="otl-stagger">
+      {/* Flush Filter Toolbar */}
+      <div className="py-3.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
           <SegmentedPills
             wrap
@@ -227,7 +254,7 @@ export function TradesPage({
             aria-label={t('all_symbols')}
             value={symbolFilter}
             onChange={e => onSymbolChange(e.target.value)}
-            className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)] cursor-pointer"
+            className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
           >
             <option value="ALL">{t('all_symbols')}</option>
             {symbolFilter !== 'ALL' && !data.available_symbols.includes(symbolFilter) && (
@@ -248,7 +275,7 @@ export function TradesPage({
                 onVenueChange('ALL')
                 onSymbolChange('ALL')
               }}
-              className="otl-panel-swap h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[11.5px] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer whitespace-nowrap"
+              className="otl-btn otl-panel-swap h-8"
             >
               {locale === 'en' ? 'Reset' : '重置筛选'}
             </button>
@@ -268,7 +295,7 @@ export function TradesPage({
             aria-label="Sort"
             value={sortBy}
             onChange={e => setSortBy(e.target.value as typeof sortBy)}
-            className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] text-[var(--fg)] cursor-pointer"
+            className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
           >
             <option value="CLOSE_DESC">{t('sort_close_desc')}</option>
             <option value="OPEN_DESC">{t('sort_open_desc')}</option>
@@ -278,10 +305,10 @@ export function TradesPage({
         </div>
       </div>
 
-      {/* Main Split: Trade List + Per-Leg Settlement Inspector */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+      {/* 7:5 Master-Detail Hairline Split */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 border-b border-[var(--border)] items-start">
         <div
-          className="xl:col-span-7 otl-card overflow-hidden"
+          className="xl:col-span-7 xl:pr-5 xl:border-r border-[var(--border)]"
           tabIndex={0}
           onKeyDown={e => {
             if (e.key === 'ArrowDown') {
@@ -294,10 +321,19 @@ export function TradesPage({
           }}
         >
           {sortedTrades.length === 0 ? (
-            <div className="py-16 text-center text-[13px] text-[var(--fg-3)]">{t('empty_trades')}</div>
+            <div className="py-16 text-center text-[14px] text-[var(--fg-3)]">{t('empty_trades')}</div>
           ) : (
-            <div className="max-h-[72vh] overflow-y-auto">
-              <table className="otl-table">
+            <div ref={tableWrapRef} className="otl-table-wrap max-h-[72vh] overflow-y-auto">
+              <div
+                aria-hidden="true"
+                className="otl-row-glider"
+                style={{
+                  opacity: rowGlider.visible ? 1 : 0,
+                  height: `${rowGlider.height}px`,
+                  transform: `translate3d(0, ${rowGlider.top}px, 0)`,
+                }}
+              />
+              <table className={`otl-table ${detailed ? '' : 'compact'}`}>
                 <thead className="sticky top-0 z-10">
                   <tr>
                     <th>{t('th_symbol_time')}</th>
@@ -316,29 +352,28 @@ export function TradesPage({
                           rowRefs.current[tr.trade_id] = el
                         }}
                         data-testid={`trade-row-${tr.trade_id}`}
+                        data-glider-row={rowGlider.visible ? 'true' : undefined}
                         className={`clickable ${active ? 'selected' : ''}`}
                         onClick={() => selectTradeAt(tr.trade_id, idx)}
                       >
                         <td>
                           <div className="flex items-center gap-2">
                             <InstrumentMark instrument={tr.symbol} exchange={tr.venue_id.toUpperCase()} />
-                            <strong className="text-[13px] whitespace-nowrap">{tr.symbol}</strong>
+                            <strong className="text-[14px] font-semibold whitespace-nowrap">{tr.symbol}</strong>
                             <span
-                              className="px-1.5 py-0.5 rounded text-[10.5px] font-semibold whitespace-nowrap"
-                              style={{
-                                background: tr.side === 'LONG' ? 'var(--pos-soft)' : 'var(--neg-soft)',
-                                color: tr.side === 'LONG' ? 'var(--pos)' : 'var(--neg)',
-                              }}
+                              className={`text-[13px] font-semibold whitespace-nowrap ${
+                                tr.side === 'LONG' ? 'txt-pos' : 'txt-neg'
+                              }`}
                             >
                               {tr.side === 'LONG' ? t('side_long') : t('side_short')}
                             </span>
                             {tr.is_partial_close && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-2)] text-[var(--fg-3)] border border-[var(--border)] whitespace-nowrap">
-                                {t('partial_badge')}
+                              <span className="text-[13px] text-[var(--fg-3)] whitespace-nowrap">
+                                · {t('partial_badge')}
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-[var(--fg-3)] mt-0.5 whitespace-nowrap">
+                          <div className="text-[13px] text-[var(--fg-3)] mt-0.5 whitespace-nowrap">
                             {tr.close_time_str} · {fmtDuration(tr.holding_sec, locale)}
                           </div>
                         </td>
@@ -350,16 +385,16 @@ export function TradesPage({
                         </td>
                         {detailed && (
                           <td className="hidden sm:table-cell text-right whitespace-nowrap">
-                            <div className="text-[12px] font-medium sensitive">
+                            <div className="text-[13px] font-medium sensitive">
                               {t('fee_net_short')}{' '}
                               {tr.net_fee_usd > 0 ? `-${cur.money(tr.net_fee_usd, 2)}` : cur.money(0, 2)}
                               {tr.effective_relief_pct > 0 && (
-                                <span className="txt-pos ml-1 text-[11px]">
+                                <span className="txt-pos ml-1">
                                   (-{tr.effective_relief_pct.toFixed(0)}%)
                                 </span>
                               )}
                             </div>
-                            <div className="text-[11px] text-[var(--fg-3)] sensitive">
+                            <div className="text-[13px] text-[var(--fg-3)] sensitive">
                               {tr.entry_leg.fee_known === false || tr.exit_leg.fee_known === false
                                 ? t('leg_fee_unknown')
                                 : `${t('fee_entry_short')} -${cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)} · ${t('fee_exit_short')} -${cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}`}
@@ -370,7 +405,7 @@ export function TradesPage({
                           <div className={`text-[14px] font-semibold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
                             {cur.signedPlainMoney(tr.net_pnl_usd)}
                           </div>
-                          <div className="text-[11px] text-[var(--fg-3)] sensitive">
+                          <div className="text-[13px] text-[var(--fg-3)] sensitive">
                             {locale === 'en' ? 'Pre-rebate ' : '返佣前 '}
                             {cur.signedPlainMoney(tr.book_pnl_usd)}
                           </div>
@@ -385,19 +420,22 @@ export function TradesPage({
         </div>
 
         {/* Right Settlement Inspector */}
-        <aside data-testid="trade-detail-panel" className="xl:col-span-5 otl-card p-5 flex flex-col gap-4 xl:sticky xl:top-4">
+        <aside
+          data-testid="trade-detail-panel"
+          className="xl:col-span-5 py-5 xl:pl-6 border-t xl:border-t-0 border-[var(--border)] flex flex-col gap-4 xl:sticky xl:top-4"
+        >
           <div className="flex items-center justify-between gap-2">
-            <h2 className="m-0 text-[14.5px] font-semibold text-[var(--fg)]">{t('detail_title')}</h2>
+            <h2 className="t-h2">{t('detail_title')}</h2>
             {sortedTrades.length > 0 && (
-              <div className="flex items-center gap-1.5 text-[11.5px] text-[var(--fg-3)]">
-                <span className="tabular-nums">
+              <div className="flex items-center gap-1.5 text-[13px] text-[var(--fg-3)]">
+                <span className="tabular-nums mr-1">
                   {selectedIndex + 1} / {sortedTrades.length}
                 </span>
                 <button
                   type="button"
                   disabled={selectedIndex <= 0}
                   onClick={() => step(-1)}
-                  className="p-1 rounded border border-[var(--border)] bg-[var(--surface-2)] hover:bg-[var(--surface-hover)] disabled:opacity-35 cursor-pointer"
+                  className="otl-btn h-7 w-7 px-0"
                   aria-label="Previous"
                 >
                   <ArrowUp size={13} />
@@ -406,7 +444,7 @@ export function TradesPage({
                   type="button"
                   disabled={selectedIndex < 0 || selectedIndex + 1 >= sortedTrades.length}
                   onClick={() => step(1)}
-                  className="p-1 rounded border border-[var(--border)] bg-[var(--surface-2)] hover:bg-[var(--surface-hover)] disabled:opacity-35 cursor-pointer"
+                  className="otl-btn h-7 w-7 px-0"
                   aria-label="Next"
                 >
                   <ArrowDown size={13} />
@@ -416,35 +454,32 @@ export function TradesPage({
           </div>
 
           {!selected ? (
-            <div className="py-12 text-center text-[12.5px] text-[var(--fg-3)]">{t('empty_trades')}</div>
+            <div className="py-12 text-center text-[14px] text-[var(--fg-3)]">{t('empty_trades')}</div>
           ) : (
             <>
               <div
                 key={selected.trade_id}
-                className={`${swapDir === 'prev' ? 'otl-swap-prev' : 'otl-swap-next'} flex flex-col gap-4`}
+                className={`${swapDir === 'prev' ? 'otl-swap-prev' : 'otl-swap-next'} flex flex-col`}
               >
-                <div className="flex items-start justify-between gap-3 pb-3 border-b border-[var(--border)]">
+                <div className="flex items-start justify-between gap-3 pb-3.5 border-b border-[var(--border)]">
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
+                      <InstrumentMark instrument={selected.symbol} exchange={selected.venue_id.toUpperCase()} />
+                      <strong className="text-[16px] font-semibold">{selected.symbol}</strong>
+                      <span
+                        className={`text-[13px] font-semibold ${
+                          selected.side === 'LONG' ? 'txt-pos' : 'txt-neg'
+                        }`}
+                      >
+                        {selected.side === 'LONG' ? t('side_long') : t('side_short')}
+                      </span>
                       <VenueBadge
                         venueId={selected.venue_id}
                         name={locale === 'en' ? selected.venue_name : selected.venue_name_zh || selected.venue_name}
                       />
-                      <strong className="text-[15.5px]">{selected.symbol}</strong>
-                      <span
-                        className="px-2 py-0.5 rounded-md text-[11px] font-semibold"
-                        style={{
-                          background: selected.side === 'LONG' ? 'var(--pos-soft)' : 'var(--neg-soft)',
-                          color: selected.side === 'LONG' ? 'var(--pos)' : 'var(--neg)',
-                        }}
-                      >
-                        {selected.side === 'LONG' ? t('side_long') : t('side_short')}
-                      </span>
                     </div>
-                    <div className="text-[12px] text-[var(--fg-3)] mt-1">
-                      {selected.qty > 0
-                        ? `${selected.qty} ${selected.symbol.split(/[_/-]/)[0]} · `
-                        : ''}
+                    <div className="text-[13px] text-[var(--fg-3)] mt-1">
+                      {selected.qty > 0 ? `${selected.qty} ${selected.symbol.split(/[_/-]/)[0]} · ` : ''}
                       {fmtDuration(selected.holding_sec, locale)}
                       {selected.effective_relief_pct > 0
                         ? ` · ${t('detail_relief_short')} ${selected.effective_relief_pct.toFixed(1)}%`
@@ -452,16 +487,15 @@ export function TradesPage({
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className={`text-[24px] font-bold tracking-tight leading-none sensitive ${pnlTone(selected.net_pnl_usd)}`}>
+                    <div className={`t-kpi sensitive ${pnlTone(selected.net_pnl_usd)}`}>
                       {cur.signedMoney(selected.net_pnl_usd)}
                     </div>
-                    <div className="text-[11px] text-[var(--fg-3)] mt-1">
+                    <div className="text-[13px] text-[var(--fg-3)] mt-1">
                       {selected.rebate_status === 'PENDING' ? t('detail_net_pending') : t('detail_net_after_rebate')}
                     </div>
                   </div>
                 </div>
 
-                {/* Mandatory Per-Leg Entry & Exit Fee Cards */}
                 <LegFeeCard
                   testId="entry-leg-fee-card"
                   title={t('leg_entry')}
@@ -475,8 +509,7 @@ export function TradesPage({
                   leg={selected.exit_leg}
                 />
 
-                {/* Clean Reconciliation Waterfall */}
-                <div className="space-y-1.5 text-[12.5px]">
+                <div className="pt-3.5 space-y-1.5 text-[13px]">
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
                     <span className={`font-medium sensitive ${pnlTone(selected.gross_pnl_usd)}`}>
@@ -497,18 +530,16 @@ export function TradesPage({
                   </div>
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
-                    <span className="txt-pos sensitive">
-                      +{cur.money(selected.total_rebate_usd, 3)}
-                    </span>
+                    <span className="txt-pos sensitive">+{cur.money(selected.total_rebate_usd, 3)}</span>
                   </div>
-                  <div className="flex justify-between pt-2 border-t border-[var(--border)] font-semibold">
+                  <div className="flex justify-between pt-2 border-t border-[var(--border)] text-[14px] font-semibold">
                     <span>{t('wf_final_net')}</span>
                     <span className={`sensitive ${pnlTone(selected.net_pnl_usd)}`}>
                       {cur.signedMoney(selected.net_pnl_usd)}
                     </span>
                   </div>
                   {selected.total_discount_saved_usd > 0.0001 && (
-                    <div className="flex justify-between text-[11px] text-[var(--fg-3)]">
+                    <div className="flex justify-between text-[var(--fg-3)]">
                       <span>
                         {locale === 'en'
                           ? 'Pre-deduction token fee discount already saved'
@@ -520,15 +551,15 @@ export function TradesPage({
                 </div>
               </div>
 
-              {/* Generic Journal Tags & Notes (kept outside key={selected.trade_id} to preserve DOM focus & synchronous drafts!) */}
-              <div className="pt-3 border-t border-[var(--border)] space-y-2.5">
+              {/* Journal Tags & Notes (kept outside key={selected.trade_id} to preserve synchronous drafts) */}
+              <div className="pt-3.5 border-t border-[var(--border)] space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-[12px] font-medium text-[var(--fg-2)]">{t('journal_title')}</span>
+                  <span className="text-[13px] font-medium text-[var(--fg-2)]">{t('journal_title')}</span>
                   <button
                     type="button"
                     disabled={saving}
                     onClick={() => void handleSave()}
-                    className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                    className="otl-btn h-7 px-2.5"
                   >
                     {savedAck && <Check size={12} className="txt-pos" />}
                     <span>{saving ? t('journal_saving') : savedAck ? t('journal_saved') : t('journal_save')}</span>
@@ -550,11 +581,11 @@ export function TradesPage({
                             [selected.trade_id]: { tags: nextTags, note: draftNote },
                           }))
                         }}
-                        className="px-2.5 py-1 rounded-md text-[11px] font-medium border cursor-pointer"
+                        className="px-2.5 py-1 rounded-[5px] text-[13px] font-medium border cursor-pointer"
                         style={{
-                          background: on ? 'var(--accent-soft)' : 'var(--surface-2)',
+                          background: on ? 'var(--accent-soft)' : 'transparent',
                           borderColor: on ? 'var(--accent)' : 'var(--border)',
-                          color: on ? 'var(--accent)' : 'var(--fg-2)',
+                          color: on ? 'var(--fg)' : 'var(--fg-2)',
                         }}
                       >
                         {t(tk.key)}
@@ -573,7 +604,7 @@ export function TradesPage({
                     }))
                   }}
                   placeholder={t('journal_placeholder')}
-                  className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-[12px] text-[var(--fg)] placeholder:text-[var(--fg-3)]"
+                  className="w-full rounded-md border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-[14px] text-[var(--fg)] placeholder:text-[var(--fg-3)]"
                 />
               </div>
             </>
@@ -581,12 +612,13 @@ export function TradesPage({
         </aside>
       </div>
 
-      <section className="otl-card overflow-hidden">
-        <h2 id="perp-history-title" className="m-0 px-5 py-3 border-b border-[var(--border)] text-[14px] font-semibold">
+      {/* All-Time Equity & Commodity Perps Fee History */}
+      <section className="py-6 space-y-3">
+        <h2 id="perp-history-title" className="t-h2 pb-2.5 border-b border-[var(--border)]">
           {t('st_perps')} · {locale === 'en' ? 'All time' : '全部历史'}
         </h2>
         {perpHistory.length === 0 ? (
-          <p className="m-0 py-8 text-center text-[12.5px] text-[var(--fg-3)]">
+          <p className="m-0 py-8 text-center text-[14px] text-[var(--fg-3)]">
             {locale === 'en'
               ? 'No equity or commodity perpetual records match these filters.'
               : '当前筛选下没有股票或商品永续合约记录。'}
@@ -622,13 +654,17 @@ export function TradesPage({
                             >
                               {row.symbol}
                             </button>
-                          ) : row.symbol}
+                          ) : (
+                            row.symbol
+                          )}
                         </div>
-                        <div className="text-[11px] text-[var(--fg-3)]">
+                        <div className="pl-7 text-[13px] text-[var(--fg-3)]">
                           {locale === 'en' ? row.category : row.category_zh || row.category}
                         </div>
                       </td>
-                      <td><VenueBadge venueId={row.venue_id} name={venueName} /></td>
+                      <td>
+                        <VenueBadge venueId={row.venue_id} name={venueName} />
+                      </td>
                       <td className="text-right whitespace-nowrap sensitive">{row.trade_count} / {row.qty}</td>
                       <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
                         {row.trade_count ? `${row.maker_bps.toFixed(1)} / ${row.taker_bps.toFixed(1)}` : '— / —'}

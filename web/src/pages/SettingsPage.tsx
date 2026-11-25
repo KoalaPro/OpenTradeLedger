@@ -191,7 +191,7 @@ export function SettingsPage({
       if (reduced) {
         finishClose()
       } else {
-        closeCeremonyTimerRef.current = window.setTimeout(finishClose, 380)
+        closeCeremonyTimerRef.current = window.setTimeout(finishClose, 320)
       }
     } catch (err) {
       const detail = err instanceof Error ? err.message : isZh ? '连接失败' : 'Connection failed'
@@ -207,7 +207,7 @@ export function SettingsPage({
       setSubmitStep('')
       setBusyVenue('')
       setModalShake(true)
-      window.setTimeout(() => setModalShake(false), 380)
+      window.setTimeout(() => setModalShake(false), 320)
     }
   }
 
@@ -241,7 +241,7 @@ export function SettingsPage({
   const ceremonyStage: 'credentials' | 'verifying' | 'syncing' | 'done' = submitStep || 'credentials'
 
   return (
-    <div data-testid="settings-page" className="otl-stagger space-y-4">
+    <div data-testid="settings-page" className="otl-stagger">
       <FloatingToastViewport
         statusMsg={statusMsg}
         errorMsg={errorMsg}
@@ -249,20 +249,15 @@ export function SettingsPage({
         onClearError={() => setErrorMsg('')}
       />
 
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
-        {/* Left: Pluggable Exchange Adapters (Binance / OKX / Bybit / Gate / Bitget / MEXC / EasiCoin) */}
-        <section className="xl:col-span-7 otl-card p-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="m-0 text-[15px] font-semibold text-[var(--fg)] flex items-center gap-2">
-                <ShieldCheck size={16} className="text-emerald-500" />
-                {t('set_ex_title')}
-              </h2>
-              <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('set_ex_sub')}</p>
-            </div>
+      <div className="grid grid-cols-1 xl:grid-cols-12 items-start">
+        {/* Left 7 Columns: Read-Only Exchange Adapters */}
+        <section className="xl:col-span-7 py-6 xl:pr-7 xl:border-r border-[var(--border)] space-y-4">
+          <div>
+            <h2 className="t-h2">{t('set_ex_title')}</h2>
+            <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('set_ex_sub')}</p>
           </div>
 
-          <div className="space-y-2.5">
+          <div className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
             {adapters.map(ad => {
               const vStatus = getAdapterVisualStatus(ad)
               const errReason = isZh
@@ -274,21 +269,20 @@ export function SettingsPage({
                 <div
                   key={ad.venue_id}
                   data-testid={`adapter-card-${ad.venue_id}`}
-                  className="otl-surface-2 rounded-xl p-3.5 space-y-3"
-                  style={
-                    vStatus === 'error'
-                      ? { borderColor: 'rgba(239, 68, 68, 0.38)' }
-                      : undefined
-                  }
+                  className="py-4 space-y-2.5"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-3 min-w-0">
                       <VenueBadge
                         venueId={ad.venue_id}
                         name={locale === 'en' ? ad.display_name : ad.display_name_zh || ad.display_name}
                       />
                       <div className="min-w-0">
-                        <div className="text-[13px] font-medium text-[var(--fg)] truncate">
+                        <div
+                          className={`text-[14px] text-[var(--fg)] truncate ${
+                            ad.configured && ad.credential ? 'font-mono text-[13px]' : 'font-medium'
+                          }`}
+                        >
                           {ad.configured && ad.credential
                             ? ad.credential.label &&
                               ad.credential.label.toLowerCase() !== ad.display_name.toLowerCase() &&
@@ -301,36 +295,37 @@ export function SettingsPage({
                                 : 'Local history archived (API unbound)'
                               : ad.api_base_url}
                         </div>
-                        <div className="text-[11px] text-[var(--fg-3)]">
+                        <div className="text-[13px] text-[var(--fg-3)]">
                           {ad.requires_passphrase ? t('set_passphrase_req') : 'GET-Only Signed API'}
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
                       {ad.configured ? (
                         <>
                           {vStatus === 'connected' && (
                             <span
                               data-testid={`adapter-status-${ad.venue_id}`}
-                              className="otl-status-ok px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                              className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[var(--ok)] mr-1"
                             >
+                              <span className="h-1.5 w-1.5 rounded-full bg-current" />
                               {t('set_connected')}
                             </span>
                           )}
                           {vStatus === 'error' && (
                             <span
                               data-testid={`adapter-status-${ad.venue_id}`}
-                              className="otl-status-err inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                              className="inline-flex items-center gap-1 text-[13px] font-medium text-[var(--err)] mr-1"
                             >
-                              <AlertTriangle size={11} />
+                              <AlertTriangle size={13} />
                               <span>{isZh ? '连接报错' : 'API Error'}</span>
                             </span>
                           )}
                           {vStatus === 'unverified' && (
                             <span
                               data-testid={`adapter-status-${ad.venue_id}`}
-                              className="otl-status-warn px-2 py-0.5 rounded-md text-[11px] font-semibold"
+                              className="text-[13px] font-medium text-[var(--warn)] mr-1"
                             >
                               {isZh ? '待验证' : 'Unverified'}
                             </span>
@@ -338,7 +333,7 @@ export function SettingsPage({
                           {vStatus === 'disabled' && (
                             <span
                               data-testid={`adapter-status-${ad.venue_id}`}
-                              className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border)] text-[var(--fg-3)]"
+                              className="text-[13px] text-[var(--fg-3)] mr-1"
                             >
                               {isZh ? '已停用' : 'Disabled'}
                             </span>
@@ -349,7 +344,7 @@ export function SettingsPage({
                             data-testid={`test-adapter-${ad.venue_id}`}
                             disabled={busyVenue === ad.venue_id}
                             onClick={() => void handleTest(ad.venue_id, vStatus === 'error')}
-                            className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer disabled:opacity-50"
+                            className="otl-btn h-7 px-2.5"
                           >
                             {busyVenue === ad.venue_id
                               ? isZh
@@ -374,7 +369,7 @@ export function SettingsPage({
                               setPassphrase('')
                             }}
                             title={isZh ? '修改或更新 API 密钥' : 'Update API credentials'}
-                            className="inline-flex items-center gap-1 h-7 px-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[11.5px] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
+                            className="otl-btn h-7 px-2.5 text-[var(--fg-2)]"
                           >
                             <Pencil size={12} />
                             <span>{isZh ? '改密钥' : 'Edit'}</span>
@@ -388,7 +383,7 @@ export function SettingsPage({
                               setKeepHistoryOnDelete(true)
                               setDeletingVenue(ad.venue_id)
                             }}
-                            className="h-7 px-2 rounded-lg border border-[var(--border)] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+                            className="otl-btn h-7 w-7 px-0 text-[var(--fg-3)] hover:text-[var(--err)]"
                             aria-label={t('set_remove')}
                           >
                             <Trash2 size={13} />
@@ -398,7 +393,7 @@ export function SettingsPage({
                         <>
                           <span
                             data-testid={`adapter-status-${ad.venue_id}`}
-                            className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--fg-2)]"
+                            className="text-[13px] text-[var(--fg-3)] mr-1"
                           >
                             {isZh ? '已封存' : 'Archived'}
                           </span>
@@ -413,7 +408,7 @@ export function SettingsPage({
                               setApiSecret('')
                               setPassphrase('')
                             }}
-                            className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                            className="otl-btn h-7 px-2.5"
                           >
                             <Plus size={13} />
                             <span>{isZh ? '重新绑定 API' : 'Re-bind API'}</span>
@@ -427,7 +422,7 @@ export function SettingsPage({
                               setKeepHistoryOnDelete(false)
                               setDeletingVenue(ad.venue_id)
                             }}
-                            className="h-7 px-2 rounded-lg border border-[var(--border)] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+                            className="otl-btn h-7 w-7 px-0 text-[var(--fg-3)] hover:text-[var(--err)]"
                             aria-label={isZh ? '清空封存数据' : 'Purge archived data'}
                           >
                             <Trash2 size={13} />
@@ -445,7 +440,7 @@ export function SettingsPage({
                             setApiSecret('')
                             setPassphrase('')
                           }}
-                          className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                          className="otl-btn h-7 px-2.5"
                         >
                           <Plus size={13} />
                           <span>{t('set_add_btn')}</span>
@@ -454,18 +449,17 @@ export function SettingsPage({
                     </div>
                   </div>
 
-                  {/* Persistent API Error Diagnostic Box — NEVER hides why an exchange failed */}
                   {vStatus === 'error' && errReason && (
                     <div
                       data-testid={`adapter-error-box-${ad.venue_id}`}
-                      className="otl-status-err rounded-lg px-3 py-2.5 text-[12px] space-y-1"
+                      className="otl-status-err rounded-md px-3 py-2.5 text-[13px] space-y-1"
                     >
                       <div className="font-semibold flex items-start gap-1.5">
                         <AlertTriangle size={13} className="shrink-0 mt-0.5" />
                         <span>{errReason}</span>
                       </div>
                       {rawErr && !errReason.includes(rawErr) && (
-                        <div className="text-[11px] opacity-85 font-mono break-all pl-5">
+                        <div className="opacity-85 font-mono break-all pl-5">
                           {rawErr}
                         </div>
                       )}
@@ -477,8 +471,8 @@ export function SettingsPage({
           </div>
         </section>
 
-        {/* Right: Security, Version OTA, Preferences, AI & Notifications */}
-        <section className="xl:col-span-5 space-y-4">
+        {/* Right 5 Columns: Security, Version OTA, Preferences, AI & Bark */}
+        <section className="xl:col-span-5 xl:pl-7 border-t xl:border-t-0 border-[var(--border)] divide-y divide-[var(--border)]">
           {!demoMode && (
             <AccessPasswordCard
               authStatus={authStatus}
@@ -498,11 +492,11 @@ export function SettingsPage({
             setErrorMsg={setErrorMsg}
           />
 
-          <div className="otl-card p-5 space-y-4">
-            <h2 className="m-0 text-[15px] font-semibold text-[var(--fg)]">{t('set_pref_title')}</h2>
+          <div className="py-6 space-y-4">
+            <h2 className="t-h2">{t('set_pref_title')}</h2>
 
             {/* Language */}
-            <div className="flex items-center justify-between gap-2 text-[12.5px]">
+            <div className="flex items-center justify-between gap-2 text-[14px]">
               <span className="text-[var(--fg-2)]">{t('set_lang')}</span>
               <SegmentedPills
                 value={settings.locale}
@@ -514,8 +508,8 @@ export function SettingsPage({
               />
             </div>
 
-            {/* Theme — Glider-backed SegmentedPills with smooth color crossfade */}
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[12.5px] pt-3 border-t border-[var(--border)]">
+            {/* Theme */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[14px] pt-3 border-t border-[var(--border)]">
               <span className="text-[var(--fg-2)]">{t('set_theme')}</span>
               <SegmentedPills
                 size="sm"
@@ -530,7 +524,7 @@ export function SettingsPage({
             </div>
 
             {/* Polarity */}
-            <div className="flex items-center justify-between gap-2 text-[12.5px] pt-3 border-t border-[var(--border)]">
+            <div className="flex items-center justify-between gap-2 text-[14px] pt-3 border-t border-[var(--border)]">
               <span className="text-[var(--fg-2)]">{t('set_polarity')}</span>
               <SegmentedPills
                 value={settings.polarity}
@@ -542,8 +536,8 @@ export function SettingsPage({
               />
             </div>
 
-            {/* Display Currency with Live FX */}
-            <div className="space-y-1.5 pt-3 border-t border-[var(--border)] text-[12.5px]">
+            {/* Display Currency */}
+            <div className="space-y-1.5 pt-3 border-t border-[var(--border)] text-[14px]">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[var(--fg-2)]">{t('set_currency')}</span>
                 <select
@@ -553,7 +547,7 @@ export function SettingsPage({
                   onChange={e =>
                     void onUpdateSettings({ display_currency: e.target.value as CurrencyCode })
                   }
-                  className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)] cursor-pointer"
+                  className="otl-select h-8 px-2.5 text-[13px] cursor-pointer"
                 >
                   {CURRENCY_OPTIONS.map(opt => (
                     <option key={opt.code} value={opt.code}>
@@ -563,7 +557,7 @@ export function SettingsPage({
                 </select>
               </div>
               {cur.code !== 'USDT' && cur.code !== 'USD' && (
-                <div className="text-[11px] text-[var(--fg-3)] text-right">
+                <div className="text-[13px] text-[var(--fg-3)] text-right">
                   {t('set_fx_live')}: 1 USDT ≈ {cur.symbol}
                   {cur.rate.toFixed(cur.code === 'JPY' ? 2 : 4)}
                   {cur.fx.updated_at ? ` · ${cur.fx.updated_at}` : ''}
@@ -571,8 +565,8 @@ export function SettingsPage({
               )}
             </div>
 
-            {/* Optional Modules & Privacy Default — Velvet Tactile Switches */}
-            <div className="space-y-3 pt-3 border-t border-[var(--border)] text-[12.5px]">
+            {/* Optional Modules & Privacy Default */}
+            <div className="space-y-3 pt-3 border-t border-[var(--border)] text-[14px]">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[var(--fg-2)]">{t('set_privacy_default')}</span>
                 <button
@@ -634,7 +628,7 @@ export function SettingsPage({
                   <span className="otl-switch-knob" />
                 </button>
               </div>
-              <p className="m-0 text-[11px] text-[var(--fg-3)]">{t('set_mod_note')}</p>
+              <p className="m-0 text-[13px] text-[var(--fg-3)]">{t('set_mod_note')}</p>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[var(--fg-2)]">{t('set_goal_title')}</span>
                 <button
@@ -664,7 +658,7 @@ export function SettingsPage({
                   value={goalLabel}
                   onChange={e => setGoalLabel(e.target.value)}
                   placeholder={locale === 'en' ? 'Goal name (e.g. 2026 Target)' : '目标名称（如：阶段净值目标）'}
-                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                  className="otl-input w-full"
                 />
                 <div className="flex items-center gap-2">
                   <input
@@ -672,7 +666,7 @@ export function SettingsPage({
                     value={goalInput}
                     onChange={e => setGoalInput(e.target.value)}
                     placeholder={t('set_goal_target')}
-                    className="h-8 flex-1 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                    className="otl-input flex-1"
                   />
                   <button
                     type="button"
@@ -683,14 +677,16 @@ export function SettingsPage({
                         setErrorMsg(isZh ? '目标净值必须大于 0' : 'Target equity must be greater than zero')
                         return
                       }
-                      if (await onUpdateSettings({
-                        goal_enabled: true,
-                        goal_label: goalLabel.trim(),
-                        goal_target_usd: target,
-                      })) flashOk(t('set_save_ok'), 2500)
+                      if (
+                        await onUpdateSettings({
+                          goal_enabled: true,
+                          goal_label: goalLabel.trim(),
+                          goal_target_usd: target,
+                        })
+                      )
+                        flashOk(t('set_save_ok'), 2500)
                     }}
-                    className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
-                    style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+                    className="otl-btn otl-btn-primary h-[34px]"
                   >
                     {t('save_config')}
                   </button>
@@ -701,8 +697,8 @@ export function SettingsPage({
             {/* Demo Mode Toggle */}
             <div className="pt-3 border-t border-[var(--border)] flex items-center justify-between gap-3">
               <div>
-                <div className="text-[12.5px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
-                <div className="text-[11.5px] text-[var(--fg-3)]">
+                <div className="text-[14px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
+                <div className="text-[13px] text-[var(--fg-3)]">
                   {previewFallback
                     ? isZh
                       ? '已切换为实盘模式（接入首个只读交易所 API 后，示例预览将自动替换为真实账单）'
@@ -740,7 +736,7 @@ export function SettingsPage({
         </section>
       </div>
 
-      {/* Guided Velvet Floating Modal for Adding / Updating Exchange Credentials */}
+      {/* Guided Modal for Adding / Updating Exchange Credentials */}
       <FloatingModal
         open={Boolean(selectedAdapter)}
         onClose={() => {
@@ -777,17 +773,16 @@ export function SettingsPage({
               href={selectedAdapter.docs_url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--accent)] hover:underline"
+              className="inline-flex items-center gap-1 text-[13px] font-medium text-[var(--accent)] hover:underline"
             >
               <span>{isZh ? 'API 文档' : 'API Docs'}</span>
-              <ExternalLink size={11} />
+              <ExternalLink size={12} />
             </a>
           ) : undefined
         }
       >
         {selectedAdapter && (
-          <div className={`p-5 space-y-3.5 text-[12.5px] ${modalShake ? 'otl-shake' : ''}`}>
-            {/* 3-Stage Live Read-Only Connection Ceremony Stepper */}
+          <div className={`p-5 space-y-3.5 text-[13px] ${modalShake ? 'otl-shake' : ''}`}>
             <div
               data-testid="exchange-ceremony-stepper"
               data-stage={ceremonyStage}
@@ -822,36 +817,36 @@ export function SettingsPage({
               ].map(st => (
                 <div
                   key={st.id}
-                  className="rounded-lg border px-2.5 py-2 flex items-center gap-2 text-[11px] font-medium transition-all duration-200"
+                  className="rounded-md border px-2.5 py-2 flex items-center gap-2 text-[13px] font-medium"
                   style={{
                     background: st.done
-                      ? 'rgba(16, 185, 129, 0.1)'
+                      ? 'rgba(47, 196, 149, 0.10)'
                       : st.active
                         ? 'var(--accent-soft)'
                         : 'var(--surface-2)',
                     borderColor: st.done
-                      ? 'rgba(16, 185, 129, 0.34)'
+                      ? 'rgba(47, 196, 149, 0.30)'
                       : st.active
                         ? 'var(--accent)'
                         : 'var(--border)',
-                    color: st.done ? '#10b981' : st.active ? 'var(--fg)' : 'var(--fg-3)',
+                    color: st.done ? 'var(--ok)' : st.active ? 'var(--fg)' : 'var(--fg-3)',
                   }}
                 >
                   <span
-                    className="h-4 w-4 rounded-full inline-flex items-center justify-center text-[10px] font-bold shrink-0"
+                    className="h-4 w-4 rounded-full inline-flex items-center justify-center text-[11px] font-semibold shrink-0"
                     style={{
                       background: st.done
-                        ? '#10b981'
+                        ? 'var(--ok)'
                         : st.active
                           ? 'var(--accent)'
                           : 'var(--track)',
-                      color: st.done || st.active ? '#ffffff' : 'var(--fg-3)',
+                      color: st.done || st.active ? 'var(--accent-fg)' : 'var(--fg-3)',
                     }}
                   >
                     {st.done ? (
                       <Check size={10} strokeWidth={3} />
                     ) : st.spinning ? (
-                      <RefreshCw size={9} className="animate-spin" />
+                      <RefreshCw size={10} className="animate-spin" />
                     ) : (
                       st.num
                     )}
@@ -861,9 +856,9 @@ export function SettingsPage({
               ))}
             </div>
 
-            <div className="otl-surface-2 rounded-lg px-3.5 py-2.5 text-[11.5px] text-[var(--fg-2)] space-y-1">
+            <div className="otl-surface-2 px-3.5 py-2.5 text-[13px] text-[var(--fg-2)] space-y-1">
               <div className="font-semibold text-[var(--fg)] flex items-center gap-1.5">
-                <ShieldCheck size={13} className="text-emerald-500 shrink-0" />
+                <ShieldCheck size={14} style={{ color: 'var(--ok)' }} className="shrink-0" />
                 <span>{isZh ? '安全接入指引（先验活、再加密入库）' : 'Read-Only Safety Checklist'}</span>
               </div>
               <p className="m-0 leading-relaxed">
@@ -874,7 +869,7 @@ export function SettingsPage({
             </div>
 
             <AnimatedCollapse open={Boolean(modalError)}>
-              <div className="otl-status-err rounded-lg px-3 py-2 text-[12px] flex items-start gap-2">
+              <div className="otl-status-err rounded-md px-3 py-2 text-[13px] flex items-start gap-2">
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                 <span>{modalError}</span>
               </div>
@@ -882,7 +877,7 @@ export function SettingsPage({
 
             <div className="space-y-2.5">
               <label className="block space-y-1">
-                <span className="text-[11.5px] font-medium text-[var(--fg-2)]">
+                <span className="text-[13px] font-medium text-[var(--fg-2)]">
                   {isZh ? '账户备注名称（选填）' : 'Account Label (Optional)'}
                 </span>
                 <input
@@ -891,12 +886,12 @@ export function SettingsPage({
                   value={label}
                   onChange={e => setLabel(e.target.value)}
                   placeholder={isZh ? `如：${selectedAdapter.display_name_zh || selectedAdapter.display_name} 主账户` : `e.g. ${selectedAdapter.display_name} Main`}
-                  className="h-9 w-full px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12.5px] text-[var(--fg)]"
+                  className="otl-input h-9 w-full"
                 />
               </label>
 
               <label className="block space-y-1">
-                <span className="text-[11.5px] font-medium text-[var(--fg-2)]">
+                <span className="text-[13px] font-medium text-[var(--fg-2)]">
                   {isZh ? '只读 API Key *' : 'Read-Only API Key *'}
                 </span>
                 <input
@@ -906,12 +901,12 @@ export function SettingsPage({
                   value={apiKey}
                   onChange={e => setApiKey(e.target.value)}
                   placeholder={isZh ? '粘贴交易所生成的 API Key' : 'Paste Read-Only API Key'}
-                  className="h-9 w-full px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12.5px] text-[var(--fg)] font-mono"
+                  className="otl-input h-9 w-full font-mono"
                 />
               </label>
 
               <label className="block space-y-1">
-                <span className="text-[11.5px] font-medium text-[var(--fg-2)]">
+                <span className="text-[13px] font-medium text-[var(--fg-2)]">
                   {isZh ? 'API Secret 密钥 *' : 'API Secret *'}
                 </span>
                 <input
@@ -921,13 +916,13 @@ export function SettingsPage({
                   value={apiSecret}
                   onChange={e => setApiSecret(e.target.value)}
                   placeholder={isZh ? '粘贴对应的 API Secret' : 'Paste API Secret'}
-                  className="h-9 w-full px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12.5px] text-[var(--fg)] font-mono"
+                  className="otl-input h-9 w-full font-mono"
                 />
               </label>
 
               {selectedAdapter.requires_passphrase && (
                 <label className="block space-y-1">
-                  <span className="text-[11.5px] font-medium text-[var(--fg-2)]">
+                  <span className="text-[13px] font-medium text-[var(--fg-2)]">
                     {isZh ? 'API 口令 (Passphrase) *' : 'API Passphrase *'}
                   </span>
                   <input
@@ -937,7 +932,7 @@ export function SettingsPage({
                     value={passphrase}
                     onChange={e => setPassphrase(e.target.value)}
                     placeholder={isZh ? '创建该 API Key 时设置的口令' : 'Passphrase set when creating this API key'}
-                    className="h-9 w-full px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12.5px] text-[var(--fg)]"
+                    className="otl-input h-9 w-full font-mono"
                   />
                 </label>
               )}
@@ -945,10 +940,10 @@ export function SettingsPage({
 
             <AnimatedCollapse open={busyVenue === selectedAdapter.venue_id || submitStep === 'done'}>
               <div
-                className={`rounded-lg px-3 py-2.5 text-[11.5px] space-y-2 ${
+                className={`rounded-md px-3 py-2.5 text-[13px] space-y-2 ${
                   submitStep === 'done'
                     ? 'otl-status-ok'
-                    : 'border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)]'
+                    : 'otl-surface-2 text-[var(--fg-2)]'
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -988,7 +983,7 @@ export function SettingsPage({
                   setAddingVenue('')
                   setModalError('')
                 }}
-                className="h-8 px-3.5 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer disabled:opacity-50"
+                className="otl-btn"
               >
                 {t('cancel')}
               </button>
@@ -997,11 +992,12 @@ export function SettingsPage({
                 data-testid="save-exchange-btn"
                 disabled={busyVenue === selectedAdapter.venue_id || !formReady}
                 onClick={() => void handleAddSubmit()}
-                className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
-                style={{
-                  background: submitStep === 'done' ? '#10b981' : 'var(--accent)',
-                  color: submitStep === 'done' ? '#ffffff' : 'var(--accent-fg)',
-                }}
+                className="otl-btn otl-btn-primary px-4"
+                style={
+                  submitStep === 'done'
+                    ? { background: 'var(--ok)', color: '#ffffff' }
+                    : undefined
+                }
               >
                 {submitStep === 'done' ? (
                   <>
@@ -1041,7 +1037,7 @@ export function SettingsPage({
         }
       >
         {deletingAdapter && (
-          <div className="p-5 space-y-4 text-[12.5px]">
+          <div className="p-5 space-y-4 text-[13px]">
             {deleteMode === 'choice' ? (
               <>
                 <p className="m-0 text-[var(--fg-2)] leading-relaxed">
@@ -1055,7 +1051,7 @@ export function SettingsPage({
                     type="button"
                     data-testid="delete-opt-keep"
                     onClick={() => setKeepHistoryOnDelete(true)}
-                    className="w-full text-left rounded-xl border p-3.5 transition-colors cursor-pointer space-y-1"
+                    className="w-full text-left rounded-md border p-3.5 cursor-pointer space-y-1"
                     style={{
                       borderColor: keepHistoryOnDelete ? 'var(--accent)' : 'var(--border)',
                       background: keepHistoryOnDelete ? 'var(--accent-soft)' : 'var(--surface-2)',
@@ -1070,13 +1066,13 @@ export function SettingsPage({
                         style={{
                           borderColor: keepHistoryOnDelete ? 'var(--accent)' : 'var(--border-strong)',
                           background: keepHistoryOnDelete ? 'var(--accent)' : 'transparent',
-                          color: '#ffffff',
+                          color: 'var(--accent-fg)',
                         }}
                       >
                         {keepHistoryOnDelete && <Check size={10} strokeWidth={3} />}
                       </span>
                     </div>
-                    <p className="m-0 text-[11.5px] text-[var(--fg-2)] leading-relaxed">
+                    <p className="m-0 text-[var(--fg-2)] leading-relaxed">
                       {isZh
                         ? '销毁本地加密密钥并停止后台轮询；已同步的平仓交割、充提本金与闭环对账记录继续保留在本地（标为「已封存」）。'
                         : 'Deletes the encrypted API key and stops polling; synced trades, principal, and reconciliation stay archived locally.'}
@@ -1087,10 +1083,10 @@ export function SettingsPage({
                     type="button"
                     data-testid="delete-opt-purge"
                     onClick={() => setKeepHistoryOnDelete(false)}
-                    className="w-full text-left rounded-xl border p-3.5 transition-colors cursor-pointer space-y-1"
+                    className="w-full text-left rounded-md border p-3.5 cursor-pointer space-y-1"
                     style={{
-                      borderColor: !keepHistoryOnDelete ? 'rgba(239, 68, 68, 0.55)' : 'var(--border)',
-                      background: !keepHistoryOnDelete ? 'rgba(239, 68, 68, 0.08)' : 'var(--surface-2)',
+                      borderColor: !keepHistoryOnDelete ? 'var(--err)' : 'var(--border)',
+                      background: !keepHistoryOnDelete ? 'rgba(244, 104, 118, 0.08)' : 'var(--surface-2)',
                     }}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -1100,15 +1096,15 @@ export function SettingsPage({
                       <span
                         className="h-4 w-4 rounded-full border inline-flex items-center justify-center shrink-0"
                         style={{
-                          borderColor: !keepHistoryOnDelete ? '#ef4444' : 'var(--border-strong)',
-                          background: !keepHistoryOnDelete ? '#ef4444' : 'transparent',
+                          borderColor: !keepHistoryOnDelete ? 'var(--err)' : 'var(--border-strong)',
+                          background: !keepHistoryOnDelete ? 'var(--err)' : 'transparent',
                           color: '#ffffff',
                         }}
                       >
                         {!keepHistoryOnDelete && <Check size={10} strokeWidth={3} />}
                       </span>
                     </div>
-                    <p className="m-0 text-[11.5px] text-[var(--fg-2)] leading-relaxed">
+                    <p className="m-0 text-[var(--fg-2)] leading-relaxed">
                       {isZh
                         ? '同时销毁本地 API 密钥并清空该平台分区内的全部资产与历史交易流水（不影响其他交易所，手写复盘笔记保留）。'
                         : 'Deletes the API key and wipes all cached balances and trades in this venue partition (other exchanges and journal notes are untouched).'}
@@ -1128,7 +1124,7 @@ export function SettingsPage({
               <button
                 type="button"
                 onClick={() => setDeletingVenue('')}
-                className="h-8 px-3.5 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] cursor-pointer"
+                className="otl-btn"
               >
                 {t('cancel')}
               </button>
@@ -1150,14 +1146,9 @@ export function SettingsPage({
                         : `Purged ${vid.toUpperCase()} local data`,
                   )
                 }}
-                className={`h-8 px-3.5 rounded-lg text-[12px] font-semibold cursor-pointer ${
-                  deleteMode === 'choice' && keepHistoryOnDelete ? '' : 'otl-status-err'
+                className={`otl-btn ${
+                  deleteMode === 'choice' && keepHistoryOnDelete ? 'otl-btn-primary' : 'otl-status-err'
                 }`}
-                style={
-                  deleteMode === 'choice' && keepHistoryOnDelete
-                    ? { background: 'var(--accent)', color: 'var(--accent-fg)' }
-                    : undefined
-                }
               >
                 {deleteMode === 'choice' && keepHistoryOnDelete
                   ? isZh

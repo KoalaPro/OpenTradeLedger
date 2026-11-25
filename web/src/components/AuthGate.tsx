@@ -46,7 +46,6 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-    // Start loading dashboard data immediately underneath the ceremony curtain
     onUnlocked(nextAuth)
     setPassword('')
     setConfirmPwd('')
@@ -60,10 +59,10 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
     setCeremonyPhase('active')
     window.setTimeout(() => {
       setCeremonyPhase('lifting')
-    }, 1050)
+    }, 950)
     window.setTimeout(() => {
       setCeremonyPhase('idle')
-    }, 1520)
+    }, 1320)
   }
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -137,7 +136,7 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
 
   return (
     <>
-      {/* Ceremony C — Brand Shimmer & Curtain Lift (~1.5s) */}
+      {/* Brand Unlock Curtain */}
       {ceremonyPhase !== 'idle' && (
         <div
           data-testid="auth-ceremony-overlay"
@@ -149,20 +148,20 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
             src={ledgerLogo}
             alt="OpenTradeLedger"
             draggable={false}
-            className="w-16 h-16 rounded-2xl object-contain select-none mb-4 otl-ceremony-logo"
+            className="otl-brand-logo-lg select-none mb-4 otl-ceremony-logo"
           />
-          <div className="text-[20px] font-semibold tracking-wide otl-ceremony-shimmer">
+          <div className="t-h1 otl-ceremony-shimmer">
             OpenTradeLedger · 交易账本
           </div>
-          <div className="mt-1.5 inline-flex items-center gap-1.5 text-[12.5px] text-[var(--fg-2)]">
-            <ShieldCheck size={14} className="text-emerald-400" />
+          <div className="mt-1.5 inline-flex items-center gap-1.5 text-[13px] text-[var(--fg-2)]">
+            <ShieldCheck size={14} style={{ color: 'var(--ok)' }} />
             <span>
               {isZh
                 ? '本地只读账本已验证解锁'
                 : 'Local Read-Only Ledger Verified & Unlocked'}
             </span>
           </div>
-          <div className="w-40 h-[2.5px] rounded-full bg-[var(--track)] overflow-hidden mt-4">
+          <div className="w-40 h-[2px] rounded-full bg-[var(--track)] overflow-hidden mt-4">
             <div className="otl-ceremony-bar-fill" />
           </div>
         </div>
@@ -174,21 +173,10 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
           data-testid="auth-gate-overlay"
           className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-[var(--bg)]"
         >
-          {/* Subtle ambient radial glow */}
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute w-[360px] h-[360px] rounded-full opacity-50 blur-3xl"
-            style={{
-              background:
-                'radial-gradient(circle, rgba(245,158,11,0.16), rgba(59,130,246,0.10) 52%, transparent 74%)',
-            }}
-          />
-
-          {/* Top-right locale switcher */}
           <button
             type="button"
             onClick={onToggleLocale}
-            className="fixed top-5 right-5 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer z-10"
+            className="otl-btn fixed top-5 right-5 z-10"
           >
             <Languages size={14} />
             <span>{isZh ? 'EN' : '中文'}</span>
@@ -198,20 +186,19 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
             key={shakeKey}
             onSubmit={e => void handleSubmit(e)}
             data-testid={isSetup ? 'auth-setup-card' : 'auth-login-card'}
-            className={`relative w-full max-w-[388px] otl-card p-6 space-y-4 ${
+            className={`relative w-full max-w-[396px] otl-card p-6 space-y-4 ${
               shakeKey > 0 && errorText ? 'otl-shake' : 'otl-page-enter'
             }`}
           >
-            {/* Brand Header */}
             <div className="flex items-center gap-3.5">
               <img
                 src={ledgerLogo}
                 alt="OpenTradeLedger"
                 draggable={false}
-                className="w-11 h-11 rounded-xl object-contain shrink-0 select-none"
+                className="otl-brand-logo-lg select-none"
               />
               <div className="min-w-0">
-                <h1 className="m-0 text-[16px] font-semibold text-[var(--fg)] truncate">
+                <h1 className="t-h2 truncate">
                   {isSetup
                     ? isZh
                       ? '欢迎使用 · 设置访问密码'
@@ -220,7 +207,7 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
                       ? '交易账本 · 本地解锁'
                       : 'OpenTradeLedger · Unlock'}
                 </h1>
-                <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">
+                <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">
                   {isSetup
                     ? isZh
                       ? '密码经加盐哈希仅存于本地，保护 NAS / 局域网访问'
@@ -232,7 +219,6 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
               </div>
             </div>
 
-            {/* Password Inputs */}
             <div className="space-y-2.5 pt-1">
               <div className="relative">
                 <Lock
@@ -245,8 +231,16 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
                   data-testid="auth-password-input"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
-                  placeholder={isSetup ? (isZh ? '设置访问密码（至少 4 位）' : 'Create password (min 4 chars)') : isZh ? '输入本地访问密码' : 'Enter access password'}
-                  className="w-full h-9 pl-9 pr-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[13px] text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+                  placeholder={
+                    isSetup
+                      ? isZh
+                        ? '设置访问密码（至少 4 位）'
+                        : 'Create password (min 4 chars)'
+                      : isZh
+                        ? '输入本地访问密码'
+                        : 'Enter access password'
+                  }
+                  className="otl-input w-full h-9 pl-9 pr-3"
                 />
               </div>
 
@@ -262,14 +256,13 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
                     value={confirmPwd}
                     onChange={e => setConfirmPwd(e.target.value)}
                     placeholder={isZh ? '再次确认访问密码' : 'Confirm access password'}
-                    className="w-full h-9 pl-9 pr-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[13px] text-[var(--fg)] focus:outline-none focus:border-[var(--accent)]"
+                    className="otl-input w-full h-9 pl-9 pr-3"
                   />
                 </div>
               )}
             </div>
 
-            {/* Remember device & Forget password hint */}
-            <div className="flex items-center justify-between gap-2 text-[12px]">
+            <div className="flex items-center justify-between gap-2 text-[13px]">
               <label className="inline-flex items-center gap-2 text-[var(--fg-2)] cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -283,7 +276,7 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
                 <button
                   type="button"
                   onClick={() => setShowResetHelp(v => !v)}
-                  className="text-[11.5px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+                  className="text-[13px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
                 >
                   {isZh ? '忘记密码？' : 'Forgot password?'}
                 </button>
@@ -291,38 +284,35 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
             </div>
 
             <AnimatedCollapse open={showResetHelp && !isSetup}>
-              <div className="otl-surface-2 rounded-lg p-3 text-[11.5px] text-[var(--fg-2)] space-y-1">
+              <div className="otl-surface-2 p-3 text-[13px] text-[var(--fg-2)] space-y-1.5">
                 <div className="font-medium text-[var(--fg)]">
                   {isZh ? '本地安全重置方式（不伤交易数据与 API 密钥）：' : 'Safe local reset (keeps all DB & API keys intact):'}
                 </div>
-                <code className="block px-2 py-1 rounded bg-[var(--bg)] border border-[var(--border)] text-[11px] font-mono break-all">
+                <code className="block px-2.5 py-1.5 rounded bg-[var(--bg)] border border-[var(--border)] text-[13px] font-mono break-all">
                   python scripts/run_server.py --reset-password --data-dir ./data
                 </code>
               </div>
             </AnimatedCollapse>
 
-            {/* Error or Cooldown message */}
             {(errorText || cooldownSec > 0) && (
               <div
                 data-testid="auth-error-banner"
-                className="otl-status-err px-3 py-2 rounded-lg text-[12px] font-medium"
+                className="otl-status-err px-3 py-2 rounded-md text-[13px] font-medium"
               >
                 {cooldownSec > 0
                   ? isZh
                     ? `尝试过于频繁，请等待 ${cooldownSec} 秒后重试`
-                    : `Locked temporarily — retry in ${cooldownSec}s`
+                    : `Locked temporarily · retry in ${cooldownSec}s`
                   : errorText}
               </div>
             )}
 
-            {/* Action Buttons */}
             <div className="space-y-2 pt-0.5">
               <button
                 type="submit"
                 data-testid="auth-submit-btn"
                 disabled={submitting || cooldownSec > 0}
-                className="w-full h-9 rounded-lg text-[13px] font-semibold cursor-pointer disabled:opacity-50 transition"
-                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+                className="otl-btn otl-btn-primary w-full h-9 text-[14px]"
               >
                 {submitting
                   ? isZh
@@ -343,7 +333,7 @@ export function AuthGate({ auth, locale, onToggleLocale, onUnlocked }: AuthGateP
                   data-testid="auth-skip-btn"
                   disabled={submitting}
                   onClick={() => void handleSkip()}
-                  className="w-full h-8 rounded-lg text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] hover:bg-[var(--surface-2)] cursor-pointer transition"
+                  className="otl-btn-ghost w-full justify-center"
                 >
                   {isZh
                     ? '跳过，仅本机免密使用（设置页可随时开启）'

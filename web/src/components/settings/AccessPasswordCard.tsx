@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { KeyRound, Lock } from 'lucide-react'
+import { Lock } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { api } from '../../lib/api'
 import type { AuthStatusPayload } from '../../lib/types'
@@ -86,24 +86,21 @@ export function AccessPasswordCard({
   }
 
   return (
-    <div data-testid="security-password-card" className="otl-card p-5 space-y-3">
-      <div className="flex items-center justify-between gap-2">
+    <div data-testid="security-password-card" className="py-6 space-y-3.5">
+      <div className="flex items-baseline justify-between gap-2">
         <div>
-          <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)] flex items-center gap-1.5">
-            <KeyRound size={15} className="text-[var(--accent)]" />
-            <span>{isZh ? '安全与本地访问密码' : 'Security & Local Access Password'}</span>
+          <h3 className="t-h2">
+            {isZh ? '安全与本地访问密码' : 'Security & Local Access Password'}
           </h3>
-          <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">
+          <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">
             {isZh
               ? '部署到 NAS 或局域网时建议开启，密码仅以 scrypt 加盐哈希保存在本地'
-              : 'Recommended on NAS / LAN — salted scrypt hash stored exclusively on disk'}
+              : 'Recommended on NAS / LAN · salted scrypt hash stored exclusively on disk'}
           </p>
         </div>
         <span
-          className={`px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0 ${
-            authEnabled
-              ? 'otl-status-ok'
-              : 'border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-3)]'
+          className={`text-[13px] font-medium shrink-0 ${
+            authEnabled ? 'text-[var(--ok)]' : 'text-[var(--fg-3)]'
           }`}
         >
           {authEnabled
@@ -116,7 +113,7 @@ export function AccessPasswordCard({
         </span>
       </div>
 
-      <div className="space-y-2 pt-1">
+      <div className="space-y-2 pt-0.5">
         {authEnabled && (
           <input
             type="password"
@@ -124,7 +121,7 @@ export function AccessPasswordCard({
             value={curPwd}
             onChange={e => setCurPwd(e.target.value)}
             placeholder={isZh ? '当前访问密码' : 'Current password'}
-            className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+            className="otl-input w-full"
           />
         )}
         <input
@@ -141,7 +138,7 @@ export function AccessPasswordCard({
                 ? '设置访问密码（至少 4 位）'
                 : 'Set access password (min 4 chars)'
           }
-          className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+          className="otl-input w-full"
         />
         {!authEnabled && (
           <input
@@ -150,19 +147,19 @@ export function AccessPasswordCard({
             value={confirmNewPwd}
             onChange={e => setConfirmNewPwd(e.target.value)}
             placeholder={isZh ? '再次确认访问密码' : 'Confirm access password'}
-            className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+            className="otl-input w-full"
           />
         )}
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
         <div className="flex items-center gap-2">
           {authEnabled && onLockNow && (
             <button
               type="button"
               data-testid="sec-lock-now-btn"
               onClick={() => void onLockNow()}
-              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+              className="otl-btn"
             >
               <Lock size={12} />
               <span>{isZh ? '立即锁定' : 'Lock Now'}</span>
@@ -174,7 +171,7 @@ export function AccessPasswordCard({
               data-testid="sec-disable-pwd-btn"
               disabled={pwdBusy}
               onClick={() => void handleDisablePassword()}
-              className="h-8 px-2.5 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer disabled:opacity-50"
+              className="otl-btn text-[var(--fg-2)]"
             >
               {isZh ? '关闭密码锁' : 'Disable Lock'}
             </button>
@@ -185,8 +182,7 @@ export function AccessPasswordCard({
           data-testid="sec-save-pwd-btn"
           disabled={pwdBusy || !newPwd.trim()}
           onClick={() => void handleSavePassword()}
-          className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
-          style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+          className="otl-btn otl-btn-primary"
         >
           {authEnabled
             ? isZh

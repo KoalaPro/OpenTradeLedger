@@ -39,7 +39,7 @@ function ToastItem({ message, tone, testId, onDismiss }: ToastItemProps) {
         setRendered(false)
         setClosing(false)
         timerRef.current = null
-      }, 190)
+      }, 150)
     }
   }, [message, rendered])
 
@@ -60,12 +60,12 @@ function ToastItem({ message, tone, testId, onDismiss }: ToastItemProps) {
       aria-live="polite"
       className={`otl-toast-card ${closing ? 'closing' : ''} ${
         tone === 'ok' ? 'otl-status-ok' : 'otl-status-err'
-      } pointer-events-auto px-4 py-3 rounded-xl text-[12.5px] font-medium flex items-start gap-2.5 shadow-xl`}
+      } pointer-events-auto px-4 py-3 rounded-lg text-[13px] font-medium flex items-start gap-2.5`}
     >
       {tone === 'ok' ? (
-        <Check size={15} className="shrink-0 mt-0.5" />
+        <Check size={15} className="shrink-0 mt-0.5" style={{ color: 'var(--ok)' }} />
       ) : (
-        <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+        <AlertTriangle size={15} className="shrink-0 mt-0.5" style={{ color: 'var(--err)' }} />
       )}
       <span className="flex-1 leading-snug">{activeText}</span>
       <button
@@ -99,7 +99,7 @@ export function FloatingToastViewport({
   const viewportNode = (
     <div
       data-testid="floating-toast-viewport"
-      className="fixed bottom-5 right-5 z-[60] flex flex-col gap-2 max-w-[420px] w-[calc(100vw-2.5rem)] sm:w-auto pointer-events-none"
+      className="fixed bottom-5 right-5 z-[60] flex flex-col gap-2 max-w-[400px] w-[calc(100vw-2.5rem)] sm:w-auto pointer-events-none"
     >
       <ToastItem message={statusMsg} tone="ok" testId={okTestId} onDismiss={onClearStatus} />
       <ToastItem message={errorMsg} tone="err" testId={errTestId} onDismiss={onClearError} />

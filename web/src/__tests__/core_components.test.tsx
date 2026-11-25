@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { I18nProvider } from '../i18n'
+import { InstrumentMark } from '../components/InstrumentMark'
 import { Sidebar } from '../components/Sidebar'
 import { SimpleMarkdown } from '../components/SimpleMarkdown'
 import { fmtSignedUsd, fmtUsd } from '../lib/format'
@@ -40,6 +41,20 @@ describe('OpenTradeLedger Core Components', () => {
     expect(sidebar.textContent).not.toContain('5所')
     expect(sidebar.textContent).not.toContain('3所')
     expect(screen.getByTestId('nav-trades').textContent).toBe('合约交易')
-    expect(screen.getByTestId('nav-extensions').textContent).toBe('盯盘与专账')
+    expect(screen.getByTestId('nav-extensions').textContent).toBe('扩展模块')
+  })
+
+  it('resolves both separated and unseparated trading pair symbols to vector logos', () => {
+    const { container } = render(
+      <div>
+        <InstrumentMark instrument="BTC_USDT" exchange="GATE" />
+        <InstrumentMark instrument="BTCUSDT" exchange="BINANCE" />
+        <InstrumentMark instrument="SOLUSDT" exchange="BINANCE" />
+        <InstrumentMark instrument="NVDAX" exchange="US" stock />
+      </div>,
+    )
+    const imgs = Array.from(container.querySelectorAll('img.instrument-mark'))
+    expect(imgs).toHaveLength(4)
+    expect(imgs.map(el => el.getAttribute('data-symbol'))).toEqual(['BTC', 'BTC', 'SOL', 'NVDA'])
   })
 })

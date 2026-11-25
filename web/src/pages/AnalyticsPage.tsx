@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Target } from 'lucide-react'
 import { AnimatedCollapse } from '../components/AnimatedCollapse'
 import { EquityChart } from '../components/EquityChart'
+import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
 import { MonthlyCalendar } from '../components/MonthlyCalendar'
 import { SegmentedPills } from '../components/SegmentedPills'
@@ -92,31 +92,30 @@ export function AnalyticsPage({
   }
 
   return (
-    <div data-testid="analytics-page" className="otl-stagger space-y-4">
-      {/* Custom Equity Goal Card or Quick Setup Trigger */}
+    <div data-testid="analytics-page" className="otl-stagger">
+      {/* Custom Equity Goal Strip or Inline Setup Trigger */}
       {data.goal && data.goal.enabled ? (
         <section
           data-testid="custom-goal-banner"
-          className="otl-card p-5"
+          className="py-5 border-b border-[var(--border)]"
         >
           <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-center">
             <div className="md:col-span-5">
-              <div className="flex items-center gap-2 text-[12px] text-[var(--fg-3)]">
-                <Target size={13} className="text-[var(--accent)]" />
-                <span>{data.goal.label || t('an_goal_default')}</span>
+              <div className="text-[13px] text-[var(--fg-2)]">
+                {data.goal.label || t('an_goal_default')}
               </div>
               <div className="flex items-baseline gap-3 mt-1 flex-wrap">
-                <span className="text-[26px] font-bold tracking-tight sensitive">
+                <span className="t-kpi sensitive">
                   {data.goal.progress_pct.toFixed(1)}%
                 </span>
-                <span className="text-[12.5px] text-[var(--fg-2)] whitespace-nowrap sensitive">
+                <span className="text-[13px] text-[var(--fg-2)] whitespace-nowrap sensitive">
                   {cur.plainMoney(data.goal.current_equity_usd)} / {cur.money(data.goal.target_usd)}
                 </span>
               </div>
             </div>
             <div className="md:col-span-7 flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="h-2.5 flex-1 rounded-full bg-[var(--track)] overflow-hidden">
+              <div className="flex items-center justify-between gap-2.5">
+                <div className="h-2 flex-1 rounded-full bg-[var(--track)] overflow-hidden">
                   <div
                     className="otl-bar-fill h-full rounded-full"
                     style={{
@@ -130,13 +129,13 @@ export function AnalyticsPage({
                     type="button"
                     data-testid="edit-goal-btn"
                     onClick={() => setEditingGoal(v => !v)}
-                    className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer whitespace-nowrap"
+                    className="otl-btn h-7 px-2.5"
                   >
                     {locale === 'en' ? 'Edit Goal' : '调整目标'}
                   </button>
                 )}
               </div>
-              <div className="flex items-center justify-between gap-3 text-[12px] text-[var(--fg-2)] flex-wrap">
+              <div className="flex items-center justify-between gap-3 text-[13px] text-[var(--fg-2)] flex-wrap">
                 <span className="whitespace-nowrap">
                   {data.goal.is_reached ? t('an_goal_surplus') : t('an_goal_remaining')}:{' '}
                   <b className="text-[var(--fg)] sensitive">
@@ -163,21 +162,20 @@ export function AnalyticsPage({
                 value={goalLabel}
                 onChange={e => setGoalLabel(e.target.value)}
                 placeholder={locale === 'en' ? 'Goal name (e.g. 2026 Equity Target)' : '目标名称（如：阶段净值目标）'}
-                className="h-8 flex-1 min-w-[160px] px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                className="otl-input flex-1 min-w-[160px]"
               />
               <input
                 type="number"
                 value={goalAmount}
                 onChange={e => setGoalAmount(e.target.value)}
                 placeholder={t('set_goal_target')}
-                className="h-8 w-40 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                className="otl-input w-44"
               />
               <button
                 type="button"
                 disabled={savingGoal}
                 onClick={() => void handleSaveGoal()}
-                className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
-                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+                className="otl-btn otl-btn-primary h-[34px]"
               >
                 {t('save_config')}
               </button>
@@ -185,7 +183,7 @@ export function AnalyticsPage({
                 type="button"
                 disabled={savingGoal}
                 onClick={() => void handleDisableGoal()}
-                className="h-8 px-3 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+                className="otl-btn h-[34px] text-[var(--fg-2)]"
               >
                 {locale === 'en' ? 'Hide Goal' : '关闭进度条'}
               </button>
@@ -194,58 +192,56 @@ export function AnalyticsPage({
         </section>
       ) : (
         onUpdateSettings && (
-          <div>
+          <div className="py-3 border-b border-[var(--border)]">
             <div className="flex justify-end">
               <button
                 type="button"
                 data-testid="setup-goal-btn"
                 onClick={() => setEditingGoal(v => !v)}
-                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                className="otl-btn"
               >
-                <Target size={13} />
-                <span>{locale === 'en' ? 'Set Custom Equity Goal' : '设置自定义净值目标'}</span>
+                {locale === 'en' ? 'Set Custom Equity Goal' : '设置自定义净值目标'}
               </button>
             </div>
-            <AnimatedCollapse open={editingGoal} innerClassName="pt-2.5">
-              <section className="otl-card p-4 flex flex-wrap items-center gap-2.5">
+            <AnimatedCollapse open={editingGoal} innerClassName="pt-3">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <input
                   type="text"
                   value={goalLabel}
                   onChange={e => setGoalLabel(e.target.value)}
                   placeholder={locale === 'en' ? 'Goal name (e.g. Milestone 50k)' : '目标名称（如：阶段净值目标）'}
-                  className="h-8 flex-1 min-w-[160px] px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                  className="otl-input flex-1 min-w-[160px]"
                 />
                 <input
                   type="number"
                   value={goalAmount}
                   onChange={e => setGoalAmount(e.target.value)}
                   placeholder={t('set_goal_target')}
-                  className="h-8 w-44 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                  className="otl-input w-44"
                 />
                 <button
                   type="button"
                   disabled={savingGoal}
                   onClick={() => void handleSaveGoal()}
-                  className="h-8 px-3.5 rounded-lg text-[12px] font-semibold cursor-pointer"
-                  style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+                  className="otl-btn otl-btn-primary h-[34px]"
                 >
                   {t('save_config')}
                 </button>
                 <button
                   type="button"
                   onClick={() => setEditingGoal(false)}
-                  className="h-8 px-3 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] cursor-pointer"
+                  className="otl-btn h-[34px]"
                 >
                   {t('cancel')}
                 </button>
-              </section>
+              </div>
             </AnimatedCollapse>
           </div>
         )
       )}
 
-      {/* 4 Aligned KPIs */}
-      <div className="otl-kpi-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+      {/* Flush 4-Column Horizontal Ledger Strip */}
+      <section className="otl-ledger-strip otl-kpi-grid">
         <KpiCard
           label={t('kpi_whole_pnl')}
           value={cur.signedPlainMoney(activeWholePnl)}
@@ -274,15 +270,15 @@ export function AnalyticsPage({
           valueClass="txt-pos"
           sub={`${s.combined_relief_pct.toFixed(1)}%`}
         />
-      </div>
+      </section>
 
-      {/* Balanced 2-Col: Equity Curve × Monthly Calendar */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
-        <div className="lg:col-span-7 otl-card p-5 flex flex-col gap-3">
-          <h2 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('an_curve_title')}</h2>
+      {/* 7:5 Hairline Split: Equity Curve × Monthly PnL Calendar */}
+      <section className="grid grid-cols-1 lg:grid-cols-12 border-b border-[var(--border)]">
+        <div className="lg:col-span-7 py-6 lg:pr-7 lg:border-r border-[var(--border)] flex flex-col gap-4">
+          <h2 className="t-h2">{t('an_curve_title')}</h2>
           <EquityChart points={data.equity_curve} height={240} />
         </div>
-        <div className="lg:col-span-5 otl-card p-5">
+        <div className="lg:col-span-5 py-6 lg:pl-7 border-t lg:border-t-0 border-[var(--border)]">
           <MonthlyCalendar
             days={data.calendar_days}
             availableMonths={data.available_months}
@@ -290,12 +286,12 @@ export function AnalyticsPage({
             onSelectMonth={setCalMonth}
           />
         </div>
-      </div>
+      </section>
 
-      {/* Full-Width Attribution Table — symmetric animated panel swap on both tabs! */}
-      <section className="otl-card overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
-          <h2 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('an_attr_title')}</h2>
+      {/* Flush Attribution Table */}
+      <section className="py-6 space-y-3">
+        <div className="pb-2.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2">
+          <h2 className="t-h2">{t('an_attr_title')}</h2>
           <SegmentedPills
             value={attrMode}
             onChange={setAttrMode}
@@ -325,7 +321,12 @@ export function AnalyticsPage({
                     className={onInspectSymbol ? 'clickable' : undefined}
                     onClick={() => onInspectSymbol?.(row.venue_id, row.symbol, row.venue_name)}
                   >
-                    <td className="font-semibold whitespace-nowrap">{row.symbol}</td>
+                    <td className="whitespace-nowrap">
+                      <span className="inline-flex items-center gap-2 font-semibold">
+                        <InstrumentMark instrument={row.symbol} exchange={row.venue_id.toUpperCase()} />
+                        {row.symbol}
+                      </span>
+                    </td>
                     <td>
                       <VenueBadge
                         venueId={row.venue_id}

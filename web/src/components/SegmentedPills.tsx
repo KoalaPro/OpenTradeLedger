@@ -60,24 +60,22 @@ export function SegmentedPills<T extends string>({
     }
   }, [value, options])
 
-  const padClass = size === 'sm' ? 'px-2.5 py-0.5 text-[11.5px]' : 'px-2.5 py-1 text-[12px]'
+  const padClass = size === 'sm' ? 'px-2.5 py-1 text-[13px]' : 'px-3 py-1 text-[13px]'
 
   return (
     <div
       ref={containerRef}
-      className={`relative inline-flex p-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] ${
-        wrap ? 'flex-wrap gap-0.5' : ''
-      }`}
+      className={`otl-seg ${wrap ? 'flex-wrap' : 'flex-nowrap'}`}
     >
       {glider.ready && (
         <div
           aria-hidden="true"
-          className="otl-glider absolute left-0 top-0 rounded-md bg-[var(--surface)] border border-[var(--border-strong)] pointer-events-none"
+          className="otl-glider absolute left-0 top-0 rounded-[5px] bg-[var(--surface)] border border-[var(--border-strong)] pointer-events-none"
           style={{
             width: `${glider.width}px`,
             height: `${glider.height}px`,
             transform: `translate3d(${glider.left}px, ${glider.top}px, 0)`,
-            boxShadow: '0 1px 4px rgba(0, 0, 0, 0.16)',
+            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.10)',
           }}
         />
       )}
@@ -93,7 +91,9 @@ export function SegmentedPills<T extends string>({
             data-no-ripple="true"
             data-testid={opt.testId}
             onClick={() => onChange(opt.value)}
-            className={`relative z-10 rounded-md font-medium whitespace-nowrap cursor-pointer ${padClass}`}
+            className={`relative z-10 rounded-[5px] whitespace-nowrap cursor-pointer ${
+              active ? 'font-semibold' : 'font-medium'
+            } ${padClass}`}
             style={{
               background: !glider.ready && active ? 'var(--surface)' : 'transparent',
               color: active ? 'var(--fg)' : 'var(--fg-2)',

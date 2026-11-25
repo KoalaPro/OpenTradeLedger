@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, Settings, ShieldCheck, Sparkles } from 'lucide-react'
+import { ChevronDown, Settings, ShieldCheck } from 'lucide-react'
 import { AnimatedCollapse } from '../components/AnimatedCollapse'
 import { FloatingModal } from '../components/FloatingModal'
 import { SimpleMarkdown } from '../components/SimpleMarkdown'
@@ -15,18 +15,30 @@ function FeeRateCell({ row, side }: { row: VenueFeeRow; side: 'maker' | 'taker' 
   const source = row[`${side}_rate_source`]
   if (source === 'configured') {
     const unknown = row.trade_count > 0 && row.maker_bps_known === false && row.taker_bps_known === false
-    return <span>{gross} <small>{isZh ? '配置毛费率' : 'quoted gross'}</small> / {
-      unknown ? (isZh ? '分腿未知' : 'Split unknown') : '—'
-    }</span>
+    return (
+      <span>
+        {gross}{' '}
+        <span className="text-[13px] text-[var(--fg-3)]">
+          {isZh ? '配置毛费率' : 'quoted gross'}
+        </span>{' '}
+        / {unknown ? (isZh ? '分腿未知' : 'Split unknown') : '—'}
+      </span>
+    )
   }
   if (source === 'unknown' || row[`${side}_bps_known`] === false || row.trade_count === 0) {
     const blended = side === 'taker' && (row.blended_net_bps ?? 0) > 0
-    return <span className="text-[var(--fg-3)] text-[11.5px]">
-      {row.trade_count === 0 ? (isZh ? '无成交样本' : 'No fills') : (isZh ? '分腿未知' : 'Split unknown')}
-      {blended && ` · ${isZh ? '综合' : 'Avg'} ${row.blended_net_bps!.toFixed(2)} bps`}
-    </span>
+    return (
+      <span className="text-[var(--fg-3)] text-[13px]">
+        {row.trade_count === 0 ? (isZh ? '无成交样本' : 'No fills') : (isZh ? '分腿未知' : 'Split unknown')}
+        {blended && ` · ${isZh ? '综合' : 'Avg'} ${row.blended_net_bps!.toFixed(2)} bps`}
+      </span>
+    )
   }
-  return <>{gross} / <b>{row[`${side}_net_bps`]?.toFixed(2) ?? '—'}</b></>
+  return (
+    <>
+      {gross} / <b>{row[`${side}_net_bps`]?.toFixed(2) ?? '—'}</b>
+    </>
+  )
 }
 
 export function FeesAiPage({
@@ -136,20 +148,20 @@ export function FeesAiPage({
   }
 
   return (
-    <div data-testid="fees-ai-page" className="otl-stagger space-y-4">
-      {/* Cross-venue Fee & Rebate Comparison Matrix Table */}
-      <section data-testid="fee-matrix-section" className="otl-card overflow-hidden">
-        <div className="px-5 py-3.5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
+    <div data-testid="fees-ai-page" className="otl-stagger">
+      {/* Flush Cross-Venue Fee & Rebate Matrix */}
+      <section data-testid="fee-matrix-section" className="otl-chapter space-y-3.5">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
           <div>
-            <h2 className="m-0 text-[14.5px] font-semibold text-[var(--fg)]">{t('fee_matrix_title')}</h2>
-            <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('fee_matrix_sub')}</p>
+            <h2 className="t-h2">{t('fee_matrix_title')}</h2>
+            <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('fee_matrix_sub')}</p>
           </div>
           {data.summary.potential_maker_savings_usd > 0 && (
-            <span
-              className="px-2.5 py-1 rounded-md text-[12px] font-semibold whitespace-nowrap sensitive"
-              style={{ background: 'var(--pos-soft)', color: 'var(--pos)' }}
-            >
-              {t('maker_savings_badge')}: +{cur.money(data.summary.potential_maker_savings_usd)}
+            <span className="text-[13px] text-[var(--fg-2)] whitespace-nowrap sensitive">
+              {t('maker_savings_badge')}:{' '}
+              <strong className="font-semibold txt-pos">
+                +{cur.money(data.summary.potential_maker_savings_usd)}
+              </strong>
             </span>
           )}
         </div>
@@ -202,7 +214,9 @@ export function FeesAiPage({
                     )}
                   </td>
                   <td className="text-right font-semibold whitespace-nowrap">
-                    {row.trade_count > 0 && row.gross_fee_usd + row.discount_saved_usd > 0 ? `${row.combined_relief_pct.toFixed(1)}%` : '—'}
+                    {row.trade_count > 0 && row.gross_fee_usd + row.discount_saved_usd > 0
+                      ? `${row.combined_relief_pct.toFixed(1)}%`
+                      : '—'}
                   </td>
                 </tr>
               ))}
@@ -211,22 +225,22 @@ export function FeesAiPage({
         </div>
       </section>
 
-      {/* Structured AI Review */}
-      <section className="otl-card p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Editorial AI & Actuarial Review Chapter */}
+      <section className="py-6 space-y-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="m-0 text-[15px] font-semibold text-[var(--fg)]">{t('ai_title')}</h2>
+            <h2 className="t-h2">{t('ai_title')}</h2>
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[13px] text-[var(--fg-3)]">
               {settings && (
                 <span
                   data-testid="ai-config-status-badge"
-                  className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
+                  className={
                     !aiConfigured
-                      ? 'border border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--fg-2)]'
+                      ? 'text-[var(--fg-2)]'
                       : aiProvenance.mode === 'remote_failed_fallback'
-                        ? 'otl-status-warn'
-                        : 'otl-status-ok'
-                  }`}
+                        ? 'text-[var(--warn)] font-medium'
+                        : 'text-[var(--ok)] font-medium'
+                  }
                 >
                   {!aiConfigured
                     ? isZh
@@ -242,10 +256,8 @@ export function FeesAiPage({
                 </span>
               )}
               {ai && (
-                <span
-                  data-testid="ai-scope-badge"
-                  className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)]"
-                >
+                <span data-testid="ai-scope-badge">
+                  {settings ? '· ' : ''}
                   {isZh
                     ? `统计周期：${ai.range_label_zh || currentPeriodLabel}${
                         typeof ai.trade_count_snapshot === 'number' ? ` · ${ai.trade_count_snapshot} 笔` : ''
@@ -258,14 +270,15 @@ export function FeesAiPage({
               {ai && (
                 <span
                   data-testid="ai-transmission-badge"
-                  className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
+                  className={
                     aiProvenance.mode === 'remote_failed_fallback'
-                      ? 'otl-status-warn'
+                      ? 'text-[var(--warn)]'
                       : aiProvenance.transmitted
-                        ? 'otl-status-ok'
-                        : 'border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)]'
-                  }`}
+                        ? 'text-[var(--fg-2)]'
+                        : 'text-[var(--fg-3)]'
+                  }
                 >
+                  ·{' '}
                   {aiProvenance.mode === 'remote_llm'
                     ? isZh
                       ? `本次已外发脱敏汇总 → ${ai.model}`
@@ -279,13 +292,14 @@ export function FeesAiPage({
                         : 'Local only · No data sent externally'}
                 </span>
               )}
+              {ai && (
+                <span>
+                  · {ai.generated_at} · {formatModelAttribution(ai)}
+                </span>
+              )}
             </div>
-            {ai && (
-              <p className="m-0 text-[12px] text-[var(--fg-3)]">
-                {ai.generated_at} · {formatModelAttribution(ai)}
-              </p>
-            )}
           </div>
+
           <button
             type="button"
             data-testid="generate-ai-btn"
@@ -297,10 +311,8 @@ export function FeesAiPage({
               }
               void onGenerate(aiConfigured ? 'ai' : 'auto')
             }}
-            className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
-            style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+            className="otl-btn otl-btn-primary"
           >
-            <Sparkles size={14} className={generating ? 'animate-pulse' : ''} />
             <span>{generating ? t('ai_generating') : t('ai_generate')}</span>
           </button>
         </div>
@@ -308,12 +320,7 @@ export function FeesAiPage({
         {ai?.stale && (
           <div
             data-testid="ai-stale-banner"
-            className="px-3.5 py-2.5 rounded-lg text-[12px]"
-            style={{
-              background: 'var(--warn-soft)',
-              border: '1px solid var(--warn-bd)',
-              color: 'var(--warn)',
-            }}
+            className="otl-status-warn px-3.5 py-2.5 rounded-md text-[13px]"
           >
             {(isZh ? ai.stale_reason_zh : ai.stale_reason) || t('ai_stale_notice')}
           </div>
@@ -322,43 +329,54 @@ export function FeesAiPage({
         {(ai?.ai_error || ai?.ai_error_zh) && (
           <div
             data-testid="ai-error-banner"
-            className="otl-status-warn px-3.5 py-2.5 rounded-lg text-[12px] font-medium"
+            className="otl-status-warn px-3.5 py-2.5 rounded-md text-[13px] font-medium"
           >
             {locale === 'en' ? ai.ai_error || ai.ai_error_zh : ai.ai_error_zh || ai.ai_error}
           </div>
         )}
 
         {!ai ? (
-          <div className="py-10 text-center text-[13px] text-[var(--fg-3)]">
+          <div className="py-12 text-center text-[14px] text-[var(--fg-3)] border-y border-[var(--border)]">
             {isZh
               ? `当前统计周期（${currentPeriodLabel} · ${data.summary.trade_count} 笔交割）尚未生成复盘报告，点击右上角「${t('ai_generate')}」即可针对本周期生成诊断。`
               : `No review generated yet for ${currentPeriodLabel} (${data.summary.trade_count} trades). Click "${t('ai_generate')}" above to analyze this period.`}
           </div>
         ) : (
           <>
-            <div className={`grid grid-cols-1 ${ai.highlights.length > 1 ? 'md:grid-cols-3' : ''} gap-3`}>
-              {ai.highlights.map((h, i) => {
-                const formattedMetric = formatHighlightMetric(h)
-                const rawBody = locale === 'en' ? h.body : h.body_zh || h.body
-                return (
-                  <div key={i} className="otl-surface-2 rounded-xl p-4 flex flex-col gap-1.5">
-                    <div className="text-[12px] text-[var(--fg-3)]">
-                      {locale === 'en' ? h.title : h.title_zh || h.title}
+            {ai.highlights.length > 0 && (
+              <div
+                className={`border-y border-[var(--border)] grid grid-cols-1 ${
+                  ai.highlights.length > 1 ? 'md:grid-cols-3 divide-y md:divide-y-0 md:divide-x' : ''
+                } divide-[var(--border)]`}
+              >
+                {ai.highlights.map((h, i) => {
+                  const formattedMetric = formatHighlightMetric(h)
+                  const rawBody = locale === 'en' ? h.body : h.body_zh || h.body
+                  return (
+                    <div
+                      key={i}
+                      className={`py-4 flex flex-col gap-1.5 ${
+                        i === 0 ? 'md:pr-6' : i === 1 ? 'md:px-6' : 'md:pl-6'
+                      }`}
+                    >
+                      <div className="text-[13px] text-[var(--fg-3)]">
+                        {locale === 'en' ? h.title : h.title_zh || h.title}
+                      </div>
+                      {formattedMetric && (
+                        <div className="t-h1 sensitive">{formattedMetric}</div>
+                      )}
+                      <p className="m-0 text-[14px] leading-relaxed text-[var(--fg-2)] sensitive">
+                        {cur.convertText(rawBody)}
+                      </p>
                     </div>
-                    {formattedMetric && (
-                      <div className="text-[17px] font-semibold text-[var(--fg)] sensitive">{formattedMetric}</div>
-                    )}
-                    <p className="m-0 text-[12px] leading-relaxed text-[var(--fg-2)] sensitive">
-                      {cur.convertText(rawBody)}
-                    </p>
-                  </div>
-                )
-              })}
-            </div>
+                  )
+                })}
+              </div>
+            )}
 
             {(ai.markdown_commentary || ai.markdown_commentary_zh) && (
-              <div className="otl-surface-2 rounded-xl p-4 space-y-2.5">
-                <div className="text-[13px] font-semibold text-[var(--fg)]">{t('ai_commentary_title')}</div>
+              <div className="pl-4 border-l-2 border-[var(--border-strong)] space-y-2">
+                <div className="text-[14px] font-semibold text-[var(--fg)]">{t('ai_commentary_title')}</div>
                 <div className="sensitive">
                   <SimpleMarkdown
                     content={cur.convertText(
@@ -371,14 +389,14 @@ export function FeesAiPage({
               </div>
             )}
 
-            {/* Prompt Data Transparency Disclosure — accurate to whether data actually left OpenTradeLedger */}
+            {/* Sanitized Payload Transparency Disclosure */}
             <div className="pt-1">
               {aiProvenance.mode === 'zero_trades_local' ? (
-                <div className="inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)]">
-                  <ShieldCheck size={13} className="txt-pos shrink-0" />
+                <div className="inline-flex items-center gap-1.5 text-[13px] text-[var(--fg-3)]">
+                  <ShieldCheck size={14} style={{ color: 'var(--ok)' }} className="shrink-0" />
                   <span>
                     {locale === 'en'
-                      ? '0 closed trades in this period — returned locally without sending any request or data to an external AI endpoint.'
+                      ? '0 closed trades in this period · returned locally without sending any request or data to an external AI endpoint.'
                       : '本周期 0 笔成交已在本地直接返回，未向外部 AI 接口发送任何推理请求或账本数据。'}
                   </span>
                 </div>
@@ -389,27 +407,27 @@ export function FeesAiPage({
                     data-no-press="true"
                     data-testid="toggle-ai-payload-btn"
                     onClick={() => setShowAiPayload(v => !v)}
-                    className="inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+                    className="inline-flex items-center gap-1.5 text-[13px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
                   >
-                    <ShieldCheck size={13} className="txt-pos shrink-0" />
+                    <ShieldCheck size={14} style={{ color: 'var(--ok)' }} className="shrink-0" />
                     <span>
                       {aiProvenance.transmitted
                         ? locale === 'en'
                           ? 'Inspect sanitized data sent to AI endpoint on this run (Zero API keys / UIDs)'
                           : '查看本次已发送给 AI 接口的脱敏数据明细（绝不含 API Key / UID / 钱包地址）'
                         : locale === 'en'
-                          ? 'Preview sanitized data scope if AI is enabled (Local run — no data sent)'
+                          ? 'Preview sanitized data scope if AI is enabled (Local run · no data sent)'
                           : '查看启用 AI 时的脱敏数据范围预览（本次纯本地生成，未外发任何数据）'}
                     </span>
                     <ChevronDown
                       size={13}
-                      className={`shrink-0 transition-transform duration-200 ${showAiPayload ? 'rotate-180' : ''}`}
+                      className={`shrink-0 transition-transform duration-150 ${showAiPayload ? 'rotate-180' : ''}`}
                     />
                   </button>
 
-                  <AnimatedCollapse open={showAiPayload} innerClassName="pt-2.5">
-                    <div className="otl-surface-2 rounded-xl p-4 space-y-3 text-[12px]">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-[var(--fg-2)]">
+                  <AnimatedCollapse open={showAiPayload} innerClassName="pt-3">
+                    <div className="otl-surface-2 p-4 space-y-3 text-[13px]">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[var(--fg-2)]">
                         <div>
                           <b className="text-[var(--fg)]">
                             {aiProvenance.transmitted
@@ -457,7 +475,7 @@ export function FeesAiPage({
                       {ai.context_preview && (
                         <pre
                           data-testid="ai-payload-pre"
-                          className="m-0 p-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[11px] text-[var(--fg-2)] overflow-x-auto max-h-64 sensitive"
+                          className="m-0 p-3 rounded-md bg-[var(--bg)] border border-[var(--border)] text-[13px] font-mono text-[var(--fg-2)] overflow-x-auto max-h-64 sensitive"
                         >
                           {JSON.stringify(ai.context_preview, null, 2)}
                         </pre>
@@ -475,10 +493,10 @@ export function FeesAiPage({
         open={showAiUnconfiguredModal}
         onClose={() => setShowAiUnconfiguredModal(false)}
         testId="ai-unconfigured-modal"
-        maxWidthClass="max-w-[450px]"
+        maxWidthClass="max-w-[460px]"
         title={isZh ? '尚未配置 AI 大模型' : 'AI Model Not Configured'}
       >
-        <div className="p-5 space-y-4 text-[12.5px]">
+        <div className="p-5 space-y-4 text-[14px]">
           <p className="m-0 text-[var(--fg-2)] leading-relaxed">
             {isZh
               ? `当前尚未配置 AI 接口地址与 API Key，无法调用外部大模型生成深度复盘。你可以前往「设置与连接」接入任意 OpenAI 兼容模型，或选择使用内置本地精算规则生成「${currentPeriodLabel}」基础诊断报告。`
@@ -488,7 +506,7 @@ export function FeesAiPage({
             <button
               type="button"
               onClick={() => setShowAiUnconfiguredModal(false)}
-              className="h-8 px-3 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-2)] cursor-pointer"
+              className="otl-btn"
             >
               {t('cancel')}
             </button>
@@ -500,9 +518,9 @@ export function FeesAiPage({
                   setShowAiUnconfiguredModal(false)
                   onGoConfigureAi()
                 }}
-                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+                className="otl-btn"
               >
-                <Settings size={12} />
+                <Settings size={13} />
                 <span>{isZh ? '前往配置 AI' : 'Configure AI'}</span>
               </button>
             )}
@@ -513,8 +531,7 @@ export function FeesAiPage({
                 setShowAiUnconfiguredModal(false)
                 void onGenerate('local_rules')
               }}
-              className="h-8 px-3.5 rounded-lg text-[12px] font-semibold cursor-pointer"
-              style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+              className="otl-btn otl-btn-primary"
             >
               {isZh ? '使用本地规则生成' : 'Use Local Rules'}
             </button>

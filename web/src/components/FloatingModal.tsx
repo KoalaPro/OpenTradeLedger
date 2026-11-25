@@ -50,7 +50,7 @@ export function FloatingModal({
         setRendered(false)
         setClosing(false)
         timerRef.current = null
-      }, 185)
+      }, 150)
     }
   }, [open, rendered])
 
@@ -75,6 +75,8 @@ export function FloatingModal({
 
   if (!rendered) return null
 
+  const isZh = typeof document !== 'undefined' && (document.documentElement.lang || '').startsWith('zh')
+
   const dialogNode = (
     <div
       data-testid={testId}
@@ -90,11 +92,11 @@ export function FloatingModal({
       <div
         className={`otl-velvet-window w-full ${maxWidthClass} max-h-[88vh] flex flex-col overflow-hidden`}
       >
-        <div className="px-5 py-3.5 border-b border-[var(--border)] bg-[var(--surface-2)] flex items-center justify-between gap-3 shrink-0">
+        <div className="px-5 py-4 border-b border-[var(--border)] bg-[var(--surface)] flex items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
-            <div className="text-[14.5px] font-semibold text-[var(--fg)] truncate">{title}</div>
+            <div className="t-h2 truncate">{title}</div>
             {subtitle && (
-              <div className="text-[12px] text-[var(--fg-3)] mt-0.5 truncate">{subtitle}</div>
+              <div className="text-[13px] text-[var(--fg-3)] mt-0.5 truncate">{subtitle}</div>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -102,17 +104,9 @@ export function FloatingModal({
             <button
               type="button"
               onClick={requestClose}
-              aria-label={
-                typeof document !== 'undefined' && (document.documentElement.lang || '').startsWith('zh')
-                  ? '关闭'
-                  : 'Close'
-              }
-              title={
-                typeof document !== 'undefined' && (document.documentElement.lang || '').startsWith('zh')
-                  ? '关闭'
-                  : 'Close'
-              }
-              className="h-7 w-7 inline-flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer transition-colors"
+              aria-label={isZh ? '关闭' : 'Close'}
+              title={isZh ? '关闭' : 'Close'}
+              className="otl-btn h-7 w-7 px-0 text-[var(--fg-2)] hover:text-[var(--fg)]"
             >
               <X size={14} />
             </button>

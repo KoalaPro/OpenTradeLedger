@@ -130,60 +130,58 @@ export function Sidebar({
   }, [page, showExtensions, locale, versionStatus?.update_available])
 
   return (
-    <aside
-      ref={asideRef}
-      data-testid="sidebar"
-      className="relative flex flex-col border-b md:border-b-0 md:border-r border-[var(--border)] bg-[var(--rail)] px-3 py-3 md:py-4 w-full md:w-[212px] md:shrink-0 md:sticky md:top-0 md:h-screen transition-colors duration-200"
-    >
-      {/* Unified 2D Velvet Glider across all 6 navigation items (including Settings & Mobile) */}
+    <aside ref={asideRef} data-testid="sidebar" className="otl-sidebar">
+      {/* Persistent 2D Architectural Rail Glider */}
       <div
         data-testid="sidebar-glider"
         data-active-page={page}
         aria-hidden="true"
-        className="otl-glider absolute left-0 top-0 rounded-lg pointer-events-none z-0"
+        className="otl-glider absolute left-0 top-0 rounded-[7px] pointer-events-none z-0"
         style={{
           width: `${glider.width}px`,
           height: `${glider.height}px`,
           opacity: glider.visible ? 1 : 0,
           transform: `translate3d(${glider.left}px, ${glider.top}px, 0)`,
           background: 'var(--accent-soft)',
-          boxShadow: '0 1px 10px var(--accent-soft)',
         }}
       >
         <span
-          className="hidden md:block absolute left-0 top-2 bottom-2 w-[3px] rounded-full"
+          className="hidden md:block absolute left-0 top-[7px] bottom-[7px] w-[2.5px] rounded-full"
           style={{ background: 'var(--accent)' }}
         />
       </div>
 
-      {/* Brand + Mobile Quick Sync Header */}
-      <div className="relative z-10 flex items-center justify-between gap-2 px-1.5 pb-2.5 md:px-2 md:pb-5">
+      {/* Brand Wordmark + Mobile Status */}
+      <div className="relative z-10 flex items-center justify-between gap-2 px-1.5 pb-1 md:px-2 md:pb-4">
         <div className="flex items-center gap-2.5 min-w-0">
           <img
             src={ledgerLogo}
             alt={t('brand')}
             data-testid="brand-logo"
             draggable={false}
-            className="h-7 w-7 rounded-lg object-contain shrink-0 select-none"
+            className="otl-brand-logo select-none"
           />
           <span
             data-testid="brand-title"
-            className="text-[15px] font-semibold tracking-tight text-[var(--fg)] truncate"
+            className="text-[17px] font-semibold tracking-[-0.02em] text-[var(--fg)] truncate"
           >
             {t('brand')}
           </span>
         </div>
-        <span className="md:hidden inline-flex items-center gap-1.5 text-[11px] text-[var(--fg-3)] shrink-0">
-          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+        <span className="md:hidden inline-flex items-center gap-1.5 text-[13px] text-[var(--fg-3)] shrink-0">
+          <span
+            className="h-1.5 w-1.5 rounded-full"
+            style={{ background: syncFailed ? 'var(--warn)' : 'var(--ok)' }}
+          />
           <span>{fmtSyncTime(lastSyncMs)}</span>
         </span>
       </div>
 
-      {/* Primary navigation */}
+      {/* Primary Navigation */}
       <nav
         ref={navRef}
         aria-label={t('brand')}
-        className="relative z-10 flex flex-row flex-wrap md:flex-nowrap md:flex-col gap-1"
+        className="no-scrollbar relative z-10 flex flex-row overflow-x-auto md:overflow-visible flex-nowrap md:flex-col gap-0.5"
       >
         {primaryItems.map(item => {
           const Icon = item.icon
@@ -198,21 +196,20 @@ export function Sidebar({
               data-no-ripple="true"
               data-testid={`nav-${item.id}`}
               onClick={() => onNavigate(item.id)}
-              className="relative z-10 flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-[13px] font-medium whitespace-nowrap cursor-pointer"
+              className={`otl-nav-btn ${active ? 'active' : ''}`}
               style={{
-                background: active && !glider.visible ? 'var(--accent-soft)' : 'transparent',
-                color: active ? 'var(--accent)' : 'var(--fg-2)',
+                background: active && !glider.visible ? 'var(--accent-soft)' : undefined,
               }}
             >
-              <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
+              <Icon size={16} strokeWidth={1.7} aria-hidden="true" />
               <span>{item.label}</span>
             </button>
           )
         })}
       </nav>
 
-      {/* Footer: Settings + Read-Only Indicator + Manual Sync + Lock */}
-      <div className="relative z-10 mt-4 md:mt-auto pt-3 border-t border-[var(--border)] flex flex-col gap-2">
+      {/* Footer: Settings + Read-Only Sync + Lock */}
+      <div className="relative z-10 mt-1 md:mt-auto pt-2.5 border-t border-[var(--border)] flex flex-col gap-2">
         <button
           ref={el => {
             itemRefs.current.settings = el
@@ -221,31 +218,33 @@ export function Sidebar({
           data-no-ripple="true"
           data-testid="nav-settings"
           onClick={() => onNavigate('settings')}
-          className="relative z-10 flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg text-[13px] font-medium cursor-pointer"
+          className={`otl-nav-btn justify-between ${page === 'settings' ? 'active' : ''}`}
           style={{
-            background: page === 'settings' && !glider.visible ? 'var(--accent-soft)' : 'transparent',
-            color: page === 'settings' ? 'var(--accent)' : 'var(--fg-2)',
+            background: page === 'settings' && !glider.visible ? 'var(--accent-soft)' : undefined,
           }}
         >
           <span className="inline-flex items-center gap-2.5">
-            <Settings size={16} strokeWidth={1.75} aria-hidden="true" />
+            <Settings size={16} strokeWidth={1.7} aria-hidden="true" />
             <span>{t('nav_settings')}</span>
           </span>
           {versionStatus?.update_available && (
             <span
               data-testid="sidebar-update-badge"
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10.5px] font-semibold tabular-nums"
-              style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+              className="inline-flex items-center gap-1.5 text-[13px] font-medium tabular-nums"
+              style={{ color: 'var(--accent)' }}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
               v{versionStatus.latest_version}
             </span>
           )}
         </button>
 
-        <div className="flex items-center justify-between px-2.5 pt-1 text-[11.5px] text-[var(--fg-3)]">
+        <div className="hidden md:flex items-center justify-between px-3 pt-0.5 text-[13px] text-[var(--fg-3)]">
           <span className="inline-flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{ background: syncFailed ? 'var(--warn)' : 'var(--ok)' }}
+            />
             <span>{t('read_only')}</span>
           </span>
           <span>{fmtSyncTime(lastSyncMs)}</span>
@@ -257,20 +256,20 @@ export function Sidebar({
             data-testid="sync-now-btn"
             disabled={manualSyncing}
             onClick={onSync}
-            className="flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
+            className="otl-btn flex-1"
           >
             {justSynced && !manualSyncing ? (
               syncFailed ? (
                 <>
-                  <AlertTriangle size={13} className="text-amber-500" />
-                  <span className="text-amber-500">
+                  <AlertTriangle size={13} style={{ color: 'var(--warn)' }} />
+                  <span style={{ color: 'var(--warn)' }}>
                     {locale === 'en' ? 'Sync Error' : '同步异常'}
                   </span>
                 </>
               ) : (
                 <>
-                  <Check size={13} className="text-emerald-500" />
-                  <span className="text-emerald-500">
+                  <Check size={13} style={{ color: 'var(--ok)' }} />
+                  <span style={{ color: 'var(--ok)' }}>
                     {locale === 'en' ? 'Synced' : '已同步'}
                   </span>
                 </>
@@ -289,7 +288,7 @@ export function Sidebar({
               title={locale === 'en' ? 'Lock Ledger' : '立即锁定账本'}
               aria-label={locale === 'en' ? 'Lock Ledger' : '立即锁定账本'}
               onClick={onLock}
-              className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer shrink-0"
+              className="otl-btn w-8 px-0 shrink-0 text-[var(--fg-2)] hover:text-[var(--fg)]"
             >
               <Lock size={13} />
             </button>

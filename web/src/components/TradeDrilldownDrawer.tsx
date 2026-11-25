@@ -38,29 +38,27 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
   const cur = useCurrency()
   const feeUnknown = leg.fee_known === false
   return (
-    <div className="otl-surface-2 rounded-lg p-3 space-y-2 text-[12px]">
+    <div className="py-2.5 border-t border-[var(--border)] space-y-1.5 text-[13px]">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="px-1.5 py-0.5 rounded text-[10.5px] font-semibold bg-[var(--surface)] border border-[var(--border)]">
-            {title}
-          </span>
-          <span className="text-[var(--fg)] font-medium truncate">
-            {feeUnknown ? t('leg_fee_unknown') : `${modeText(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
+          <span className="font-semibold text-[var(--fg-2)]">{title}</span>
+          <span className="text-[var(--fg)] truncate">
+            · {feeUnknown ? t('leg_fee_unknown') : `${modeText(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
           </span>
         </div>
-        <span className="text-[11px] text-[var(--fg-3)] whitespace-nowrap">
+        <span className="text-[var(--fg-3)] whitespace-nowrap">
           {leg.time_str} {leg.avg_price > 0 ? `· ${fmtPrice(leg.avg_price)}` : ''}
         </span>
       </div>
-      <div className="grid grid-cols-3 gap-2 pt-1.5 border-t border-[var(--border)]">
+      <div className="grid grid-cols-3 gap-2">
         <div>
-          <div className="text-[10.5px] text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
+          <div className="text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
           <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
             {feeUnknown ? t('leg_fee_unknown') : leg.gross_fee_usd > 0 ? `-${cur.money(leg.gross_fee_usd, 3)}` : cur.money(0, 3)}
           </div>
         </div>
         <div>
-          <div className="text-[10.5px] text-[var(--fg-3)]">{t('leg_rebate_disc')}</div>
+          <div className="text-[var(--fg-3)]">{t('leg_rebate_disc')}</div>
           <div className={`font-semibold sensitive ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
             {feeUnknown
               ? '—'
@@ -71,7 +69,7 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
                   : cur.money(0, 3)}
           </div>
           {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
-            <div className="text-[10px] txt-pos mt-0.5 sensitive whitespace-nowrap">
+            <div className="txt-pos mt-0.5 sensitive whitespace-nowrap">
               {locale === 'en'
                 ? `Pre-disc +${cur.money(leg.discount_saved_usd, 3)}`
                 : `抵扣已省 +${cur.money(leg.discount_saved_usd, 3)}`}
@@ -79,7 +77,7 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
           )}
         </div>
         <div className="text-right">
-          <div className="text-[10.5px] text-[var(--fg-3)]">{netLabel}</div>
+          <div className="text-[var(--fg-3)]">{netLabel}</div>
           <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
             {feeUnknown ? '—' : leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
           </div>
@@ -132,7 +130,7 @@ export function TradeDrilldownDrawer({
         setRendered(false)
         setClosing(false)
         closeTimerRef.current = null
-      }, 220)
+      }, 180)
     }
   }, [open, rendered])
 
@@ -216,17 +214,16 @@ export function TradeDrilldownDrawer({
         isClosingVisual ? 'closing' : ''
       }`}
     >
-      <div className="otl-drawer-panel w-full max-w-[540px] h-full flex flex-col overflow-hidden">
-        {/* Drawer Header */}
-        <div className="px-5 py-4 border-b border-[var(--border)] bg-[var(--surface-2)] flex items-center justify-between gap-3 shrink-0">
+      <div className="otl-drawer-panel w-full max-w-[520px] h-full flex flex-col overflow-hidden">
+        <div className="px-5 py-4 border-b border-[var(--border)] flex items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
-            <div className="text-[15px] font-semibold text-[var(--fg)] inline-flex items-center gap-2 flex-wrap">
+            <div className="t-h2 inline-flex items-center gap-2.5 flex-wrap">
               <InstrumentMark instrument={symbol} exchange={venueId.toUpperCase()} />
               <span>{symbol}</span>
               <VenueBadge venueId={venueId} name={venueName || venueId.toUpperCase()} />
             </div>
             {trades.length > 0 && (
-              <div className="text-[12px] text-[var(--fg-3)] mt-0.5 truncate">
+              <div className="text-[13px] text-[var(--fg-3)] mt-0.5 truncate">
                 {trades.length} {locale === 'en' ? 'trades' : '笔交割'} · {t('kpi_winrate')}{' '}
                 {winRate.toFixed(1)}%
               </div>
@@ -238,7 +235,7 @@ export function TradeDrilldownDrawer({
               <button
                 type="button"
                 onClick={() => onOpenInTrades(venueId, symbol)}
-                className="inline-flex items-center gap-1 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer whitespace-nowrap"
+                className="otl-btn h-7 px-2.5"
               >
                 <span>{locale === 'en' ? 'Open in Trades' : '去合约页查看'}</span>
                 <ArrowUpRight size={12} />
@@ -249,25 +246,18 @@ export function TradeDrilldownDrawer({
               onClick={requestClose}
               aria-label={locale === 'en' ? 'Close' : '关闭'}
               title={locale === 'en' ? 'Close' : '关闭'}
-              className="h-7 w-7 inline-flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--fg-2)] hover:text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+              className="otl-btn h-7 w-7 px-0 text-[var(--fg-2)] hover:text-[var(--fg)]"
             >
               <X size={14} />
             </button>
           </div>
         </div>
 
-        {/* Scrollable Sheet Body */}
         <div className="flex-1 overflow-y-auto">
           {livePos && (
-            <div className="px-5 py-3 border-b border-[var(--border)] bg-[var(--surface)] flex flex-wrap items-center justify-between gap-3 text-[12px]">
+            <div className="px-5 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3 text-[13px]">
               <div className="flex items-center gap-2">
-                <span
-                  className="px-2 py-0.5 rounded text-[11px] font-semibold"
-                  style={{
-                    background: livePos.side === 'LONG' ? 'var(--pos-soft)' : 'var(--neg-soft)',
-                    color: livePos.side === 'LONG' ? 'var(--pos)' : 'var(--neg)',
-                  }}
-                >
+                <span className={`font-semibold ${livePos.side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                   {livePos.side === 'LONG' ? t('side_long') : t('side_short')} {livePos.leverage}x
                 </span>
                 <span className="text-[var(--fg-2)]">
@@ -287,92 +277,86 @@ export function TradeDrilldownDrawer({
           )}
 
           {trades.length > 0 && (
-            <div className="px-5 py-3 border-b border-[var(--border)] bg-[var(--surface-2)] grid grid-cols-3 gap-3 text-[12px]">
+            <div className="px-5 py-3.5 border-b border-[var(--border)] bg-[var(--surface-2)] grid grid-cols-3 gap-3 text-[13px]">
               <div>
-                <div className="text-[11px] text-[var(--fg-3)]">{t('th_net_pnl')}</div>
-                <div className={`text-[15px] font-bold mt-0.5 sensitive ${pnlTone(totalNet)}`}>
+                <div className="text-[var(--fg-3)]">{t('th_net_pnl')}</div>
+                <div className={`text-[16px] font-semibold mt-0.5 sensitive ${pnlTone(totalNet)}`}>
                   {cur.signedMoney(totalNet)}
                 </div>
               </div>
               <div>
-                <div className="text-[11px] text-[var(--fg-3)]">{t('wf_total_fee')}</div>
-                <div className="text-[14px] font-semibold mt-0.5 sensitive text-[var(--fg)]">
+                <div className="text-[var(--fg-3)]">{t('wf_total_fee')}</div>
+                <div className="text-[15px] font-semibold mt-0.5 sensitive text-[var(--fg)]">
                   -{cur.money(totalFee)}
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-[11px] text-[var(--fg-3)]">{t('wf_total_rebate')}</div>
-                <div className="text-[14px] font-semibold mt-0.5 sensitive txt-pos">
+                <div className="text-[var(--fg-3)]">{t('wf_total_rebate')}</div>
+                <div className="text-[15px] font-semibold mt-0.5 sensitive txt-pos">
                   +{cur.money(totalReb)}
                 </div>
               </div>
             </div>
           )}
 
-          <div className="p-4 space-y-2.5">
+          <div className="divide-y divide-[var(--border)]">
             {loading ? (
-              <div className="space-y-2.5 py-2">
-                <div className="text-center text-[12px] text-[var(--fg-3)] pb-1">
+              <div className="p-5 space-y-3">
+                <div className="text-center text-[13px] text-[var(--fg-3)]">
                   {locale === 'en' ? 'Loading…' : '正在加载明细…'}
                 </div>
                 {[0, 1, 2].map(idx => (
                   <div
                     key={idx}
-                    className="h-16 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] animate-pulse"
+                    className="h-14 rounded-md border border-[var(--border)] bg-[var(--surface-2)] animate-pulse"
                   />
                 ))}
               </div>
             ) : trades.length === 0 ? (
-              <div className="py-10 text-center text-[13px] text-[var(--fg-3)]">{t('empty_trades')}</div>
+              <div className="py-12 text-center text-[14px] text-[var(--fg-3)]">{t('empty_trades')}</div>
             ) : (
               trades.map(tr => {
                 const isExp = expandedId === tr.trade_id
                 return (
-                  <div key={tr.trade_id} className="otl-card overflow-hidden">
+                  <div key={tr.trade_id}>
                     <button
                       type="button"
                       data-no-press="true"
                       onClick={() => setExpandedId(isExp ? '' : tr.trade_id)}
-                      className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-[var(--surface-hover)] cursor-pointer"
+                      className="w-full px-5 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-[var(--surface-hover)] cursor-pointer"
                     >
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="px-1.5 py-0.5 rounded text-[10.5px] font-semibold"
-                            style={{
-                              background: tr.side === 'LONG' ? 'var(--pos-soft)' : 'var(--neg-soft)',
-                              color: tr.side === 'LONG' ? 'var(--pos)' : 'var(--neg)',
-                            }}
-                          >
+                        <div className="flex items-center gap-2 text-[14px]">
+                          <span className={`font-semibold ${tr.side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                             {tr.side === 'LONG' ? t('side_long') : t('side_short')}
                           </span>
-                          <span className="text-[12.5px] font-medium text-[var(--fg)] whitespace-nowrap">
+                          <span className="font-medium text-[var(--fg)] whitespace-nowrap">
                             {tr.close_time_str}
                           </span>
-                          <span className="text-[11.5px] text-[var(--fg-3)] whitespace-nowrap">
+                          <span className="text-[13px] text-[var(--fg-3)] whitespace-nowrap">
                             · {fmtDuration(tr.holding_sec, locale)}
                           </span>
                         </div>
-                        <div className="text-[11px] text-[var(--fg-3)] mt-1 sensitive">
+                        <div className="text-[13px] text-[var(--fg-3)] mt-0.5 sensitive">
                           {t('fee_entry_short')} {tr.entry_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)}`} ·{' '}
                           {t('fee_exit_short')} {tr.exit_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}`} ·{' '}
                           {t('fee_net_short')} -{cur.money(tr.net_fee_usd, 2)}
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex items-center gap-2.5 shrink-0">
                         <div className="text-right">
-                          <div className={`text-[14px] font-bold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
+                          <div className={`text-[14px] font-semibold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
                             {cur.signedMoney(tr.net_pnl_usd)}
                           </div>
-                          <div className="text-[10.5px] text-[var(--fg-3)] sensitive">
+                          <div className="text-[13px] text-[var(--fg-3)] sensitive">
                             {locale === 'en' ? 'Pre-rebate ' : '返佣前 '}
                             {cur.signedPlainMoney(tr.book_pnl_usd)}
                           </div>
                         </div>
                         <ChevronDown
                           size={15}
-                          className={`text-[var(--fg-3)] transition-transform duration-200 ${
+                          className={`text-[var(--fg-3)] transition-transform duration-150 ${
                             isExp ? 'rotate-180' : ''
                           }`}
                         />
@@ -381,7 +365,7 @@ export function TradeDrilldownDrawer({
 
                     <AnimatedCollapse
                       open={isExp}
-                      innerClassName="px-4 pb-4 pt-2 border-t border-[var(--border)] space-y-2.5"
+                      innerClassName="px-5 pb-4 bg-[var(--surface-2)]"
                     >
                       <CompactLegRow
                         title={t('leg_entry')}
@@ -393,7 +377,7 @@ export function TradeDrilldownDrawer({
                         netLabel={t('leg_exit_net')}
                         leg={tr.exit_leg}
                       />
-                      <div className="pt-1 space-y-1 text-[12px]">
+                      <div className="pt-2.5 border-t border-[var(--border)] space-y-1 text-[13px]">
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
                           <span className={`font-medium sensitive ${pnlTone(tr.gross_pnl_usd)}`}>
@@ -417,7 +401,7 @@ export function TradeDrilldownDrawer({
                           </span>
                         </div>
                         {tr.total_discount_saved_usd > 0.0001 && (
-                          <div className="flex justify-between text-[11px] text-[var(--fg-3)]">
+                          <div className="flex justify-between text-[var(--fg-3)]">
                             <span>
                               {locale === 'en' ? 'Pre-deduction discount saved' : '扣费前平台币抵扣已省'}
                             </span>

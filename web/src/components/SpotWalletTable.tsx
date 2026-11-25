@@ -1,6 +1,7 @@
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
 import type { SpotHolding, SpotWalletBalance } from '../lib/types'
+import { InstrumentMark } from './InstrumentMark'
 import { VenueBadge } from './VenueBadge'
 
 export function formatWalletType(wallet: string, isEn: boolean): string {
@@ -26,15 +27,19 @@ export function SpotWalletTable({ balances, spotTotal, selected }: {
   const { locale, t } = useI18n()
   const en = locale === 'en'
   return (
-    <section className="border border-[var(--border)] rounded-xl overflow-hidden">
-      <div className="px-4 py-2.5 bg-[var(--surface-2)] flex items-center justify-between gap-2">
-        <span>{en ? 'Portfolio allocation · Spot, Earn & Dust' : '账本归入现货、理财与尾仓的净值'}</span>
-        <strong className="sensitive">{cur.money(spotTotal)}</strong>
+    <section className="border-t border-[var(--border)] pt-3">
+      <div className="pb-2.5 flex items-center justify-between gap-2 text-[13px]">
+        <span className="text-[var(--fg-2)]">
+          {en ? 'Portfolio allocation · Spot, Earn & Dust' : '账本归入现货、理财与尾仓的净值'}
+        </span>
+        <strong className="text-[14px] text-[var(--fg)] sensitive">{cur.money(spotTotal)}</strong>
       </div>
       {balances.length > 0 ? (
-        <div className="overflow-auto max-h-72">
+        <div className="overflow-auto max-h-72 border-t border-[var(--border)]">
           <table className="otl-table">
-            <caption className="text-left px-4 pt-3 text-[var(--fg-2)]">{en ? 'Synced wallet balances' : '交易所钱包余额'}</caption>
+            <caption className="text-left px-2.5 pt-2.5 pb-1 text-[13px] text-[var(--fg-3)]">
+              {en ? 'Synced wallet balances' : '交易所钱包余额'}
+            </caption>
             <thead>
               <tr>
                 <th>{en ? 'Asset' : '币种'}</th>
@@ -46,25 +51,32 @@ export function SpotWalletTable({ balances, spotTotal, selected }: {
             </thead>
             <tbody>
               {balances.map(b => (
-                <tr key={`${b.venue_id}-${b.wallet_type}-${b.asset}`}
-                  className={b.venue_id === selected?.venue_id && b.asset === selected.asset ? 'bg-[var(--accent-soft)]' : undefined}>
-                  <td>{b.asset}</td>
+                <tr
+                  key={`${b.venue_id}-${b.wallet_type}-${b.asset}`}
+                  className={b.venue_id === selected?.venue_id && b.asset === selected.asset ? 'selected' : undefined}
+                >
+                  <td>
+                    <span className="inline-flex items-center gap-2 font-semibold">
+                      <InstrumentMark instrument={`${b.asset}_USDT`} exchange={b.venue_id.toUpperCase()} />
+                      <span>{b.asset}</span>
+                    </span>
+                  </td>
                   <td><VenueBadge venueId={b.venue_id} name={b.venue_name} /></td>
-                  <td>{formatWalletType(b.wallet_type, en)}</td>
+                  <td className="text-[var(--fg-2)]">{formatWalletType(b.wallet_type, en)}</td>
                   <td className="text-right sensitive">{b.qty.toLocaleString(en ? 'en-US' : 'zh-CN', { maximumSignificantDigits: 14 })}</td>
-                  <td className="text-right sensitive">{b.market_value_usd == null ? '—' : cur.money(b.market_value_usd)}</td>
+                  <td className="text-right font-medium sensitive">{b.market_value_usd == null ? '—' : cur.money(b.market_value_usd)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       ) : (
-        <p className="px-4 py-3 text-[var(--fg-3)]">
+        <p className="py-4 text-[13px] text-[var(--fg-3)]">
           {en ? 'This snapshot contains no itemized wallet balances.' : '当前快照没有逐币钱包余额。'}
         </p>
       )}
       {balances.some(b => b.wallet_type === 'UNIFIED' || b.wallet_type === 'UTA') && (
-        <p className="px-4 py-2 text-[var(--fg-3)]">
+        <p className="pt-2.5 m-0 text-[13px] text-[var(--fg-3)]">
           {en ? 'Unified wallet balances can also back futures margin.' : '统一账户余额可能同时用于合约保证金。'}
         </p>
       )}

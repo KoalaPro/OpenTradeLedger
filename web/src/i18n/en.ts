@@ -6,7 +6,7 @@ export const en: Record<MessageKey, string> = {
   nav_trades: 'Trades',
   nav_analytics: 'Analytics',
   nav_fees: 'Fees & AI',
-  nav_extensions: 'Radar & Modules',
+  nav_extensions: 'Extensions',
   nav_settings: 'Settings',
 
   read_only: 'Read-Only',

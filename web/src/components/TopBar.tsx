@@ -49,20 +49,17 @@ export function TopBar({
   const showRange = page !== 'settings' && page !== 'extensions'
 
   return (
-    <header className="min-h-14 py-2 px-4 sm:px-6 border-b border-[var(--border)] bg-[var(--bg)] flex flex-wrap items-center justify-between gap-2.5 shrink-0 transition-colors duration-200">
-      <div className="flex items-center gap-2.5 shrink-0">
-        <h1
-          key={page}
-          className="otl-title-swap m-0 text-[16px] sm:text-[17px] font-semibold tracking-tight text-[var(--fg)] whitespace-nowrap"
-        >
+    <header className="min-h-[54px] py-2 px-4 sm:px-7 border-b border-[var(--border)] bg-[var(--bg)] flex flex-wrap items-center justify-between gap-3 shrink-0">
+      <div className="flex items-baseline gap-3 shrink-0">
+        <h1 key={page} className="t-h1 otl-title-swap whitespace-nowrap">
           {t(pageTitleKeys[page])}
         </h1>
         {demoMode && (
           <span
             data-testid="demo-mode-badge"
-            className="px-2 py-0.5 rounded-md text-[11px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)] whitespace-nowrap"
+            className="text-[13px] text-[var(--fg-3)] whitespace-nowrap"
           >
-            {t('demo_badge')}
+            · {t('demo_badge')}
           </span>
         )}
         {!demoMode && exchangeErrorCount > 0 && (
@@ -70,9 +67,9 @@ export function TopBar({
             type="button"
             data-testid="topbar-exchange-error-badge"
             onClick={onInspectErrors}
-            className="otl-status-err inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11.5px] font-medium cursor-pointer whitespace-nowrap"
+            className="otl-status-err inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[13px] font-medium cursor-pointer whitespace-nowrap self-center"
           >
-            <AlertTriangle size={12} />
+            <AlertTriangle size={13} />
             <span>
               {locale === 'en'
                 ? `${exchangeErrorCount} Exchange API ${exchangeErrorCount > 1 ? 'Errors' : 'Error'} · View`
@@ -82,7 +79,7 @@ export function TopBar({
         )}
       </div>
 
-      {/* Range slot sits LEFT of utility controls so Currency / Privacy / Locale NEVER shift horizontally! */}
+      {/* Range slot stays LEFT of utility controls so Currency / Privacy / Locale stay pinned */}
       <div className="flex items-center gap-2 flex-wrap justify-end">
         <div
           data-testid="topbar-range-slot"
@@ -109,7 +106,7 @@ export function TopBar({
             data-testid="currency-selector"
             value={currency}
             onChange={e => onChangeCurrency(e.target.value as CurrencyCode)}
-            className="h-8 px-2 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+            className="otl-select h-8 py-0 px-2.5 text-[13px] font-medium cursor-pointer"
           >
             {CURRENCY_OPTIONS.map(opt => (
               <option key={opt.code} value={opt.code}>
@@ -123,7 +120,7 @@ export function TopBar({
           type="button"
           data-testid="privacy-toggle-btn"
           onClick={onTogglePrivacy}
-          className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer whitespace-nowrap"
+          className="otl-btn"
           style={privacyMode ? { borderColor: 'var(--accent)', color: 'var(--accent)' } : undefined}
         >
           {privacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -134,7 +131,7 @@ export function TopBar({
           type="button"
           data-testid="locale-toggle-btn"
           onClick={onToggleLocale}
-          className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer whitespace-nowrap"
+          className="otl-btn"
         >
           <Languages size={14} />
           <span>{locale === 'zh-CN' ? 'EN' : '中文'}</span>

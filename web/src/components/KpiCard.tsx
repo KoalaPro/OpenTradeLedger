@@ -39,26 +39,21 @@ export function KpiCard({
             }
           : undefined
       }
-      className={`otl-card p-4 grid gap-2 min-w-0 ${
-        onClick ? 'otl-card-interactive hover:bg-[var(--surface-hover)]' : ''
-      }`}
-      style={{
-        gridTemplateRows: '20px 32px 1fr',
-        ...(active ? { borderColor: 'rgba(251, 191, 36, 0.45)' } : {}),
-      }}
+      className={`otl-ledger-cell ${onClick ? 'otl-card-interactive' : ''}`}
+      style={active ? { boxShadow: 'inset 0 -2px 0 var(--accent)' } : undefined}
     >
-      <div className="flex items-center justify-between gap-2 text-[12px] text-[var(--fg-2)] whitespace-nowrap">
+      <div className="flex items-center justify-between gap-2 text-[13px] text-[var(--fg-2)] whitespace-nowrap">
         <span className="truncate">{label}</span>
         {badge}
       </div>
       <div
-        className={`text-[24px] font-semibold tracking-tight leading-tight whitespace-nowrap flex items-baseline gap-1 ${valueClass} ${
+        className={`t-kpi whitespace-nowrap flex items-baseline gap-1 ${valueClass} ${
           sensitive ? 'sensitive' : ''
         }`}
       >
         {value}
       </div>
-      <div className="text-[12px] text-[var(--fg-3)] leading-snug">{sub}</div>
+      <div className="text-[13px] text-[var(--fg-3)] leading-snug">{sub}</div>
     </div>
   )
 }

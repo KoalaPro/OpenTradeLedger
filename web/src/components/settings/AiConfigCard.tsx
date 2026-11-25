@@ -31,17 +31,17 @@ export function AiConfigCard({
   }, [settings.ai_base_url, settings.ai_model])
 
   return (
-    <div className="otl-card p-5 space-y-3">
+    <div className="py-6 space-y-3">
       <div>
-        <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('set_ai_title')}</h3>
-        <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">{t('set_ai_sub')}</p>
+        <h3 className="t-h2">{t('set_ai_title')}</h3>
+        <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('set_ai_sub')}</p>
       </div>
       <input
         type="text"
         value={aiUrl}
         onChange={e => setAiUrl(e.target.value)}
         placeholder="Base URL (e.g. https://api.openai.com/v1)"
-        className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+        className="otl-input w-full"
       />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <input
@@ -49,7 +49,7 @@ export function AiConfigCard({
           value={aiKey}
           onChange={e => setAiKey(e.target.value)}
           placeholder={settings.ai_api_key_set ? 'API Key (configured)' : 'API Key'}
-          className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+          className="otl-input font-mono"
         />
         <button
           type="button"
@@ -76,14 +76,14 @@ export function AiConfigCard({
               setFetchingModels(false)
             }
           }}
-          className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer whitespace-nowrap"
+          className="otl-btn h-[34px]"
         >
           <RefreshCw size={12} className={fetchingModels ? 'animate-spin' : ''} />
           <span>{locale === 'en' ? 'Fetch Models' : '获取模型列表'}</span>
         </button>
       </div>
       {aiModels.length > 0 ? (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <select
             aria-label="AI Model"
             data-testid="ai-model-select"
@@ -91,7 +91,7 @@ export function AiConfigCard({
             onChange={e => {
               if (e.target.value !== '__custom__') setAiModel(e.target.value)
             }}
-            className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)] cursor-pointer"
+            className="otl-select w-full cursor-pointer"
           >
             {aiModels.map(m => (
               <option key={m} value={m}>
@@ -109,7 +109,7 @@ export function AiConfigCard({
             value={aiModel}
             onChange={e => setAiModel(e.target.value)}
             placeholder="Model ID (e.g. gpt-4o-mini)"
-            className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+            className="otl-input w-full"
           />
         </div>
       ) : (
@@ -118,7 +118,7 @@ export function AiConfigCard({
           value={aiModel}
           onChange={e => setAiModel(e.target.value)}
           placeholder="Model (e.g. gpt-4o-mini / deepseek-chat)"
-          className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+          className="otl-input w-full"
         />
       )}
       <div className="flex justify-end">
@@ -130,8 +130,7 @@ export function AiConfigCard({
             setAiKey('')
             flashOk(t('set_save_ok'), 2500)
           }}
-          className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
-          style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+          className="otl-btn otl-btn-primary"
         >
           {t('save_config')}
         </button>

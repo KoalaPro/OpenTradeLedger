@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Bell, Smartphone } from 'lucide-react'
+import { Bell } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { api } from '../../lib/api'
 import type { UserSettings } from '../../lib/types'
@@ -34,24 +34,21 @@ export function BarkNotifyCard({
 
   return (
     <>
-      <div data-testid="notifications-card" className="otl-card p-5 space-y-3.5">
+      <div data-testid="notifications-card" className="py-6 space-y-3.5">
         <div>
-          <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('set_notify_title')}</h3>
-          <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">{t('set_notify_sub')}</p>
+          <h3 className="t-h2">{t('set_notify_title')}</h3>
+          <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">{t('set_notify_sub')}</p>
         </div>
 
         {/* Beginner Step-by-Step Bark Guide */}
         <div
           data-testid="bark-onboarding-guide"
-          className="otl-surface-2 rounded-xl p-3.5 space-y-1.5 text-[11.5px] text-[var(--fg-2)] border border-[var(--border)]"
+          className="otl-surface-2 p-3.5 space-y-1.5 text-[13px] text-[var(--fg-2)]"
         >
-          <div className="font-semibold text-[12px] text-[var(--fg)] inline-flex items-center gap-1.5">
-            <Smartphone size={13} className="text-[var(--accent)] shrink-0" />
-            <span>
-              {isZh
-                ? 'iPhone / iPad 新用户如何获取 Bark 推送？'
-                : 'How to set up iOS Bark Push Notifications'}
-            </span>
+          <div className="font-semibold text-[var(--fg)]">
+            {isZh
+              ? 'iPhone / iPad 新用户如何获取 Bark 推送？'
+              : 'How to set up iOS Bark Push Notifications'}
           </div>
           <ol className="m-0 pl-4 space-y-0.5 list-decimal leading-relaxed">
             <li>
@@ -74,7 +71,7 @@ export function BarkNotifyCard({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           <div className="space-y-1">
-            <label className="block text-[11px] font-medium text-[var(--fg-2)]">
+            <label className="block text-[13px] text-[var(--fg-2)]">
               {isZh ? 'Bark 服务器地址（默认官方即可）' : 'Bark Server URL (Default OK)'}
             </label>
             <input
@@ -83,11 +80,11 @@ export function BarkNotifyCard({
               value={barkServerUrl}
               onChange={e => setBarkServerUrl(e.target.value)}
               placeholder="https://api.day.app"
-              className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+              className="otl-input w-full"
             />
           </div>
           <div className="space-y-1">
-            <label className="block text-[11px] font-medium text-[var(--fg)]">
+            <label className="block text-[13px] text-[var(--fg)]">
               {isZh ? 'Bark 链接或专属 Key（直接粘贴处）' : 'Bark App URL or Push Key (Paste here)'}
             </label>
             <input
@@ -104,7 +101,7 @@ export function BarkNotifyCard({
                     ? '粘贴 Bark 完整链接或设备 Key'
                     : 'Paste full Bark URL or Push Key'
               }
-              className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+              className="otl-input w-full font-mono"
             />
           </div>
         </div>
@@ -140,7 +137,7 @@ export function BarkNotifyCard({
                 setTestingNotify(false)
               }
             }}
-            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
+            className="otl-btn"
           >
             <Bell size={12} />
             <span>{testingNotify ? (isZh ? '发送中…' : 'Sending…') : isZh ? '测试推送' : 'Test Push'}</span>
@@ -158,21 +155,20 @@ export function BarkNotifyCard({
               setBarkKey('')
               flashOk(t('set_save_ok'), 2500)
             }}
-            className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
-            style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+            className="otl-btn otl-btn-primary"
           >
             {t('save_config')}
           </button>
         </div>
       </div>
 
-      {/* Optional Outbound Network Proxy (for Mainland China NAS reaching Binance) */}
-      <div data-testid="outbound-proxy-card" className="otl-card p-5 space-y-2.5">
+      {/* Optional Outbound Network Proxy */}
+      <div data-testid="outbound-proxy-card" className="py-6 space-y-2.5">
         <div>
-          <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">
+          <h3 className="t-h2">
             {isZh ? '网络代理配置（国内 NAS 连币安可选）' : 'Outbound Network Proxy (Optional)'}
           </h3>
-          <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">
+          <p className="m-0 text-[13px] text-[var(--fg-3)] mt-0.5">
             {isZh
               ? '若 NAS 直连币安超时，可填入局域网代理地址（如 http://192.168.x.x:7890；注意 Docker 容器内请填宿主机/软路由局域网 IP，勿填 127.0.0.1），留空则直连。'
               : 'Optional HTTP/HTTPS/SOCKS5 proxy for exchange APIs & public copy radar. In Docker on NAS, use LAN IP rather than 127.0.0.1.'}
@@ -189,7 +185,7 @@ export function BarkNotifyCard({
                 ? '例如 http://192.168.x.x:7890（NAS 容器勿填 127.0.0.1，留空直连）'
                 : 'e.g. http://192.168.x.x:7890 (leave blank for direct)'
             }
-            className="h-8 flex-1 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+            className="otl-input flex-1 font-mono"
           />
           <button
             type="button"
@@ -210,8 +206,7 @@ export function BarkNotifyCard({
                 setErrorMsg(err instanceof Error ? err.message : 'Invalid proxy URL')
               }
             }}
-            className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer whitespace-nowrap"
-            style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+            className="otl-btn otl-btn-primary h-[34px]"
           >
             {t('save_config')}
           </button>
