@@ -1015,6 +1015,9 @@ def build_easicoin_fee_matrix_row(
         else (ec_live_rebate_rate * Decimal("100"))
     )
 
+    blended_gross_bps = (ec_all["g_fee"] / ec_all["tot_not"] * Decimal("10000")) if ec_all["tot_not"] > 0 else Decimal("0")
+    blended_net_bps = (max(Decimal("0"), ec_all["tot_net"]) / ec_all["tot_not"] * Decimal("10000")) if ec_all["tot_not"] > 0 else Decimal("0")
+
     return {
         "venue_id": "easicoin",
         "display_name": ex["display_name"],
@@ -1025,6 +1028,10 @@ def build_easicoin_fee_matrix_row(
         "maker_net_bps": f2(ec_m_net_bps, 2),
         "taker_gross_bps": f2(ec_t_gross_bps, 2),
         "taker_net_bps": f2(ec_t_net_bps, 2),
+        "maker_bps_known": bool(ec_all["m_not"] > 0 or len(range_trades) == 0),
+        "taker_bps_known": bool(ec_all["t_not"] > 0 or len(range_trades) == 0),
+        "blended_gross_bps": f2(blended_gross_bps, 2),
+        "blended_net_bps": f2(blended_net_bps, 2),
         "gross_fee_usd": f2(ec_all["g_fee"], 2),
         "discount_saved_usd": 0.0,
         "discount_label": "",

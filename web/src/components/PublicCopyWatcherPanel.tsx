@@ -93,6 +93,9 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
   const handleAdd = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
     if (!rawInput.trim() || adding) return
+    const existingIds = new Set((status?.items || []).map(x => x.portfolio_id))
+    const inputIds = Array.from(rawInput.matchAll(/\b(\d{15,22})\b/g), m => m[1])
+    const allAlreadyExisted = inputIds.length > 0 && inputIds.every(id => existingIds.has(id))
     setAdding(true)
     setFeedback(null)
     try {
@@ -100,12 +103,23 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
       setStatus(res)
       setRawInput('')
       if (!userToggledGuide) setGuideOpen(false)
-      flash(
-        'ok',
-        isZh
-          ? '带单员添加成功！已接入后台 10 秒空位扫描与 30 秒持仓推算雷达'
-          : 'Lead trader added to 10s slot & 30s position radar',
-      )
+      const slotSec = res.interval_sec ?? status?.interval_sec ?? 10
+      const tradeSec = res.trade_poll_sec ?? status?.trade_poll_sec ?? 30
+      if (allAlreadyExisted) {
+        flash(
+          'ok',
+          isZh
+            ? '该带单员已在盯盘列表中：已刷新最新快照，并完整保留你原有的监控、响铃与推送开关设置'
+            : 'Already in watch list: refreshed snapshot and preserved your existing alert & monitoring toggles',
+        )
+      } else {
+        flash(
+          'ok',
+          isZh
+            ? `带单员添加成功！已接入后台 ${slotSec} 秒空位扫描与 ${tradeSec} 秒持仓推算雷达`
+            : `Lead trader added to ${slotSec}s slot & ${tradeSec}s position radar`,
+        )
+      }
     } catch (err) {
       flash('err', err instanceof Error ? err.message : 'Failed to add lead trader')
     } finally {

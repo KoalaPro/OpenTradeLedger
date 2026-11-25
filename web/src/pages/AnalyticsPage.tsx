@@ -256,7 +256,11 @@ export function AnalyticsPage({
           label={t('kpi_futures_pnl')}
           value={cur.signedPlainMoney(s.futures_net_pnl_usd)}
           valueClass={pnlTone(s.futures_net_pnl_usd)}
-          sub={`${s.trade_count} · ${t('kpi_winrate')} ${s.win_rate_pct.toFixed(1)}%`}
+          sub={
+            s.trade_count > 0
+              ? `${s.trade_count} · ${t('kpi_winrate')} ${s.win_rate_pct.toFixed(1)}%`
+              : `${s.trade_count} · ${t('kpi_winrate')} —`
+          }
         />
         <KpiCard
           label={locale === 'en' ? 'Max Drawdown' : '区间最大回撤'}

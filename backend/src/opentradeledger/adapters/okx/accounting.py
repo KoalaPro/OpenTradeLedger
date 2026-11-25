@@ -395,8 +395,9 @@ def build_okx_fee_matrix_row(
     v_base_fee = v_gross + v_disc
     v_relief_pct = round(((v_reb + v_disc) / v_base_fee) * 100.0, 1) if v_base_fee > 0 else v_reb_pct
 
-    m_legs = [t[lk] for t in range_trades for lk in ("entry_leg", "exit_leg") if t[lk]["role"] == "MAKER"]
-    t_legs = [t[lk] for t in range_trades for lk in ("entry_leg", "exit_leg") if t[lk]["role"] == "TAKER"]
+    m_legs = [t[lk] for t in range_trades for lk in ("entry_leg", "exit_leg") if t[lk].get("fee_known", True) and t[lk]["role"] == "MAKER"]
+    t_legs = [t[lk] for t in range_trades for lk in ("entry_leg", "exit_leg") if t[lk].get("fee_known", True) and t[lk]["role"] == "TAKER"]
+    tot_not = sum(float(t[lk]["notional_usd"]) for t in range_trades for lk in ("entry_leg", "exit_leg"))
     m_not = sum(float(l["notional_usd"]) for l in m_legs)
     t_not = sum(float(l["notional_usd"]) for l in t_legs)
     m_gross_bps = round((sum(float(l["gross_fee_usd"]) for l in m_legs) / m_not) * 10_000, 2) if m_not > 0 else m_bps_cfg
@@ -416,6 +417,10 @@ def build_okx_fee_matrix_row(
         "maker_net_bps": m_net_bps,
         "taker_gross_bps": t_gross_bps,
         "taker_net_bps": t_net_bps,
+        "maker_bps_known": bool(m_not > 0 or m_bps_cfg > 0 or len(range_trades) == 0),
+        "taker_bps_known": bool(t_not > 0 or t_bps_cfg > 0 or len(range_trades) == 0),
+        "blended_gross_bps": round((v_gross / tot_not) * 10_000, 2) if tot_not > 0 else 0.0,
+        "blended_net_bps": round((v_net / tot_not) * 10_000, 2) if tot_not > 0 else 0.0,
         "gross_fee_usd": v_gross,
         "discount_saved_usd": v_disc,
         "discount_label": "OKB" if v_disc > 0 else "",

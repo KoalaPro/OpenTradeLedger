@@ -143,7 +143,7 @@ export function OverviewPage({
           valueClass={pnlTone(s.futures_net_pnl_usd)}
           sub={
             <span>
-              {t('kpi_winrate')} {s.win_rate_pct.toFixed(1)}%
+              {t('kpi_winrate')} {s.trade_count > 0 ? `${s.win_rate_pct.toFixed(1)}%` : '—'}
             </span>
           }
         />

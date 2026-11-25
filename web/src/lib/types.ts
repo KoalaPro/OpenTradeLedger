@@ -151,6 +151,10 @@ export interface VenueFeeRow {
   maker_net_bps: number
   taker_gross_bps: number
   taker_net_bps: number
+  maker_bps_known?: boolean
+  taker_bps_known?: boolean
+  blended_gross_bps?: number
+  blended_net_bps?: number
   gross_fee_usd: number
   discount_saved_usd: number
   discount_label: string
@@ -174,6 +178,8 @@ export interface SpotHolding {
 
 export interface DashboardData {
   demo_mode: boolean
+  explicit_demo_mode?: boolean
+  has_live_data?: boolean
   read_only: boolean
   last_sync_ms: number
   syncing: boolean
@@ -276,6 +282,8 @@ export interface DashboardData {
     generated_at: string
     generated_ms: number
     model: string
+    execution_mode?: 'zero_trades_local' | 'local_only' | 'remote_failed_fallback' | 'remote_llm'
+    data_transmitted?: boolean
     range_key?: string
     range_label?: string
     range_label_zh?: string

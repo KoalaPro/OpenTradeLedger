@@ -1573,6 +1573,9 @@ def build_binance_fee_matrix_row(
         else Decimal("0")
     )
 
+    blended_gross_bps = (bn_all["g_fee"] / bn_all["tot_not"] * Decimal("10000")) if bn_all["tot_not"] > 0 else Decimal("0")
+    blended_net_bps = (max(Decimal("0"), bn_all["tot_net"]) / bn_all["tot_not"] * Decimal("10000")) if bn_all["tot_not"] > 0 else Decimal("0")
+
     return {
         "venue_id": "binance",
         "display_name": ex["display_name"],
@@ -1583,6 +1586,10 @@ def build_binance_fee_matrix_row(
         "maker_net_bps": f2(bn_m_net_bps, 2),
         "taker_gross_bps": f2(bn_t_gross_bps, 2),
         "taker_net_bps": f2(bn_t_net_bps, 2),
+        "maker_bps_known": bool(bn_all["m_not"] > 0 or len(range_trades) == 0),
+        "taker_bps_known": bool(bn_all["t_not"] > 0 or len(range_trades) == 0),
+        "blended_gross_bps": f2(blended_gross_bps, 2),
+        "blended_net_bps": f2(blended_net_bps, 2),
         "gross_fee_usd": f2(bn_all["g_fee"], 2),
         "discount_saved_usd": f2(bn_all["disc_saved"], 2),
         "discount_label": "BNB",

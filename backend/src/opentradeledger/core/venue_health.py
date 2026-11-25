@@ -19,6 +19,12 @@ _SENSITIVE_TOKEN_RE = re.compile(r"([A-Za-z0-9_\-]{28,})")
 
 def _sanitize_raw_error(raw: Any, max_len: int = 280) -> str:
     txt = str(raw or "").strip()
+    if isinstance(raw, BaseException):
+        cls_name = type(raw).__name__
+        if not txt:
+            txt = cls_name
+        elif cls_name.lower() not in txt.lower():
+            txt = f"{cls_name}: {txt}"
     txt = re.sub(r"\s+", " ", txt)
     # Strip HTML error pages (e.g., nginx / openresty / CloudFront) down to title or status
     if "<html" in txt.lower() or "<title>" in txt.lower():
@@ -202,6 +208,31 @@ def humanize_exchange_error(venue_id: str, raw_err: Any) -> dict[str, str]:
             "raw": raw_clean,
         }
 
+    # 10. Transient upstream 5xx server busy / maintenance
+    if any(
+        k in low
+        for k in (
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "(500)",
+            "(502)",
+            "(503)",
+            "(504)",
+            "bad gateway",
+            "service unavailable",
+            "gateway timeout",
+            "internal server error",
+        )
+    ):
+        return {
+            "code": "UPSTREAM_5XX",
+            "reason": f"{venue_id.upper()} upstream server returned temporary 5xx busy error — automatic sync will retry.",
+            "reason_zh": f"{venue_id.upper()} 交易所服务端瞬时繁忙（HTTP 5xx），后台将自动重试。",
+            "raw": raw_clean,
+        }
+
     return {
         "code": "API_ERROR",
         "reason": f"{venue_id.upper()} API returned an error: {raw_clean}",
@@ -248,6 +279,7 @@ class VenueHealthTracker:
             "status": "connected",
             "last_attempt_ms": now_ms,
             "last_ok_ms": now_ms,
+            "consecutive_failures": 0,
             "error_code": "",
             "error_reason": "",
             "error_reason_zh": "",
@@ -262,11 +294,13 @@ class VenueHealthTracker:
         diag = humanize_exchange_error(vid, raw_err)
         all_h = self.get_all()
         prev = all_h.get(vid) if isinstance(all_h.get(vid), dict) else {}
+        prev_fails = int(prev.get("consecutive_failures") or 0) if prev.get("status") == "error" else 0
         now_ms = int(time.time() * 1000)
         entry = {
             "status": "error",
             "last_attempt_ms": now_ms,
             "last_ok_ms": int(prev.get("last_ok_ms") or 0),
+            "consecutive_failures": prev_fails + 1,
             "error_code": diag["code"],
             "error_reason": diag["reason"],
             "error_reason_zh": diag["reason_zh"],

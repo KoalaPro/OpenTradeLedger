@@ -1547,9 +1547,12 @@ def build_gate_fee_matrix_row(
     g_eff_t_not = g["t_not"] if g["t_not"] > 0 else (g["t_fee"] / Decimal("0.0005") if g["t_fee"] > 0 else Decimal("0"))
     g_savings = max(Decimal("0"), g["t_net"] - (g_eff_t_not * g_m_net_rate))
 
-    gross = round(f2(g["m_fee"], 4) + f2(g["t_fee"], 4), 2)
-    reb = round(f2(g["m_reb"], 4) + f2(g["t_reb"], 4), 2)
+    gross = f2(g["g_fee"], 2)
+    reb = f2(g["tot_reb"], 2)
+    net_fee = round(max(0.0, f2(g["tot_net"], 2)), 2)
     reb_pct = round((reb / gross) * 100.0, 1) if gross > 0 else f2(taker_reb_rate * Decimal("100"), 1)
+    blended_gross_bps = (g["g_fee"] / g["tot_not"] * Decimal("10000")) if g["tot_not"] > 0 else Decimal("0")
+    blended_net_bps = (max(Decimal("0"), g["tot_net"]) / g["tot_not"] * Decimal("10000")) if g["tot_not"] > 0 else Decimal("0")
 
     return {
         "venue_id": "gate",
@@ -1561,12 +1564,16 @@ def build_gate_fee_matrix_row(
         "maker_net_bps": f2(g_m_net_bps, 2),
         "taker_gross_bps": f2(g_t_gross_bps, 2),
         "taker_net_bps": f2(g_t_net_bps, 2),
+        "maker_bps_known": bool(g["m_not"] > 0 or len(range_trades) == 0),
+        "taker_bps_known": bool(g["t_not"] > 0 or len(range_trades) == 0),
+        "blended_gross_bps": f2(blended_gross_bps, 2),
+        "blended_net_bps": f2(blended_net_bps, 2),
         "gross_fee_usd": gross,
         "discount_saved_usd": 0.0,
         "discount_label": "",
         "rebate_usd": reb,
         "rebate_pct": reb_pct,
-        "net_fee_usd": round(max(0.0, gross - reb), 2),
+        "net_fee_usd": net_fee,
         "combined_relief_pct": reb_pct,
         "potential_maker_savings_usd": f2(g_savings, 2),
     }

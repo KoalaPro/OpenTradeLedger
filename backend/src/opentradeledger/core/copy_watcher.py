@@ -838,9 +838,9 @@ class CopyWatcherService:
 
                 if pid in existing_by_id:
                     existing_by_id[pid]["nickname"] = snap.nickname
-                    existing_by_id[pid]["enabled"] = True
-                    existing_by_id[pid]["slot_alert"] = bool(slot_alert)
-                    existing_by_id[pid]["trade_alert"] = bool(trade_alert)
+                    existing_by_id[pid].setdefault("enabled", True)
+                    existing_by_id[pid].setdefault("slot_alert", bool(slot_alert))
+                    existing_by_id[pid].setdefault("trade_alert", bool(trade_alert))
                 else:
                     row = {
                         "portfolio_id": pid,

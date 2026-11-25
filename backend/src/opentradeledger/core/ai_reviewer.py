@@ -124,9 +124,20 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
     avg_win_min = round(sum(win_holds) / len(win_holds) / 60.0, 1) if win_holds else 0.0
     avg_loss_min = round(sum(loss_holds) / len(loss_holds) / 60.0, 1) if loss_holds else 0.0
 
-    entry_maker_cnt = sum(1 for t in trades if (t.get("entry_leg") or {}).get("role") == "MAKER")
-    exit_maker_cnt = sum(1 for t in trades if (t.get("exit_leg") or {}).get("role") == "MAKER")
-    n_trades = max(1, len(trades))
+    known_entry_legs = [
+        t for t in trades
+        if (t.get("entry_leg") or {}).get("fee_known", True)
+        and str((t.get("entry_leg") or {}).get("role") or "").upper() in ("MAKER", "TAKER")
+    ]
+    known_exit_legs = [
+        t for t in trades
+        if (t.get("exit_leg") or {}).get("fee_known", True)
+        and str((t.get("exit_leg") or "").get("role") or "").upper() in ("MAKER", "TAKER")
+    ]
+    entry_maker_cnt = sum(1 for t in known_entry_legs if str((t.get("entry_leg") or {}).get("role") or "").upper() == "MAKER")
+    exit_maker_cnt = sum(1 for t in known_exit_legs if str((t.get("exit_leg") or {}).get("role") or "").upper() == "MAKER")
+    entry_maker_ratio = round((entry_maker_cnt / len(known_entry_legs)) * 100.0, 1) if known_entry_legs else None
+    exit_maker_ratio = round((exit_maker_cnt / len(known_exit_legs)) * 100.0, 1) if known_exit_legs else None
 
     exchanges = [
         {
@@ -145,8 +156,18 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
         {
             "venue": r.get("display_name") or r.get("venue_id"),
             "trades": r.get("trade_count"),
-            "maker_gross_net_bps": f"{r.get('maker_gross_bps', 0)}/{r.get('maker_net_bps', 0)}",
-            "taker_gross_net_bps": f"{r.get('taker_gross_bps', 0)}/{r.get('taker_net_bps', 0)}",
+            "maker_gross_net_bps": (
+                f"{r.get('maker_gross_bps', 0)}/{r.get('maker_net_bps', 0)}"
+                if r.get("maker_bps_known", True)
+                else "unknown"
+            ),
+            "taker_gross_net_bps": (
+                f"{r.get('taker_gross_bps', 0)}/{r.get('taker_net_bps', 0)}"
+                if r.get("taker_bps_known", True)
+                else "unknown"
+            ),
+            "blended_gross_bps": r.get("blended_gross_bps"),
+            "blended_net_bps": r.get("blended_net_bps"),
             "gross_fee_usd": r.get("gross_fee_usd"),
             "discount_saved_usd": r.get("discount_saved_usd"),
             "rebate_usd": r.get("rebate_usd"),
@@ -225,11 +246,13 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "holding_sec": int(t.get("holding_sec") or 0),
             "holding_min": round(float(t.get("holding_sec") or 0) / 60.0, 2),
             "entry_mode": (t.get("entry_leg") or {}).get("mode_code"),
-            "entry_bps": (t.get("entry_leg") or {}).get("fee_bps"),
-            "entry_gross_fee": (t.get("entry_leg") or {}).get("gross_fee_usd"),
+            "entry_bps": (t.get("entry_leg") or {}).get("fee_bps") if (t.get("entry_leg") or {}).get("fee_known", True) else None,
+            "entry_gross_fee": (t.get("entry_leg") or {}).get("gross_fee_usd") if (t.get("entry_leg") or {}).get("fee_known", True) else None,
             "exit_mode": (t.get("exit_leg") or {}).get("mode_code"),
-            "exit_bps": (t.get("exit_leg") or {}).get("fee_bps"),
-            "exit_gross_fee": (t.get("exit_leg") or {}).get("gross_fee_usd"),
+            "exit_bps": (t.get("exit_leg") or {}).get("fee_bps") if (t.get("exit_leg") or {}).get("fee_known", True) else None,
+            "exit_gross_fee": (t.get("exit_leg") or {}).get("gross_fee_usd") if (t.get("exit_leg") or {}).get("fee_known", True) else None,
+            "total_fee_usd": t.get("total_fee_usd"),
+            "net_fee_usd": t.get("net_fee_usd"),
             "rebate_usd": t.get("total_rebate_usd"),
             "discount_saved_usd": t.get("total_discount_saved_usd"),
             "net_pnl_usd": t.get("net_pnl_usd"),
@@ -255,8 +278,8 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "short_win_rate_pct": short_wr,
             "avg_win_hold_min": avg_win_min,
             "avg_loss_hold_min": avg_loss_min,
-            "entry_maker_ratio_pct": round((entry_maker_cnt / n_trades) * 100.0, 1),
-            "exit_maker_ratio_pct": round((exit_maker_cnt / n_trades) * 100.0, 1),
+            "entry_maker_ratio_pct": entry_maker_ratio,
+            "exit_maker_ratio_pct": exit_maker_ratio,
             "total_fee_usd": s.get("total_fee_usd"),
             "total_rebate_usd": s.get("total_rebate_usd"),
             "total_discount_saved_usd": s.get("total_discount_saved_usd"),
@@ -376,6 +399,35 @@ def resolve_range_labels(range_key: str) -> tuple[str, str, str]:
     return rk, rk.upper(), rk.upper()
 
 
+def build_zero_trade_texts(
+    *,
+    all_time_cnt: int,
+    range_label_en: str,
+    range_label_zh: str,
+) -> tuple[list[dict[str, Any]], str, str]:
+    highlights = build_local_highlights(
+        {"summary": {"trade_count": 0, "all_time_trade_count": all_time_cnt}, "trades": []}
+    )
+    commentary_zh = (
+        f"**本周期无成交，暂无可分析样本。** 当前统计区间（{range_label_zh}）内共有 0 笔已平仓合约记录，不生成胜率、持仓时长或挂吃单纪律建议。"
+        + (
+            f" 账户全历史累计已有 {all_time_cnt} 笔交割，可切换右上角时间区间至「30天」或「全部」生成复盘。"
+            if all_time_cnt > 0
+            else ""
+        )
+    )
+    commentary_en = (
+        f"**No closed trades in this period ({range_label_en}) — insufficient sample for analysis.** "
+        "Win-rate, hold-duration, and maker/taker execution coaching require at least one closed trade."
+        + (
+            f" Switch the period selector to 30D or All-Time to review your {all_time_cnt} historical trades."
+            if all_time_cnt > 0
+            else ""
+        )
+    )
+    return highlights, commentary_en, commentary_zh
+
+
 async def generate_ai_review(
     dashboard: dict[str, Any],
     prefs: UserPreferences,
@@ -394,6 +446,8 @@ async def generate_ai_review(
 
     commentary = ""
     model_used = "local-actuarial"
+    execution_mode = "local_only"
+    data_transmitted = False
     ai_error = ""
     ai_error_zh = ""
 
@@ -403,22 +457,10 @@ async def generate_ai_review(
 
     if trade_count <= 0 or not (dashboard.get("trades") or []):
         all_time_cnt = int(s.get("all_time_trade_count") or 0)
-        commentary_zh = (
-            f"**本周期无成交，暂无可分析样本。** 当前统计区间（{range_label_zh}）内共有 0 笔已平仓合约记录，不生成胜率、持仓时长或挂吃单纪律建议。"
-            + (
-                f" 账户全历史累计已有 {all_time_cnt} 笔交割，可切换右上角时间区间至「30天」或「全部」生成复盘。"
-                if all_time_cnt > 0
-                else ""
-            )
-        )
-        commentary = (
-            f"**No closed trades in this period ({range_label_en}) — insufficient sample for analysis.** "
-            "Win-rate, hold-duration, and maker/taker execution coaching require at least one closed trade."
-            + (
-                f" Switch the period selector to 30D or All-Time to review your {all_time_cnt} historical trades."
-                if all_time_cnt > 0
-                else ""
-            )
+        z_highlights, commentary, commentary_zh = build_zero_trade_texts(
+            all_time_cnt=all_time_cnt,
+            range_label_en=range_label_en,
+            range_label_zh=range_label_zh,
         )
         input_summary = {
             "exchanges_count": len(ctx["exchanges"]),
@@ -435,6 +477,8 @@ async def generate_ai_review(
             "generated_at": generated_at,
             "generated_ms": now_ms,
             "model": "local-actuarial",
+            "execution_mode": "zero_trades_local",
+            "data_transmitted": False,
             "range_key": rk_norm,
             "range_label": range_label_en,
             "range_label_zh": range_label_zh,
@@ -443,16 +487,17 @@ async def generate_ai_review(
             "stale": False,
             "stale_reason": "",
             "stale_reason_zh": "",
-            "highlights": highlights,
+            "highlights": z_highlights,
             "markdown_commentary": commentary,
             "markdown_commentary_zh": commentary_zh,
             "ai_error": "",
             "ai_error_zh": "",
             "input_summary": input_summary,
-            "context_preview": ctx,
+            "context_preview": None,
         }
 
     if base and (api_key or "127.0.0.1" in base or "localhost" in base):
+        data_transmitted = True
         lang_hint = "简体中文" if prefs.locale == "zh-CN" else "English"
         prompt = (
             "You are a disciplined quantitative trading & fee-optimization risk coach.\n"
@@ -500,12 +545,12 @@ async def generate_ai_review(
                     if txt:
                         return txt
                 snippet = resp_api.text[:180].strip()
-                ai_error = f"AI endpoint returned HTTP {resp_api.status_code}: {snippet} (fell back to local actuarial review)"
-                ai_error_zh = f"AI 模型接口返回异常（HTTP {resp_api.status_code}：{snippet}），本次已自动回退为本地精算诊断"
+                ai_error = f"Sanitized request was sent to AI endpoint, which returned HTTP {resp_api.status_code}: {snippet} — fell back to local actuarial rules."
+                ai_error_zh = f"本次已向所配 AI 接口发送脱敏汇总请求，但模型返回异常（HTTP {resp_api.status_code}：{snippet}）；下方报告已自动回退为本地精算结果。"
                 return ""
             snippet = chat_resp.text[:180].strip()
-            ai_error = f"AI endpoint returned HTTP {chat_resp.status_code}: {snippet} (fell back to local actuarial review)"
-            ai_error_zh = f"AI 模型接口返回异常（HTTP {chat_resp.status_code}：{snippet}），本次已自动回退为本地精算诊断"
+            ai_error = f"Sanitized request was sent to AI endpoint, which returned HTTP {chat_resp.status_code}: {snippet} — fell back to local actuarial rules."
+            ai_error_zh = f"本次已向所配 AI 接口发送脱敏汇总请求，但模型返回异常（HTTP {chat_resp.status_code}：{snippet}）；下方报告已自动回退为本地精算结果。"
             return ""
 
         try:
@@ -516,25 +561,42 @@ async def generate_ai_review(
                     commentary = await _call_gateway(c)
             if commentary:
                 model_used = model
+                execution_mode = "remote_llm"
                 ai_error = ""
                 ai_error_zh = ""
+            else:
+                execution_mode = "remote_failed_fallback"
         except Exception as exc:
             commentary = ""
-            err_txt = str(exc)[:180]
-            ai_error = f"AI request failed ({err_txt}) — fell back to local actuarial review"
-            ai_error_zh = f"AI 模型连接失败（{err_txt}），本次已自动回退为本地精算诊断"
+            execution_mode = "remote_failed_fallback"
+            err_txt = str(exc).strip() or type(exc).__name__
+            err_txt = err_txt[:180]
+            ai_error = f"Sanitized request attempted to AI endpoint failed ({err_txt}) — fell back to local actuarial rules."
+            ai_error_zh = f"本次已尝试向所配 AI 接口发起脱敏汇总请求，但连接失败（{err_txt}）；下方报告已自动回退为本地精算结果。"
     elif base and not api_key:
-        ai_error = "AI Base URL is configured without an API Key — fell back to local actuarial review"
-        ai_error_zh = "已填写 AI 接口地址但尚未配置 API Key，本次已自动使用本地精算诊断"
+        ai_error = "AI Base URL is configured without an API Key — generated locally without sending data."
+        ai_error_zh = "已填写 AI 接口地址但尚未配置 API Key，本次未外发数据，已直接使用本地精算规则生成。"
 
     if not commentary:
+        en_mk = ctx["summary"]["entry_maker_ratio_pct"]
+        ex_mk = ctx["summary"]["exit_maker_ratio_pct"]
+        mk_clause_zh = (
+            f"进场挂单占比 {en_mk}%，出场挂单占比 {ex_mk}%"
+            if (en_mk is not None and ex_mk is not None)
+            else "分腿挂吃比例未提供明细拆分"
+        )
+        mk_clause_en = (
+            f"Entry maker {en_mk}% vs Exit maker {ex_mk}%"
+            if (en_mk is not None and ex_mk is not None)
+            else "per-leg maker/taker split unavailable"
+        )
         commentary_zh = (
-            f"1. **压缩出场吃单磨损**：当前净手续费 -{float(s.get('net_fee_usd') or 0):.2f} U（进场挂单占比 {ctx['summary']['entry_maker_ratio_pct']}%，出场挂单占比 {ctx['summary']['exit_maker_ratio_pct']}%），优先在目标位分批挂限价止盈，预计可额外留存 *+{float(s.get('potential_maker_savings_usd') or 0):.2f} USDT*。\n"
+            f"1. **压缩出场吃单磨损**：当前净手续费 -{float(s.get('net_fee_usd') or 0):.2f} U（{mk_clause_zh}），优先在目标位分批挂限价止盈，预计可额外留存 *+{float(s.get('potential_maker_savings_usd') or 0):.2f} USDT*。\n"
             f"2. **校准多空与持仓纪律**：当前做多胜率 {ctx['summary']['long_win_rate_pct']}%（{ctx['summary']['long_trades']} 笔）、做空胜率 {ctx['summary']['short_win_rate_pct']}%（{ctx['summary']['short_trades']} 笔）；盈利单平均持仓 {ctx['summary']['avg_win_hold_min']} 分钟 vs 亏损单 {ctx['summary']['avg_loss_hold_min']} 分钟，警惕亏损扛单放大回撤。\n"
             "3. **接入任意 OpenAI 兼容大模型**：可在「设置与连接」填入 Base URL / API Key 并点「获取模型列表」选择模型，获得结合最近 20 笔逐笔进出场与复盘笔记的深度点评。"
         )
         commentary_en = (
-            f"1. **Reduce exit taker drag**: Net fees are -{float(s.get('net_fee_usd') or 0):.2f} U (Entry maker {ctx['summary']['entry_maker_ratio_pct']}% vs Exit maker {ctx['summary']['exit_maker_ratio_pct']}%). Passive limit exits could retain an extra *+{float(s.get('potential_maker_savings_usd') or 0):.2f} USDT*.\n"
+            f"1. **Reduce exit taker drag**: Net fees are -{float(s.get('net_fee_usd') or 0):.2f} U ({mk_clause_en}). Passive limit exits could retain an extra *+{float(s.get('potential_maker_savings_usd') or 0):.2f} USDT*.\n"
             f"2. **Tighten directional & hold discipline**: Long win rate {ctx['summary']['long_win_rate_pct']}% ({ctx['summary']['long_trades']} trades) vs Short {ctx['summary']['short_win_rate_pct']}% ({ctx['summary']['short_trades']} trades); average winning hold {ctx['summary']['avg_win_hold_min']}m vs losing {ctx['summary']['avg_loss_hold_min']}m.\n"
             "3. **Connect any OpenAI-compatible LLM**: Configure Base URL & API Key in Settings and click Fetch Models for deep coaching over your top symbols and recent 20 trades."
         )
@@ -558,6 +620,8 @@ async def generate_ai_review(
         "generated_at": generated_at,
         "generated_ms": now_ms,
         "model": model_used,
+        "execution_mode": execution_mode,
+        "data_transmitted": data_transmitted,
         "range_key": rk_norm,
         "range_label": range_label_en,
         "range_label_zh": range_label_zh,

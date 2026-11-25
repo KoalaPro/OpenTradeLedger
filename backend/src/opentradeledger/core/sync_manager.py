@@ -313,8 +313,8 @@ class SyncManager:
                                 body=f"{vid.upper()} 新增 {outcome.new_closed_delta} 笔交割记录，当前权益 {outcome.equity_usd:.2f} USDT。",
                             )
                     except Exception as exc:
-                        logger.warning("Sync failed for %s: %s", vid, exc)
                         err_state = self.health_tracker.record_error(vid, exc)
+                        logger.warning("Sync failed for %s: %s", vid, err_state["raw_error"])
                         results[vid] = {
                             "ok": False,
                             "error": err_state["error_reason"],
@@ -322,7 +322,10 @@ class SyncManager:
                             "error_code": err_state["error_code"],
                             "raw_error": err_state["raw_error"],
                         }
-                        if prev_health != "error":
+                        is_transient = err_state["error_code"] in {"NETWORK_UNREACHABLE", "RATE_LIMITED", "UPSTREAM_5XX"}
+                        consec = int(err_state.get("consecutive_failures") or 1)
+                        should_alert = (consec == 3) if is_transient else (prev_health != "error")
+                        if should_alert:
                             await self._maybe_notify(
                                 title=f"OpenTradeLedger · {vid.upper()} 同步异常",
                                 body=err_state["error_reason_zh"] or err_state["error_reason"],

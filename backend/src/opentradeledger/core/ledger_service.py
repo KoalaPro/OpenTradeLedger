@@ -11,6 +11,7 @@ from typing import Any
 from opentradeledger.adapters.base import BaseExchangeAdapter, VenueLedgerBundle
 from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.config import UserPreferences
+from opentradeledger.core.ai_reviewer import build_zero_trade_texts
 from opentradeledger.core.demo_provider import build_demo_dashboard
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.venue_primitives import dec, f2, fmt_bj
@@ -706,6 +707,30 @@ class LedgerService:
             )
             saved_tc = ai_out.get("trade_count_snapshot")
             saved_eq = float(ai_out.get("equity_snapshot_usd") or 0.0)
+            has_no_trades_card = any(
+                isinstance(h, dict) and h.get("kind") == "no_trades" for h in (ai_out.get("highlights") or [])
+            )
+            if t_cnt == 0 and (saved_tc is None or int(saved_tc) == 0) and not has_no_trades_card:
+                z_highlights, z_en, z_zh = build_zero_trade_texts(
+                    all_time_cnt=len(all_trades_unfiltered),
+                    range_label_en=rk_lbl_en,
+                    range_label_zh=rk_lbl_zh,
+                )
+                ai_out = {
+                    **ai_out,
+                    "model": "local-actuarial",
+                    "execution_mode": "zero_trades_local",
+                    "data_transmitted": False,
+                    "trade_count_snapshot": 0,
+                    "highlights": z_highlights,
+                    "markdown_commentary": z_en,
+                    "markdown_commentary_zh": z_zh,
+                    "ai_error": "",
+                    "ai_error_zh": "",
+                    "context_preview": None,
+                }
+                saved_tc = 0
+                self.store.save_ai_review(ai_out, total_equity)
             stale_flag = False
             stale_en = ""
             stale_zh = ""

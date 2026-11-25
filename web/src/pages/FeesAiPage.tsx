@@ -50,14 +50,51 @@ export function FeesAiPage({
             ? '全部历史'
             : `${rk} 月度`
 
-  const formatModelAttribution = (m: string) => {
-    if (m === 'local-actuarial') {
-      return isZh ? '本地精算规则（未调用 AI）' : 'Local Actuarial Rules (No LLM)'
+  const resolveExecutionMode = (
+    review: DashboardData['ai_review'],
+  ): { mode: 'zero_trades_local' | 'local_only' | 'remote_failed_fallback' | 'remote_llm'; transmitted: boolean } => {
+    if (!review) return { mode: 'local_only', transmitted: false }
+    if (review.execution_mode) {
+      return {
+        mode: review.execution_mode,
+        transmitted:
+          typeof review.data_transmitted === 'boolean'
+            ? review.data_transmitted
+            : review.execution_mode === 'remote_llm' || review.execution_mode === 'remote_failed_fallback',
+      }
     }
-    if (m === 'demo-local-actuarial') {
-      return isZh ? '演示精算规则' : 'Demo Actuarial Rules'
+    const errTxt = `${review.ai_error || ''} ${review.ai_error_zh || ''}`.trim()
+    if (errTxt && !errTxt.includes('without an API Key') && !errTxt.includes('尚未配置 API Key')) {
+      return { mode: 'remote_failed_fallback', transmitted: true }
     }
-    return m
+    if (
+      review.trade_count_snapshot === 0 ||
+      review.highlights?.some(h => h.kind === 'no_trades')
+    ) {
+      return { mode: 'zero_trades_local', transmitted: false }
+    }
+    if (review.model === 'local-actuarial' || review.model === 'demo-local-actuarial') {
+      return { mode: 'local_only', transmitted: false }
+    }
+    return { mode: 'remote_llm', transmitted: true }
+  }
+
+  const aiProvenance = resolveExecutionMode(ai)
+
+  const formatModelAttribution = (review: NonNullable<DashboardData['ai_review']>) => {
+    const { mode } = resolveExecutionMode(review)
+    if (review.model === 'demo-local-actuarial') {
+      return isZh ? '演示精算规则（纯本地示例）' : 'Demo Actuarial Rules (Local Sample)'
+    }
+    if (mode === 'remote_failed_fallback') {
+      return isZh
+        ? '正文由本地精算规则回退生成'
+        : 'Body generated via local actuarial fallback'
+    }
+    if (mode === 'zero_trades_local' || mode === 'local_only') {
+      return isZh ? '本地精算规则' : 'Local Actuarial Rules'
+    }
+    return review.model
   }
 
   const formatHighlightMetric = (h: NonNullable<DashboardData['ai_review']>['highlights'][number]) => {
@@ -120,10 +157,31 @@ export function FeesAiPage({
                   </td>
                   <td className="text-right whitespace-nowrap">{row.trade_count}</td>
                   <td className="text-right whitespace-nowrap">
-                    {row.maker_gross_bps.toFixed(2)} / <b>{row.maker_net_bps.toFixed(2)}</b>
+                    {row.maker_bps_known === false ? (
+                      <span className="text-[var(--fg-3)] text-[11.5px]">
+                        {isZh ? '分腿未知' : 'Split unknown'}
+                      </span>
+                    ) : (
+                      <>
+                        {row.maker_gross_bps.toFixed(2)} / <b>{row.maker_net_bps.toFixed(2)}</b>
+                      </>
+                    )}
                   </td>
                   <td className="text-right whitespace-nowrap">
-                    {row.taker_gross_bps.toFixed(2)} / <b>{row.taker_net_bps.toFixed(2)}</b>
+                    {row.taker_bps_known === false ? (
+                      <span className="text-[var(--fg-2)] text-[11.5px]">
+                        {isZh ? '分腿未知' : 'Split unknown'}
+                        {(row.blended_net_bps ?? 0) > 0
+                          ? isZh
+                            ? ` · 综合 ${(row.blended_net_bps ?? 0).toFixed(2)} bps`
+                            : ` · Avg ${(row.blended_net_bps ?? 0).toFixed(2)} bps`
+                          : ''}
+                      </span>
+                    ) : (
+                      <>
+                        {row.taker_gross_bps.toFixed(2)} / <b>{row.taker_net_bps.toFixed(2)}</b>
+                      </>
+                    )}
                   </td>
                   <td className="text-right whitespace-nowrap sensitive">
                     {row.discount_saved_usd > 0 ? (
@@ -163,18 +221,24 @@ export function FeesAiPage({
                 <span
                   data-testid="ai-config-status-badge"
                   className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
-                    aiConfigured
-                      ? 'otl-status-ok'
-                      : 'border border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--fg-2)]'
+                    !aiConfigured
+                      ? 'border border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--fg-2)]'
+                      : aiProvenance.mode === 'remote_failed_fallback'
+                        ? 'otl-status-warn'
+                        : 'otl-status-ok'
                   }`}
                 >
-                  {aiConfigured
+                  {!aiConfigured
                     ? isZh
-                      ? `已连接 AI · ${settings.ai_model || 'gpt-4o-mini'}`
-                      : `AI Ready · ${settings.ai_model || 'gpt-4o-mini'}`
-                    : isZh
                       ? '尚未配置 AI 模型'
-                      : 'AI Not Configured'}
+                      : 'AI Not Configured'
+                    : aiProvenance.mode === 'remote_failed_fallback'
+                      ? isZh
+                        ? `AI 接口异常 · ${settings.ai_model || 'gpt-4o-mini'}`
+                        : `AI Endpoint Error · ${settings.ai_model || 'gpt-4o-mini'}`
+                      : isZh
+                        ? `已配置 AI · ${settings.ai_model || 'gpt-4o-mini'}`
+                        : `AI Configured · ${settings.ai_model || 'gpt-4o-mini'}`}
                 </span>
               )}
               {ai && (
@@ -191,10 +255,34 @@ export function FeesAiPage({
                       }`}
                 </span>
               )}
+              {ai && (
+                <span
+                  data-testid="ai-transmission-badge"
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-medium ${
+                    aiProvenance.mode === 'remote_failed_fallback'
+                      ? 'otl-status-warn'
+                      : aiProvenance.transmitted
+                        ? 'otl-status-ok'
+                        : 'border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-2)]'
+                  }`}
+                >
+                  {aiProvenance.mode === 'remote_llm'
+                    ? isZh
+                      ? `本次已外发脱敏汇总 → ${ai.model}`
+                      : `Sanitized summary sent → ${ai.model}`
+                    : aiProvenance.mode === 'remote_failed_fallback'
+                      ? isZh
+                        ? '本次已向 AI 接口发送脱敏请求（接口异常，已回退本地精算）'
+                        : 'Sanitized request sent to AI · Endpoint failed, local fallback'
+                      : isZh
+                        ? '纯本地生成 · 本次未外发任何数据'
+                        : 'Local only · No data sent externally'}
+                </span>
+              )}
             </div>
             {ai && (
               <p className="m-0 text-[12px] text-[var(--fg-3)]">
-                {ai.generated_at} · {formatModelAttribution(ai.model)}
+                {ai.generated_at} · {formatModelAttribution(ai)}
               </p>
             )}
           </div>
@@ -283,78 +371,101 @@ export function FeesAiPage({
               </div>
             )}
 
-            {/* Prompt Data Transparency Disclosure — silky two-way AnimatedCollapse */}
+            {/* Prompt Data Transparency Disclosure — accurate to whether data actually left OpenTradeLedger */}
             <div className="pt-1">
-              <button
-                type="button"
-                data-no-press="true"
-                data-testid="toggle-ai-payload-btn"
-                onClick={() => setShowAiPayload(v => !v)}
-                className="inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
-              >
-                <ShieldCheck size={13} className="txt-pos shrink-0" />
-                <span>
-                  {locale === 'en'
-                    ? 'Inspect sanitized data sent to AI (Zero API keys / UIDs)'
-                    : '查看本次喂给 AI 的脱敏数据维度（绝不含 API Key / UID / 钱包地址）'}
-                </span>
-                <ChevronDown
-                  size={13}
-                  className={`shrink-0 transition-transform duration-200 ${showAiPayload ? 'rotate-180' : ''}`}
-                />
-              </button>
-
-              <AnimatedCollapse open={showAiPayload} innerClassName="pt-2.5">
-                <div className="otl-surface-2 rounded-xl p-4 space-y-3 text-[12px]">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-[var(--fg-2)]">
-                    <div>
-                      <b className="text-[var(--fg)]">
-                        {locale === 'en' ? 'Included Metrics (4 Sanitized Groups)' : '已喂给 AI 的 4 大类脱敏汇总数据：'}
-                      </b>
-                      <ul className="mt-1 pl-4 space-y-0.5 list-disc">
-                        <li>
-                          {locale === 'en'
-                            ? 'Account summary (equity, net PnL, long/short win rate, hold time, drawdown)'
-                            : '全账户指标（总净资产、净盈亏、多空胜率、盈/亏单均持仓时长、最大回撤）'}
-                        </li>
-                        <li>
-                          {locale === 'en'
-                            ? `Connected exchange summaries (${ai.input_summary?.exchanges_count ?? data.exchanges.length}) & live fee/rebate matrix`
-                            : `各平台资产与实测挂/吃单费率及返佣矩阵（${ai.input_summary?.fee_matrix_count ?? data.fee_matrix.length} 所）`}
-                        </li>
-                        <li>
-                          {locale === 'en'
-                            ? `Top ${ai.input_summary?.top_symbols_count ?? Math.min(15, data.symbol_attribution.length)} symbols by PnL impact + open positions / spot / copy / stocks summary`
-                            : `盈亏影响前 ${ai.input_summary?.top_symbols_count ?? Math.min(15, data.symbol_attribution.length)} 标的归因、当前持仓、现货/跟单/股票汇总与自定义目标`}
-                        </li>
-                        <li>
-                          {locale === 'en'
-                            ? `Recent ${ai.input_summary?.recent_trades_count ?? Math.min(20, data.trades.length)} closed trades (entry/exit mode, bps, fees, rebates, your journal tags & notes)`
-                            : `最近 ${ai.input_summary?.recent_trades_count ?? Math.min(20, data.trades.length)} 笔平仓的逐笔进/出场方式、bps、手续费、返佣与你的复盘标签/笔记`}
-                        </li>
-                      </ul>
-                    </div>
-                    <div>
-                      <b className="text-[var(--fg)]">
-                        {locale === 'en' ? 'Strictly Excluded (Never Sent)' : '严格剔除（绝不发送）：'}
-                      </b>
-                      <ul className="mt-1 pl-4 space-y-0.5 list-disc">
-                        <li>API Key / API Secret / Passphrase</li>
-                        <li>{locale === 'en' ? 'Exchange UIDs & account emails' : '交易所 UID 与账号信息'}</li>
-                        <li>{locale === 'en' ? 'Deposit / withdrawal wallet addresses & TX hashes' : '充提币链上地址与哈希'}</li>
-                      </ul>
-                    </div>
-                  </div>
-                  {ai.context_preview && (
-                    <pre
-                      data-testid="ai-payload-pre"
-                      className="m-0 p-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[11px] text-[var(--fg-2)] overflow-x-auto max-h-64 sensitive"
-                    >
-                      {JSON.stringify(ai.context_preview, null, 2)}
-                    </pre>
-                  )}
+              {aiProvenance.mode === 'zero_trades_local' ? (
+                <div className="inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)]">
+                  <ShieldCheck size={13} className="txt-pos shrink-0" />
+                  <span>
+                    {locale === 'en'
+                      ? '0 closed trades in this period — returned locally without sending any request or data to an external AI endpoint.'
+                      : '本周期 0 笔成交已在本地直接返回，未向外部 AI 接口发送任何推理请求或账本数据。'}
+                  </span>
                 </div>
-              </AnimatedCollapse>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    data-no-press="true"
+                    data-testid="toggle-ai-payload-btn"
+                    onClick={() => setShowAiPayload(v => !v)}
+                    className="inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer"
+                  >
+                    <ShieldCheck size={13} className="txt-pos shrink-0" />
+                    <span>
+                      {aiProvenance.transmitted
+                        ? locale === 'en'
+                          ? 'Inspect sanitized data sent to AI endpoint on this run (Zero API keys / UIDs)'
+                          : '查看本次已发送给 AI 接口的脱敏数据明细（绝不含 API Key / UID / 钱包地址）'
+                        : locale === 'en'
+                          ? 'Preview sanitized data scope if AI is enabled (Local run — no data sent)'
+                          : '查看启用 AI 时的脱敏数据范围预览（本次纯本地生成，未外发任何数据）'}
+                    </span>
+                    <ChevronDown
+                      size={13}
+                      className={`shrink-0 transition-transform duration-200 ${showAiPayload ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+
+                  <AnimatedCollapse open={showAiPayload} innerClassName="pt-2.5">
+                    <div className="otl-surface-2 rounded-xl p-4 space-y-3 text-[12px]">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-[var(--fg-2)]">
+                        <div>
+                          <b className="text-[var(--fg)]">
+                            {aiProvenance.transmitted
+                              ? locale === 'en'
+                                ? 'Transmitted Metrics (4 Sanitized Groups)'
+                                : '本次实际外发的 4 大类脱敏汇总数据：'
+                              : locale === 'en'
+                                ? 'Sanitized Scope Preview (Not Sent on This Local Run)'
+                                : '脱敏汇总范围预览（本次未外发任何数据）：'}
+                          </b>
+                          <ul className="mt-1 pl-4 space-y-0.5 list-disc">
+                            <li>
+                              {locale === 'en'
+                                ? 'Account summary (equity, net PnL, long/short win rate, hold time, drawdown)'
+                                : '全账户指标（总净资产、净盈亏、多空胜率、盈/亏单均持仓时长、最大回撤）'}
+                            </li>
+                            <li>
+                              {locale === 'en'
+                                ? `Connected exchange summaries (${ai.input_summary?.exchanges_count ?? data.exchanges.length}) & live fee/rebate matrix`
+                                : `各平台资产与实测挂/吃单费率及返佣矩阵（${ai.input_summary?.fee_matrix_count ?? data.fee_matrix.length} 所）`}
+                            </li>
+                            <li>
+                              {locale === 'en'
+                                ? `Top ${ai.input_summary?.top_symbols_count ?? Math.min(15, data.symbol_attribution.length)} symbols by PnL impact + open positions / spot / copy / stocks summary`
+                                : `盈亏影响前 ${ai.input_summary?.top_symbols_count ?? Math.min(15, data.symbol_attribution.length)} 标的归因、当前持仓、现货/跟单/股票汇总与自定义目标`}
+                            </li>
+                            <li>
+                              {locale === 'en'
+                                ? `Recent ${ai.input_summary?.recent_trades_count ?? Math.min(20, data.trades.length)} closed trades (entry/exit mode, bps, fees, rebates, your journal tags & notes)`
+                                : `最近 ${ai.input_summary?.recent_trades_count ?? Math.min(20, data.trades.length)} 笔平仓的逐笔进/出场方式、bps、手续费、返佣与你的复盘标签/笔记`}
+                            </li>
+                          </ul>
+                        </div>
+                        <div>
+                          <b className="text-[var(--fg)]">
+                            {locale === 'en' ? 'Strictly Excluded (Never Sent)' : '严格剔除（绝不发送）：'}
+                          </b>
+                          <ul className="mt-1 pl-4 space-y-0.5 list-disc">
+                            <li>API Key / API Secret / Passphrase</li>
+                            <li>{locale === 'en' ? 'Exchange UIDs & account emails' : '交易所 UID 与账号信息'}</li>
+                            <li>{locale === 'en' ? 'Deposit / withdrawal wallet addresses & TX hashes' : '充提币链上地址与哈希'}</li>
+                          </ul>
+                        </div>
+                      </div>
+                      {ai.context_preview && (
+                        <pre
+                          data-testid="ai-payload-pre"
+                          className="m-0 p-3 rounded-lg bg-[var(--bg)] border border-[var(--border)] text-[11px] text-[var(--fg-2)] overflow-x-auto max-h-64 sensitive"
+                        >
+                          {JSON.stringify(ai.context_preview, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+                  </AnimatedCollapse>
+                </>
+              )}
             </div>
           </>
         )}

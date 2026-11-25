@@ -254,25 +254,27 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
     else:
         mode_code = "MARKET_TAKER"
     fee_known = bool(raw.get("fee_known", True))
+    is_unknown_split = (not fee_known) and (mode_code == "UNKNOWN")
     status = str(raw.get("rebate_status") or "SETTLED").upper()
     if status not in {"SETTLED", "PENDING", "NONE"}:
         status = "PENDING" if "PENDING" in status else ("SETTLED" if gross_fee > 0 else "NONE")
     t_ms = int(raw.get("time_ms") or (int(raw.get("time_sec") or 0) * 1000) or default_time_ms)
+    notional_2dp = round(float(raw.get("notional_usd") or 0.0), 2)
     return {
-        "role": "MAKER" if is_maker else "TAKER",
+        "role": "UNKNOWN" if is_unknown_split else ("MAKER" if is_maker else "TAKER"),
         "mode_code": mode_code,
         "fee_known": fee_known,
         "fee_bps": round(float(raw.get("fee_bps") or 0.0), 2),
         "time_ms": t_ms,
         "time_str": str(raw.get("time_str") or raw.get("time_bj") or fmt_ms(t_ms, "%m-%d %H:%M")),
         "avg_price": float(raw.get("avg_price") or 0.0),
-        "notional_usd": round(float(raw.get("notional_usd") or 0.0), 2),
-        "maker_notional_usd": round(float(raw.get("maker_notional_usd") or (float(raw.get("notional_usd") or 0.0) if is_maker else 0.0)), 2),
-        "taker_notional_usd": round(float(raw.get("taker_notional_usd") or (0.0 if is_maker else float(raw.get("notional_usd") or 0.0))), 2),
-        "maker_fee_usd": round(float(raw.get("maker_fee_usd") or (gross_fee if is_maker else 0.0)), 4),
-        "taker_fee_usd": round(float(raw.get("taker_fee_usd") or (0.0 if is_maker else gross_fee)), 4),
-        "maker_rebate_usd": round(float(raw.get("maker_rebate_usd") or (rebate if is_maker else 0.0)), 4),
-        "taker_rebate_usd": round(float(raw.get("taker_rebate_usd") or (0.0 if is_maker else rebate)), 4),
+        "notional_usd": notional_2dp,
+        "maker_notional_usd": 0.0 if is_unknown_split else round(float(raw.get("maker_notional_usd") or (notional_2dp if is_maker else 0.0)), 2),
+        "taker_notional_usd": 0.0 if is_unknown_split else round(float(raw.get("taker_notional_usd") or (0.0 if is_maker else notional_2dp)), 2),
+        "maker_fee_usd": 0.0 if is_unknown_split else round(float(raw.get("maker_fee_usd") or (gross_fee if is_maker else 0.0)), 4),
+        "taker_fee_usd": 0.0 if is_unknown_split else round(float(raw.get("taker_fee_usd") or (0.0 if is_maker else gross_fee)), 4),
+        "maker_rebate_usd": 0.0 if is_unknown_split else round(float(raw.get("maker_rebate_usd") or (rebate if is_maker else 0.0)), 4),
+        "taker_rebate_usd": 0.0 if is_unknown_split else round(float(raw.get("taker_rebate_usd") or (0.0 if is_maker else rebate)), 4),
         "gross_fee_usd": gross_fee,
         "discount_saved_usd": disc_saved,
         "discount_asset": str(raw.get("discount_asset") or raw.get("fee_asset") or ""),
@@ -302,11 +304,22 @@ def normalize_internal_record_to_public_trade(
     total_disc = round(float(r.get("bnb_discount_saved_usd") or r.get("total_discount_saved_usd") or 0.0), 4)
     total_fee = round(float(r.get("total_fee_usd") or 0.0), 4)
     if total_fee > 0 and entry_leg["gross_fee_usd"] <= 0 and exit_leg["gross_fee_usd"] <= 0:
-        entry_leg["fee_known"] = False
-        exit_leg["fee_known"] = False
-        entry_leg["mode_code"] = "UNKNOWN"
-        exit_leg["mode_code"] = "UNKNOWN"
-    net_fee = round(float(r.get("net_fee_usd") if r.get("net_fee_usd") is not None else (entry_leg["net_fee_usd"] + exit_leg["net_fee_usd"])), 4)
+        for unsplit_leg in (entry_leg, exit_leg):
+            unsplit_leg["fee_known"] = False
+            unsplit_leg["mode_code"] = "UNKNOWN"
+            unsplit_leg["role"] = "UNKNOWN"
+            unsplit_leg["maker_notional_usd"] = 0.0
+            unsplit_leg["taker_notional_usd"] = 0.0
+            unsplit_leg["maker_fee_usd"] = 0.0
+            unsplit_leg["taker_fee_usd"] = 0.0
+            unsplit_leg["maker_rebate_usd"] = 0.0
+            unsplit_leg["taker_rebate_usd"] = 0.0
+    fallback_net_fee = (
+        max(0.0, total_fee - total_reb)
+        if (not entry_leg.get("fee_known", True) and not exit_leg.get("fee_known", True))
+        else (entry_leg["net_fee_usd"] + exit_leg["net_fee_usd"])
+    )
+    net_fee = round(float(r.get("net_fee_usd") if r.get("net_fee_usd") is not None else fallback_net_fee), 4)
     base_fee = total_fee + total_disc
     relief = round(((total_reb + total_disc) / base_fee) * 100.0, 1) if base_fee > 0 else 0.0
     reb_state = str(r.get("rebate_state") or r.get("rebate_status") or "SETTLED")
@@ -358,6 +371,7 @@ def aggregate_trade_legs_decimal(trades: Sequence[Mapping[str, Any]]) -> dict[st
     t_not = Decimal("0")
     t_fee = Decimal("0")
     t_reb = Decimal("0")
+    tot_not = Decimal("0")
     g_fee = Decimal("0")
     tot_reb = Decimal("0")
     disc_saved = Decimal("0")
@@ -369,8 +383,12 @@ def aggregate_trade_legs_decimal(trades: Sequence[Mapping[str, Any]]) -> dict[st
         disc_qty += dec(r.get("bnb_fee_qty"))
         for lk in ("entry_leg", "exit_leg"):
             lg = r.get(lk) or {}
-            is_m = str(lg.get("role") or "").upper() == "MAKER"
             l_not = dec(lg.get("notional_usd"))
+            tot_not += l_not
+            role_u = str(lg.get("role") or "").upper()
+            if not bool(lg.get("fee_known", True)) or role_u == "UNKNOWN":
+                continue
+            is_m = role_u == "MAKER"
             l_fee = dec(lg.get("gross_fee_usd"))
             l_reb = dec(lg.get("rebate_usd"))
             m_not += dec(lg.get("maker_notional_usd")) if "maker_notional_usd" in lg else (l_not if is_m else Decimal("0"))
@@ -388,6 +406,7 @@ def aggregate_trade_legs_decimal(trades: Sequence[Mapping[str, Any]]) -> dict[st
         "t_fee": t_fee,
         "t_reb": t_reb,
         "t_net": t_fee - t_reb,
+        "tot_not": tot_not,
         "g_fee": g_fee,
         "tot_reb": tot_reb,
         "tot_net": g_fee - tot_reb,

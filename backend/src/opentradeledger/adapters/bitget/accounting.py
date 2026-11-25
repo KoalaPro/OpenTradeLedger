@@ -1249,6 +1249,9 @@ def build_bitget_fee_matrix_row(
     reb_pct_f = f2(bg_overall_reb_pct, 1)
     m_gross_f = f2(bg_m_gross_bps, 2)
 
+    blended_gross_bps = (bg_all["g_fee"] / bg_all["tot_not"] * Decimal("10000")) if bg_all["tot_not"] > 0 else Decimal("0")
+    blended_net_bps = (max(Decimal("0"), bg_all["tot_net"]) / bg_all["tot_not"] * Decimal("10000")) if bg_all["tot_not"] > 0 else Decimal("0")
+
     return {
         "venue_id": "bitget",
         "display_name": ex["display_name"],
@@ -1259,6 +1262,10 @@ def build_bitget_fee_matrix_row(
         "maker_net_bps": round(m_gross_f * (1.0 - reb_pct_f / 100.0), 2),
         "taker_gross_bps": f2(bg_t_gross_bps, 2),
         "taker_net_bps": f2(bg_t_net_bps, 2),
+        "maker_bps_known": bool(bg_all["m_not"] > 0 or len(range_trades) == 0),
+        "taker_bps_known": bool(bg_all["t_not"] > 0 or len(range_trades) == 0),
+        "blended_gross_bps": f2(blended_gross_bps, 2),
+        "blended_net_bps": f2(blended_net_bps, 2),
         "gross_fee_usd": f2(bg_all["g_fee"], 2),
         "discount_saved_usd": disc_saved,
         "discount_label": "BGB" if disc_saved > 0 else "",
