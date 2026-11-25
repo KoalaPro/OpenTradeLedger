@@ -132,7 +132,7 @@ export function OverviewPage({
           onClick={() => setOpenModal(d => (d === 'equity' ? null : 'equity'))}
           value={cur.money(s.total_equity_usd)}
           sub={
-            <span>
+            <span className="whitespace-nowrap">
               {t('kpi_net_principal')} <span className="sensitive">{cur.money(s.net_principal_usd)}</span>
             </span>
           }
@@ -155,13 +155,13 @@ export function OverviewPage({
               {Math.abs(data.reconciliation.residual_usd) < 0.01 ? (
                 t('kpi_reconciled_zero')
               ) : (
-                <span className="text-[var(--warn)] font-medium">
+                <span className="text-[var(--warn)] font-medium whitespace-nowrap">
                   {locale === 'en'
                     ? `Drift ${cur.signedMoney(data.reconciliation.residual_usd)}`
                     : `待核对差额 ${cur.signedMoney(data.reconciliation.residual_usd)}`}
                 </span>
               )}{' '}
-              · <b className={pnlTone(s.whole_roi_pct)}>{fmtSignedPct(s.whole_roi_pct)}</b>
+              · <b className={`whitespace-nowrap ${pnlTone(s.whole_roi_pct)}`}>{fmtSignedPct(s.whole_roi_pct)}</b>
             </span>
           }
         />
@@ -173,8 +173,13 @@ export function OverviewPage({
           valueClass={pnlTone(s.futures_net_pnl_usd)}
           sub={
             <span>
-              {s.trade_count} {locale === 'en' ? 'trades' : '笔交割'} · {t('kpi_winrate')}{' '}
-              {s.trade_count > 0 ? `${s.win_rate_pct.toFixed(1)}%` : '—'}
+              <span className="whitespace-nowrap">
+                {s.trade_count} {locale === 'en' ? 'trades' : '笔交割'}
+              </span>{' '}
+              ·{' '}
+              <span className="whitespace-nowrap">
+                {t('kpi_winrate')} {s.trade_count > 0 ? `${s.win_rate_pct.toFixed(1)}%` : '—'}
+              </span>
             </span>
           }
         />
@@ -186,8 +191,13 @@ export function OverviewPage({
           valueClass="txt-pos"
           sub={
             <span>
-              {t('detail_relief_short')} {s.combined_relief_pct.toFixed(1)}% · {t('kpi_net_fee_paid')}{' '}
-              <span className="sensitive">-{cur.money(s.net_fee_usd)}</span>
+              <span className="whitespace-nowrap">
+                {t('detail_relief_short')} {s.combined_relief_pct.toFixed(1)}%
+              </span>{' '}
+              ·{' '}
+              <span className="whitespace-nowrap">
+                {t('kpi_net_fee_paid')} <span className="sensitive">-{cur.money(s.net_fee_usd)}</span>
+              </span>
             </span>
           }
         />
