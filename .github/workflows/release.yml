@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to publish or update a GitHub Release for (e.g. v1.3.0)"
+        description: "Existing tag to publish or update a GitHub Release for (e.g. v1.3.3)"
         required: true
         type: string
 
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   release:
-    name: Sync GitHub Release from CHANGELOG.md
+    name: Sync GitHub Release & Build OTA Bundle
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -24,26 +24,51 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create or update GitHub Release from CHANGELOG.md
+      - name: Set up Node.js 22 for frontend static bundle
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend static bundle
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Build OTA package & publish GitHub Release with SHA-256 assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TARGET_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           python3 - <<'PY'
-          import json, os, pathlib, re, urllib.error, urllib.request
+          import json, os, pathlib, re, sys, urllib.error, urllib.parse, urllib.request
+
+          sys.path.insert(0, str(pathlib.Path("backend/src").resolve()))
+          from opentradeledger.core.self_updater import build_ota_bundle
 
           repo = os.environ["REPO"]
           token = os.environ["GITHUB_TOKEN"]
           tag = os.environ["TARGET_TAG"].strip()
           if not tag.startswith("v"):
               tag = f"v{tag}"
+          ver = tag.lstrip("vV")
+
+          tar_path, sha_path, sha_hex = build_ota_bundle(
+              pathlib.Path("."),
+              pathlib.Path("dist-ota"),
+              version=ver,
+              min_base_version="1.3.0",
+          )
+          print(f"Built OTA bundle: {tar_path} ({tar_path.stat().st_size} bytes), sha256={sha_hex}")
 
           changelog = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8") if pathlib.Path("CHANGELOG.md").exists() else ""
           m = re.search(
               rf"^## \[{re.escape(tag)}\]\s*(?:—|-)\s*(.+?)\n(.*?)(?=^## \[v|\Z)",
               changelog,
-              flags=re.MULTILINE | re.DOTALL,
+              flags=re.MULTILINE | os.O_RDONLY if False else re.MULTILINE | re.DOTALL,
           )
           if m:
               title = f"{tag} — {m.group(1).strip()}"
@@ -51,6 +76,8 @@ jobs:
           else:
               title = f"OpenTradeLedger {tag}"
               body = f"Release {tag}"
+
+          full_body = f"{body}\n\n---\nOTA-SHA256: `{sha_hex}`"
 
           headers = {
               "Authorization": f"Bearer {token}",
@@ -64,7 +91,7 @@ jobs:
               {
                   "tag_name": tag,
                   "name": title,
-                  "body": body,
+                  "body": full_body,
                   "draft": False,
                   "prerelease": "-" in tag,
                   "make_latest": "false" if "-" in tag else "true",
@@ -94,5 +121,43 @@ jobs:
           req_out = urllib.request.Request(url, data=payload, headers=headers, method=method)
           with urllib.request.urlopen(req_out, timeout=20) as resp:
               out = json.loads(resp.read().decode("utf-8"))
+              release_id = out["id"]
               print("Synced release:", out.get("name"), out.get("html_url"))
+
+          # Delete stale assets with same name if re-running on existing release
+          req_assets = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/releases/{release_id}/assets",
+              headers=headers,
+              method="GET",
+          )
+          with urllib.request.urlopen(req_assets, timeout=20) as resp:
+              cur_assets = json.loads(resp.read().decode("utf-8"))
+
+          for asset_file, ctype in ((tar_path, "application/gzip"), (sha_path, "text/plain; charset=utf-8")):
+              for existing_asset in cur_assets:
+                  if existing_asset.get("name") == asset_file.name:
+                      del_req = urllib.request.Request(
+                          f"https://api.github.com/repos/{repo}/releases/assets/{existing_asset['id']}",
+                          headers=headers,
+                          method="DELETE",
+                      )
+                      with urllib.request.urlopen(del_req, timeout=20):
+                          pass
+              up_url = (
+                  f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?"
+                  + urllib.parse.urlencode({"name": asset_file.name})
+              )
+              up_headers = {
+                  **headers,
+                  "Content-Type": ctype,
+              }
+              up_req = urllib.request.Request(
+                  up_url,
+                  data=asset_file.read_bytes(),
+                  headers=up_headers,
+                  method="POST",
+              )
+              with urllib.request.urlopen(up_req, timeout=60) as resp:
+                  uploaded = json.loads(resp.read().decode("utf-8"))
+                  print("Uploaded asset:", uploaded.get("name"), uploaded.get("browser_download_url"))
           PY

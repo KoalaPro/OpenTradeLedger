@@ -79,27 +79,50 @@
 
 ## 快速开始
 
-### 方式一：Docker / NAS 官方预构建镜像一键部署（支持 `amd64` 与 `arm64`）
+### 方式一：全品牌 NAS 图形界面零终端部署（极空间 / 绿联 / 飞牛 fnOS / 群晖 / 威联通通用）
 
-仓库自动发布双架构镜像 `ghcr.io/koalapro/opentradeledger:latest`，NAS 无需安装 `git` 或本地编译即可秒级拉起：
+无需开启 SSH、无需敲任何命令，也无需创建隐藏 `.env` 文件：
+
+1. **打开 NAS 自带的「Docker」应用 → 选择「Compose / 项目」→ 点击「新增项目」**，直接粘贴下方配置并点击创建（中国大陆 NAS 已默认启用南京大学 GHCR 高速镜像源，秒级拉满；海外环境也可改为 `ghcr.io/koalapro/opentradeledger:latest`）：
+
+```yaml
+services:
+  opentradeledger:
+    image: ghcr.nju.edu.cn/koalapro/opentradeledger:latest
+    container_name: opentradeledger
+    ports:
+      - "8012:8012"   # 如 8012 端口已被占用，直接改左侧数字（如 "8013:8012"）即可
+    environment:
+      OTL_HOST: "0.0.0.0"
+      OTL_PORT: "8012"
+      OTL_DATA_DIR: "/app/data"
+      OTL_DEMO_MODE: "true"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+```
+
+2. **浏览器打开 `http://你的NAS局域网IP:8012`（或自定义端口）**：
+   - 首次进入默认展示脱敏**演示模式**，可直接浏览全部功能；
+   - 准备接入实盘时，直接在网页 **「设置与连接」** 关闭「演示数据模式」开关（或直接添加首个只读交易所 / 盯盘目标），系统会自动弹出本地访问密码设置并切入实盘核账，**全程无需改配置文件**。
+3. **后续有新版本时：网页内直接「一键在线升级」**：
+   - 侧边栏「设置与连接」亮起新版本提示后，点进卡片直接点击 **「一键在线升级」** 按钮——自动下载轻量更新包、完成 SHA-256 安全校验并在 2～3 秒内平滑热重启，**无需终端、无需进 NAS 后台、不挂载高危 `docker.sock`，密码、API 密钥与历史账单 100% 自动保留**。
+
+<details>
+<summary>进阶：命令行 Docker Compose 一键启动与更新（可选）</summary>
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/KoalaPro/OpenTradeLedger/main/docker-compose.yml
-# 如在中国大陆 NAS 拉取 ghcr.io 超时，可执行下一行切换南京大学 GHCR 镜像加速源：
+# 中国大陆环境可切换南京大学 GHCR 镜像源：
 # sed -i 's|ghcr.io/koalapro/opentradeledger:latest|ghcr.nju.edu.cn/koalapro/opentradeledger:latest|' docker-compose.yml
 docker compose up -d
 ```
 
-启动后访问 **http://127.0.0.1:8012**（或 NAS 局域网 IP `:8012`；如需自定义外部端口，在同目录 `.env` 写入 `OTL_EXTERNAL_PORT=8013` 即可），即可体验内置的脱敏演示模式。
-
-**NAS 实盘接入与后续无缝升级**：
-1. 在 `docker-compose.yml` 同目录新建 `.env` 写入 `OTL_DEMO_MODE=false`，执行 `docker compose up -d`。
-2. 首次打开设置本地访问密码，进入 **「设置」→「已连接交易所」** 录入交易所 **只读 API Key**。
-3. **内置新版本提醒与一键升级**：看板默认每 6 小时低频只读检测 GitHub 最新 Release（零隐私上报，可在设置页关闭）；有新版本时侧边栏「设置」自动亮起新版本徽标。由于 `./data` 独立挂载在宿主机，**升级不会丢失密码、API Key 或任何历史账单**：
-   ```bash
-   docker compose pull && docker compose up -d
-   ```
-   *（也可直接在群晖 Container Manager、飞牛 fnOS、绿联 Docker 面板点击「更新镜像」，或配合 Watchtower 自动更新。）*
+命令行更新底层镜像（保留 `./data` 全部数据）：
+```bash
+docker compose pull && docker compose up -d
+```
+</details>
 
 ### 方式二：本机直接运行（Python 3.11+ & Node.js 20+）
 

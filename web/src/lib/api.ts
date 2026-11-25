@@ -118,6 +118,12 @@ export const api = {
   getVersionCheck(refresh = false): Promise<VersionCheckPayload> {
     return req(`/api/v1/version-check${refresh ? '?refresh=true' : ''}`)
   },
+  getHealth(): Promise<{ status: string; version: string; base_version?: string; ota_active?: boolean }> {
+    return req('/api/v1/health')
+  },
+  triggerSelfUpdate(): Promise<{ ok: boolean; updated_to: string; restarting: boolean }> {
+    return req('/api/v1/system/self-update', { method: 'POST' })
+  },
   getSettings(): Promise<UserSettings> {
     return req('/api/v1/settings')
   },

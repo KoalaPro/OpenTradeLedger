@@ -480,6 +480,8 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
     expect(screen.getByTestId('version-update-card')).toBeTruthy()
     expect(screen.getByTestId('version-status-badge').textContent).toContain('v1.3.0')
     expect(screen.getByTestId('version-release-box').textContent).toContain('GHCR multi-arch images')
+    expect(screen.getByTestId('one-click-upgrade-btn')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('manual-upgrade-guide-toggle'))
     expect(screen.getByTestId('copy-nas-upgrade-cmd')).toBeTruthy()
   })
 })

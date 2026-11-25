@@ -19,6 +19,9 @@ TZ_UTC8 = timezone(timedelta(hours=8))
 
 DEFAULT_GITHUB_REPO = "KoalaPro/OpenTradeLedger"
 CACHE_TTL_SEC = 6 * 3600  # 6 hours
+OTA_ARCHIVE_ASSET_NAME = "opentradeledger-ota.tar.gz"
+OTA_SHA256_ASSET_NAME = "opentradeledger-ota.sha256"
+_OTA_SHA_BODY_RE = re.compile(r"OTA-SHA256:\s*`?([0-9a-fA-F]{64})`?")
 
 _SEMVER_RE = re.compile(
     r"^[vV]?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$"
@@ -119,10 +122,17 @@ class VersionCheckService:
     ) -> dict[str, Any]:
         latest = normalize_version_tag(str(base.get("latest_version") or ""))
         has_update = bool(latest and is_newer_version(latest, self.current_version))
+        ota_asset_url = str(base.get("ota_asset_url") or "")
+        ota_sha256_url = str(base.get("ota_sha256_url") or "")
+        ota_sha256 = str(base.get("ota_sha256") or "")
         return {
             "current_version": self.current_version,
             "latest_version": latest or self.current_version,
             "update_available": has_update,
+            "ota_ready": bool(has_update and (ota_asset_url or ota_sha256)),
+            "ota_asset_url": ota_asset_url,
+            "ota_sha256_url": ota_sha256_url,
+            "ota_sha256": ota_sha256,
             "check_enabled": check_enabled,
             "github_repo": self.github_repo,
             "release_url": str(base.get("release_url") or self.releases_page_url),
@@ -141,20 +151,28 @@ class VersionCheckService:
             "Accept": "application/vnd.github+json",
             "User-Agent": "OpenTradeLedger-VersionCheck",
         }
-        try:
-            async with httpx.AsyncClient(
-                timeout=6.0,
-                transport=self.transport,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(self.api_latest_url, headers=headers)
-        except httpx.TimeoutException:
-            return None, "GitHub API request timed out", "连接 GitHub 超时，请稍后重试"
-        except httpx.HTTPError as exc:
+        resp: httpx.Response | None = None
+        last_exc: Exception | None = None
+        for _attempt in range(2):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=8.0,
+                    transport=self.transport,
+                    follow_redirects=True,
+                ) as client:
+                    resp = await client.get(self.api_latest_url, headers=headers)
+                break
+            except (httpx.TimeoutException, httpx.HTTPError) as exc:
+                last_exc = exc
+                continue
+        if resp is None:
+            if isinstance(last_exc, httpx.TimeoutException):
+                return None, "GitHub API request timed out", "连接 GitHub 超时，请稍后重试"
+            exc_name = last_exc.__class__.__name__ if last_exc else "HTTPError"
             return (
                 None,
-                f"Network error reaching GitHub ({exc.__class__.__name__})",
-                f"无法连接 GitHub 接口（{exc.__class__.__name__}）",
+                f"Network error reaching GitHub ({exc_name})",
+                f"无法连接 GitHub 接口（{exc_name}）",
             )
 
         if resp.status_code == 404:
@@ -194,15 +212,36 @@ class VersionCheckService:
             )
 
         now_s = int(time.time())
-        body = str(data.get("body") or "").strip()
-        if len(body) > 2400:
-            body = body[:2400].rstrip() + "\n…"
+        raw_body = str(data.get("body") or "").strip()
+        m_sha = _OTA_SHA_BODY_RE.search(raw_body)
+        ota_sha256 = m_sha.group(1).lower() if m_sha else ""
+        # Strip machine-only OTA-SHA256 footer line from human-facing release notes
+        clean_body = re.sub(r"\n*(?:---\s*\n+)?OTA-SHA256:\s*`?[0-9a-fA-F]{64}`?\s*", "", raw_body).strip()
+        if len(clean_body) > 2400:
+            clean_body = clean_body[:2400].rstrip() + "\n…"
+
+        ota_asset_url = ""
+        ota_sha256_url = ""
+        raw_assets = data.get("assets")
+        if isinstance(raw_assets, list):
+            for asset in raw_assets:
+                if not isinstance(asset, dict):
+                    continue
+                a_name = str(asset.get("name") or "").strip()
+                dl_url = str(asset.get("browser_download_url") or "").strip()
+                if a_name == OTA_ARCHIVE_ASSET_NAME and dl_url:
+                    ota_asset_url = dl_url
+                elif a_name == OTA_SHA256_ASSET_NAME and dl_url:
+                    ota_sha256_url = dl_url
 
         payload = {
             "latest_version": latest_ver,
             "release_url": str(data.get("html_url") or self.releases_page_url),
             "release_name": str(data.get("name") or f"v{latest_ver}"),
-            "release_notes": body,
+            "release_notes": clean_body,
+            "ota_asset_url": ota_asset_url,
+            "ota_sha256_url": ota_sha256_url,
+            "ota_sha256": ota_sha256,
             "published_at": _format_iso_to_utc8(str(data.get("published_at") or "")),
             "checked_sec": now_s,
             "checked_at": datetime.fromtimestamp(now_s, tz=TZ_UTC8).strftime("%Y-%m-%d %H:%M"),

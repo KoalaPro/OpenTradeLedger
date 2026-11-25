@@ -37,6 +37,10 @@ export interface VersionCheckPayload {
   current_version: string
   latest_version: string
   update_available: boolean
+  ota_ready?: boolean
+  ota_asset_url?: string
+  ota_sha256_url?: string
+  ota_sha256?: string
   check_enabled: boolean
   github_repo: string
   release_url: string

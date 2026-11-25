@@ -367,6 +367,14 @@ export default function App() {
                   setSymbolFilter('ALL')
                 }
                 navigateTo(next)
+                if (next === 'settings' && versionStatus?.update_available) {
+                  window.setTimeout(() => {
+                    const el = document.querySelector('[data-testid="version-update-card"]')
+                    if (el && typeof el.scrollIntoView === 'function') {
+                      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                    }
+                  }, 120)
+                }
               }}
               showExtensions={showExtensions}
               lastSyncMs={data?.last_sync_ms ?? 0}
@@ -463,7 +471,15 @@ export default function App() {
                           }
                         }}
                         onInspectSymbol={handleInspectSymbol}
-                        onGoSettings={() => navigateTo('settings')}
+                        onGoSettings={() => {
+                          navigateTo('settings')
+                          window.setTimeout(() => {
+                            const el = document.querySelector('[data-testid="notifications-card"]')
+                            if (el && typeof el.scrollIntoView === 'function') {
+                              el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                            }
+                          }, 120)
+                        }}
                       />
                     )}
                     {page === 'settings' && (

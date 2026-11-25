@@ -34,6 +34,7 @@ from opentradeledger.core.notifier import parse_bark_input
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.sync_manager import SyncManager
 from opentradeledger.core.venue_health import VenueHealthTracker, humanize_exchange_error
+from opentradeledger.core.self_updater import SelfUpdateError, SelfUpdateService
 from opentradeledger.core.version_checker import VersionCheckService
 from opentradeledger.security.local_auth import (
     AUTH_COOKIE_NAME,
@@ -241,6 +242,12 @@ def create_app(
     logo_cache = InstrumentLogos(data_path / "instrument_logos")
     fx_service = FxRateService(store)
     version_service = VersionCheckService(store, current_version=__version__)
+    base_img_ver = os.environ.get("OTL_BASE_IMAGE_VERSION", __version__)
+    self_updater = SelfUpdateService(
+        data_dir=data_path,
+        version_service=version_service,
+        base_version=base_img_ver,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -260,6 +267,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.version_service = version_service
+    app.state.self_updater = self_updater
 
     @app.middleware("http")
     async def local_auth_gate(request: Request, call_next):
@@ -295,6 +303,8 @@ def create_app(
             "app": __app_name__,
             "app_zh": __app_name_zh__,
             "version": __version__,
+            "base_version": os.environ.get("OTL_BASE_IMAGE_VERSION", __version__),
+            "ota_active": os.environ.get("OTL_OTA_ACTIVE") == "1",
             "read_only": True,
             "trading_enabled": False,
             "demo_mode": ledger_service.is_demo_active(),
@@ -426,6 +436,28 @@ def create_app(
             check_enabled=bool(prefs.update_check_enabled),
         )
 
+    @app.post("/api/v1/system/self-update")
+    async def trigger_self_update(request: Request) -> Response:
+        # Even if demo_mode is currently toggled on, require valid auth if a local password was set
+        token = request.cookies.get(AUTH_COOKIE_NAME)
+        strict_auth = auth_manager.get_status(token, demo_mode=False)
+        if strict_auth.get("enabled") and not strict_auth.get("authenticated"):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Authentication required", "auth_required": True},
+            )
+        try:
+            res = await app.state.self_updater.perform_update()
+            return JSONResponse(content=res)
+        except SelfUpdateError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": exc.message_en,
+                    "detail_zh": exc.message_zh,
+                },
+            )
+
     @app.post("/api/v1/sync")
     async def trigger_sync(body: SyncRequest | None = None) -> Response:
         if body and body.candidate_credential is not None:
@@ -448,6 +480,12 @@ def create_app(
             )
             try:
                 res = await sync_manager.sync_candidate_and_commit(temp_cred)
+                if (
+                    res.get("committed")
+                    and bool(ledger_service.demo_mode)
+                    and not auth_manager.get_status(None, demo_mode=False).get("require_setup")
+                ):
+                    ledger_service.set_demo_mode(False)
                 return JSONResponse(content=res)
             except Exception as exc:
                 diag = humanize_exchange_error(vid, exc)
@@ -857,8 +895,9 @@ def create_app(
         )
         return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=300"})
 
-    # Mount static frontend build when present
-    dist = web_dist_dir or (Path(__file__).resolve().parents[4] / "web" / "dist")
+    # Mount static frontend build when present (respecting OTA overlay override if active)
+    env_dist = os.environ.get("OTL_WEB_DIST_DIR", "").strip()
+    dist = web_dist_dir or (Path(env_dist) if env_dist else (Path(__file__).resolve().parents[4] / "web" / "dist"))
     if dist.exists() and (dist / "index.html").exists():
         assets_dir = dist / "assets"
         if assets_dir.exists():
