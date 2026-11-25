@@ -6,6 +6,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/src/assets/ledger-logo.png" />
     <title>交易账本 · OpenTradeLedger</title>
+    <script>
+      try {
+        var th = localStorage.getItem('otl.theme');
+        if (th === 'light' || th === 'ocean' || th === 'obsidian') document.documentElement.dataset.theme = th;
+        var pol = localStorage.getItem('otl.polarity');
+        if (pol === 'cn' || pol === 'global') document.documentElement.dataset.polarity = pol;
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

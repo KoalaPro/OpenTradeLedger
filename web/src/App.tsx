@@ -86,7 +86,17 @@ export default function App() {
   const [hash, setHash] = useState(() => typeof window !== 'undefined' ? window.location.hash : '')
   const [settings, setSettings] = useState<UserSettings>(() => {
     try {
-      if (window.localStorage.getItem('otl.locale') === 'en') return { ...DEFAULT_SETTINGS, locale: 'en' }
+      const savedLocale = window.localStorage.getItem('otl.locale')
+      const savedTheme = window.localStorage.getItem('otl.theme')
+      const savedPolarity = window.localStorage.getItem('otl.polarity')
+      return {
+        ...DEFAULT_SETTINGS,
+        ...(savedLocale === 'en' || savedLocale === 'zh-CN' ? { locale: savedLocale } : {}),
+        ...(savedTheme === 'obsidian' || savedTheme === 'ocean' || savedTheme === 'light'
+          ? { theme: savedTheme }
+          : {}),
+        ...(savedPolarity === 'cn' || savedPolarity === 'global' ? { polarity: savedPolarity } : {}),
+      }
     } catch { /* Device storage can be unavailable in private browsing. */ }
     return DEFAULT_SETTINGS
   })
@@ -127,8 +137,10 @@ export default function App() {
   useEffect(() => {
     try {
       window.localStorage.setItem('otl.locale', settings.locale)
-    } catch { /* Language remains available for the current page. */ }
-  }, [settings.locale])
+      window.localStorage.setItem('otl.theme', settings.theme)
+      window.localStorage.setItem('otl.polarity', settings.polarity)
+    } catch { /* Preferences remain available for the current page. */ }
+  }, [settings.locale, settings.theme, settings.polarity])
 
   const isAuthLocked = Boolean(authStatus.require_setup || authStatus.authenticated === false)
 

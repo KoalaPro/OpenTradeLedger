@@ -194,7 +194,7 @@ export const zhCN = {
   set_notify_title: 'Bark 推送通知',
   set_notify_sub: '将账户异动和跟单盯盘提醒发送到你的 Bark 设备。',
   set_demo_title: '演示数据模式 (Demo Mode)',
-  set_demo_sub: '开启后使用内置脱敏多交易所演示账本，便于体验或截图分享',
+  set_demo_sub: '开启后使用内置脱敏多交易所演示账本，便于体验与预览',
   set_save_ok: '设置已保存',
   save_config: '保存配置',
   cancel: '取消',

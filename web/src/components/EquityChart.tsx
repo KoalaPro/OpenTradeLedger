@@ -51,8 +51,9 @@ export function EquityChart({ points, height = 220 }: { points: CurvePoint[]; he
   }
 
   const lastNet = points[points.length - 1]?.cum_net_usd ?? 0
-  const strokeColor = lastNet >= 0 ? 'var(--pos)' : 'var(--neg)'
-  const gradId = lastNet >= 0 ? 'otlAreaPos' : 'otlAreaNeg'
+  const isPositive = lastNet >= 0
+  const strokeColor = isPositive ? 'var(--pos)' : 'var(--neg)'
+  const gradId = isPositive ? 'otlAreaPos' : 'otlAreaNeg'
 
   return (
     <div style={{ width: '100%', height }} className="sensitive">
@@ -60,8 +61,16 @@ export function EquityChart({ points, height = 220 }: { points: CurvePoint[]; he
         <AreaChart data={points} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={strokeColor} stopOpacity={0.20} />
-              <stop offset="100%" stopColor={strokeColor} stopOpacity={0.0} />
+              <stop
+                offset="0%"
+                stopColor={strokeColor}
+                stopOpacity={isPositive ? 0.22 : 0.02}
+              />
+              <stop
+                offset="100%"
+                stopColor={strokeColor}
+                stopOpacity={isPositive ? 0.01 : 0.18}
+              />
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
@@ -98,7 +107,7 @@ export function EquityChart({ points, height = 220 }: { points: CurvePoint[]; he
           <Area
             type="monotone"
             dataKey="cum_net_usd"
-            baseValue="dataMin"
+            baseValue={0}
             stroke={strokeColor}
             strokeWidth={1.9}
             fill={`url(#${gradId})`}

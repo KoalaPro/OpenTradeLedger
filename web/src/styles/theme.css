@@ -872,12 +872,21 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   color: #0f172a;
 }
 
+:root[data-theme="light"] .otl-btn:not(.otl-btn-primary):disabled {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #94a3b8;
+  box-shadow: none;
+  opacity: 1;
+}
+
 :root[data-theme="light"] .otl-btn-primary {
   box-shadow: 0 1px 2px rgba(37, 99, 235, 0.24);
 }
 
 :root[data-theme="light"] .otl-btn-primary:disabled {
   background: #e2e8f0;
+  border-color: #cbd5e1;
   color: #64748b;
   box-shadow: none;
   opacity: 1;
