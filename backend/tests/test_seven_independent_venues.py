@@ -15,7 +15,19 @@ from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.security.vault import CredentialVault
 
-ALL_SEVEN_VENUES = ("binance", "okx", "bybit", "gate", "bitget", "mexc", "easicoin")
+ALL_SEVEN_VENUES = (
+    "binance",
+    "okx",
+    "bybit",
+    "gate",
+    "bitget",
+    "mexc",
+    "hyperliquid",
+    "kucoin",
+    "bingx",
+    "htx",
+    "easicoin",
+)
 
 
 def test_all_seven_adapters_have_independent_sync_and_accounting_modules() -> None:
@@ -319,6 +331,90 @@ def _seed_all_seven_venues(store: LedgerStore) -> None:
         },
     )
 
+    # 8. Hyperliquid
+    store.upsert_plugin_snapshot(
+        "hyperliquid",
+        {
+            "wallet_address": "0x" + "1" * 40,
+            "clearinghouse": {"marginSummary": {"accountValue": "2200.00", "withdrawable": "2200.00"}, "assetPositions": []},
+            "spot": {"balances": []},
+            "tickers": {},
+            "fills": [
+                {"tid": 1, "oid": 1, "coin": "ETH", "px": "3000.0", "sz": "1.0", "side": "B", "dir": "Open Long", "closedPnl": "0.0", "fee": "0.5", "crossed": True, "time": 1732170000000},
+                {"tid": 2, "oid": 2, "coin": "ETH", "px": "3101.0", "sz": "1.0", "side": "A", "dir": "Close Long", "closedPnl": "101.0", "fee": "0.5", "crossed": True, "time": 1732173600000},
+            ],
+            "funding_history": [],
+            "ledger_updates": [{"hash": "0xhl1", "time": 1732000000000, "delta": {"type": "deposit", "usdc": "2100.00"}}],
+        },
+    )
+
+    # 9. KuCoin
+    store.upsert_plugin_snapshot(
+        "kucoin",
+        {
+            "futures_overview": {"accountEquity": 1600.0, "availableBalance": 1600.0},
+            "spot_accounts": [],
+            "deposits": [{"walletTxId": "kc_d1", "currency": "USDT", "amount": "1500.00", "createdAt": 1732000000000}],
+            "withdrawals": [],
+            "positions": [],
+            "history_positions": [
+                {
+                    "closeId": "kc_p1",
+                    "symbol": "ETHUSDTM",
+                    "side": "long",
+                    "closeSize": 10,
+                    "multiplier": 0.1,
+                    "openPrice": 3000,
+                    "closePrice": 3101,
+                    "openTimestamp": 1732180000000,
+                    "closeTimestamp": 1732183600000,
+                    "tradeFee": 1.0,
+                    "fundingFee": 0.0,
+                    "pnl": 100.0,
+                }
+            ],
+            "fills": [],
+            "tx_history": [],
+            "tickers": {},
+        },
+    )
+
+    # 10. BingX
+    store.upsert_plugin_snapshot(
+        "bingx",
+        {
+            "swap_balances": [{"asset": "USDT", "equity": "1400.00", "availableMargin": "1400.00"}],
+            "spot_balances": [],
+            "deposits": [{"id": "bx_d1", "coin": "USDT", "amount": "1350.00", "insertTime": 1732000000000}],
+            "withdrawals": [],
+            "positions": [],
+            "fills": [
+                {"tradeId": "bx_1", "symbol": "BTC-USDT", "side": "BUY", "positionSide": "LONG", "price": "90000", "qty": "0.1", "commission": "-0.5", "realizedPnl": "0", "role": "MAKER", "filledTm": 1732190000000},
+                {"tradeId": "bx_2", "symbol": "BTC-USDT", "side": "SELL", "positionSide": "LONG", "price": "90510", "qty": "0.1", "commission": "-0.5", "realizedPnl": "51.0", "role": "TAKER", "filledTm": 1732193600000},
+            ],
+            "income": [],
+            "tickers": {},
+        },
+    )
+
+    # 11. HTX
+    store.upsert_plugin_snapshot(
+        "htx",
+        {
+            "swap_accounts": [{"margin_balance": "1900.00", "margin_available": "1900.00"}],
+            "spot_balances": [],
+            "deposits": [{"id": "htx_d1", "currency": "usdt", "amount": "1820.00", "state": "safe", "created-at": 1732000000000}],
+            "withdrawals": [],
+            "positions": [],
+            "matches": [
+                {"match_id": "htx_1", "contract_code": "SOL-USDT", "direction": "buy", "offset": "open", "trade_price": "200", "trade_turnover": "2000", "trade_volume": "10", "trade_fee": "-0.5", "offset_profitloss": "0", "role": "maker", "create_date": 1732195000000},
+                {"match_id": "htx_2", "contract_code": "SOL-USDT", "direction": "sell", "offset": "close", "trade_price": "208.1", "trade_turnover": "2081", "trade_volume": "10", "trade_fee": "-0.5", "offset_profitloss": "81.0", "role": "taker", "create_date": 1732198600000},
+            ],
+            "financials": [],
+            "tickers": {},
+        },
+    )
+
 
 def test_seven_venues_isolated_reconciliation_filtering_and_purge(tmp_path: Path) -> None:
     """All 7 venues reconcile independently to 0.00 residual, filter cleanly with zero curve bleed, and purge in isolation."""
@@ -331,7 +427,7 @@ def test_seven_venues_isolated_reconciliation_filtering_and_purge(tmp_path: Path
     dash_all = svc.get_dashboard(range_key="all")
 
     assert {e["venue_id"] for e in dash_all["exchanges"]} == set(ALL_SEVEN_VENUES)
-    assert len(dash_all["trades"]) == 7
+    assert len(dash_all["trades"]) == len(ALL_SEVEN_VENUES)
     assert dash_all["reconciliation"]["residual_usd"] == 0.0
     rec_sum = round(sum(it["amount_usd"] for it in dash_all["reconciliation"]["items"]), 2)
     assert rec_sum == pytest.approx(dash_all["reconciliation"]["net_pnl_usd"], abs=0.01)
@@ -422,7 +518,7 @@ def test_unbind_keep_history_archives_venue_and_allows_later_purge_or_rebind(tmp
 
     dash_after_keep = client.get("/api/v1/dashboard?range=all").json()
     assert dash_after_keep["reconciliation"]["residual_usd"] == 0.0
-    assert len(dash_after_keep["trades"]) == 7
+    assert len(dash_after_keep["trades"]) == len(ALL_SEVEN_VENUES)
     gate_card = next(e for e in dash_after_keep["exchanges"] if e["venue_id"] == "gate")
     bn_card = next(e for e in dash_after_keep["exchanges"] if e["venue_id"] == "binance")
     assert gate_card["connected"] is False
@@ -442,5 +538,5 @@ def test_unbind_keep_history_archives_venue_and_allows_later_purge_or_rebind(tmp
 
     dash_after_purge = client.get("/api/v1/dashboard?range=all").json()
     assert dash_after_purge["reconciliation"]["residual_usd"] == 0.0
-    assert len(dash_after_purge["trades"]) == 6
+    assert len(dash_after_purge["trades"]) == len(ALL_SEVEN_VENUES) - 1
     assert all(e["venue_id"] != "gate" for e in dash_after_purge["exchanges"])

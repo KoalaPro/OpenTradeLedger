@@ -1,4 +1,4 @@
-"""Local Fernet-encrypted credential vault with optional .env compatibility import."""
+"""Local Fernet-encrypted credential vault with multi-account & .env compatibility support."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from uuid import uuid4
 from cryptography.fernet import Fernet
 from pydantic import BaseModel, Field
 
+from opentradeledger.core.account_partition import mask_uid, normalize_evm_address, parse_adapter_id
+
 PLACEHOLDER_SUBSTRINGS = ("your_", "example", "placeholder", "xxxx", "changeme")
 
-DOTENV_VENUE_MAP: dict[str, tuple[str, str, str | None]] = {
+DOTENV_VENUE_MAP: dict[str, tuple[str, str | None, str | None]] = {
     "binance": ("BINANCE_API_KEY", "BINANCE_API_SECRET", None),
     "okx": ("OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE"),
     "bybit": ("BYBIT_API_KEY", "BYBIT_API_SECRET", None),
@@ -21,6 +23,10 @@ DOTENV_VENUE_MAP: dict[str, tuple[str, str, str | None]] = {
     "bitget": ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"),
     "mexc": ("MEXC_API_KEY", "MEXC_API_SECRET", None),
     "easicoin": ("EASICOIN_API_KEY", "EASICOIN_API_SECRET", None),
+    "kucoin": ("KUCOIN_API_KEY", "KUCOIN_API_SECRET", "KUCOIN_API_PASSPHRASE"),
+    "bingx": ("BINGX_API_KEY", "BINGX_API_SECRET", None),
+    "htx": ("HTX_API_KEY", "HTX_API_SECRET", None),
+    "hyperliquid": ("HYPERLIQUID_WALLET_ADDRESS", None, None),
 }
 
 
@@ -28,6 +34,8 @@ def mask_secret(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
         return ""
+    if normalize_evm_address(raw):
+        return f"{raw[:6]}...{raw[-4:]}"
     if len(raw) <= 8:
         return f"{raw[:2]}***{raw[-2:]}"
     return f"{raw[:4]}...{raw[-4:]}"
@@ -51,13 +59,20 @@ class CredentialEditConflict(RuntimeError):
 
 class ExchangeCredentialRecord(BaseModel):
     venue_id: str
+    adapter_id: str = ""
     label: str = ""
     api_key: str
-    api_secret: str
+    api_secret: str = ""
     passphrase: str = ""
+    account_role: str = ""
+    remote_uid: str = ""
     enabled: bool = True
     extra: dict[str, str] = Field(default_factory=dict)
     revision: str = "legacy"
+
+    @property
+    def effective_adapter_id(self) -> str:
+        return (self.adapter_id or parse_adapter_id(self.venue_id)).strip().lower()
 
 
 class CredentialVault:
@@ -121,8 +136,21 @@ class CredentialVault:
 
     def upsert(self, record: ExchangeCredentialRecord) -> dict[str, Any]:
         venue_id = record.venue_id.strip().lower()
+        adapter_id = (record.adapter_id or parse_adapter_id(venue_id)).strip().lower()
         store = self._read_all()
-        normalized = record.model_copy(update={"venue_id": venue_id, "revision": uuid4().hex})
+        prev_raw = store.get(venue_id)
+        prev = ExchangeCredentialRecord.model_validate(prev_raw) if isinstance(prev_raw, dict) else None
+        eff_uid = record.remote_uid or (prev.remote_uid if prev else "")
+        eff_role = record.account_role or (prev.account_role if prev else "")
+        normalized = record.model_copy(
+            update={
+                "venue_id": venue_id,
+                "adapter_id": adapter_id,
+                "remote_uid": eff_uid,
+                "account_role": eff_role,
+                "revision": uuid4().hex,
+            }
+        )
         store[venue_id] = normalized.model_dump()
         self._write_all(store)
         return self._mask_record(normalized)
@@ -147,15 +175,26 @@ class CredentialVault:
         store = self._read_all()
         return [ExchangeCredentialRecord.model_validate(v) for _, v in sorted(store.items())]
 
+    def list_for_adapter(self, adapter_id: str) -> list[ExchangeCredentialRecord]:
+        target = parse_adapter_id(adapter_id)
+        all_recs = [r for r in self.list_decrypted() if r.effective_adapter_id == target]
+        all_recs.sort(key=lambda r: (0 if r.venue_id == target else 1, r.venue_id))
+        return all_recs
+
     def list_masked(self) -> list[dict[str, Any]]:
         return [self._mask_record(rec) for rec in self.list_decrypted()]
 
     @staticmethod
     def _mask_record(rec: ExchangeCredentialRecord) -> dict[str, Any]:
+        ad_id = rec.effective_adapter_id
         return {
             "venue_id": rec.venue_id,
-            "label": rec.label or rec.venue_id.upper(),
+            "account_id": rec.venue_id,
+            "adapter_id": ad_id,
+            "label": rec.label or ad_id.upper(),
             "masked_api_key": mask_secret(rec.api_key),
+            "masked_uid": mask_uid(rec.remote_uid),
+            "account_role": rec.account_role or "",
             "revision": rec.revision,
             "has_passphrase": bool(rec.passphrase.strip()),
             "enabled": rec.enabled,
@@ -178,11 +217,28 @@ class CredentialVault:
             if not overwrite and self.get_decrypted(venue_id) is not None:
                 continue
             api_key = kv.get(k_key, "")
-            api_secret = kv.get(k_sec, "")
+            api_secret = kv.get(k_sec, "") if k_sec else ""
             if venue_id == "gate" and (_is_placeholder(api_key) or _is_placeholder(api_secret)):
                 api_key = kv.get("GATE_MANUAL_API_KEY", api_key)
                 api_secret = kv.get("GATE_MANUAL_API_SECRET", api_secret)
             passphrase = kv.get(k_pass, "") if k_pass else ""
+            if k_sec is None:
+                addr = normalize_evm_address(api_key)
+                if not addr or addr == "0x" + "0" * 40:
+                    continue
+                candidates.append(
+                    ExchangeCredentialRecord(
+                        venue_id=venue_id,
+                        adapter_id=venue_id,
+                        label=venue_id.upper(),
+                        api_key=addr,
+                        api_secret="",
+                        account_role="wallet",
+                        remote_uid=addr,
+                        enabled=True,
+                    )
+                )
+                continue
             if _is_placeholder(api_key) or _is_placeholder(api_secret):
                 continue
             if k_pass and _is_placeholder(passphrase):
@@ -190,6 +246,7 @@ class CredentialVault:
             candidates.append(
                 ExchangeCredentialRecord(
                     venue_id=venue_id,
+                    adapter_id=venue_id,
                     label=venue_id.upper(),
                     api_key=api_key,
                     api_secret=api_secret,

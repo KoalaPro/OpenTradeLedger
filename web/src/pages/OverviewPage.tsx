@@ -21,6 +21,10 @@ const BAR_COLORS: Record<string, string> = {
   bitget: 'var(--dot-bitget)',
   mexc: 'var(--dot-mexc)',
   easicoin: 'var(--dot-easicoin)',
+  hyperliquid: 'var(--dot-hyperliquid)',
+  kucoin: 'var(--dot-kucoin)',
+  bingx: 'var(--dot-bingx)',
+  htx: 'var(--dot-htx)',
 }
 
 export function OverviewPage({

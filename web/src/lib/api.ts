@@ -2,12 +2,26 @@ import type {
   AuthStatusPayload,
   CopyWatcherStatusPayload,
   DashboardData,
+  DiscoveredSubaccount,
   ExchangeAdapterInfo,
   FxRatesPayload,
   UserSettings,
   VenueHealthState,
   VersionCheckPayload,
 } from './types'
+
+export interface ExchangeUpsertPayload {
+  venue_id: string
+  account_id?: string
+  create_new?: boolean
+  label: string
+  api_key: string
+  api_secret: string
+  wallet_address?: string
+  passphrase?: string
+  expected_revision?: string
+  include_subaccounts?: Array<{ name: string; address: string }>
+}
 
 export class ApiError extends Error {
   status: number
@@ -158,28 +172,24 @@ export const api = {
   listExchanges(): Promise<{ adapters: ExchangeAdapterInfo[]; error_count?: number }> {
     return req('/api/v1/exchanges')
   },
-  verifyExchange(body: {
-    venue_id: string
-    label: string
-    api_key: string
-    api_secret: string
-    passphrase?: string
-    expected_revision?: string
-  }): Promise<{ ok: boolean; verified?: boolean; permission_warning?: string; permission_warning_zh?: string }> {
+  verifyExchange(body: ExchangeUpsertPayload): Promise<{
+    ok: boolean
+    verified?: boolean
+    account_id?: string
+    adapter_id?: string
+    masked_uid?: string
+    account_role?: string
+    subaccounts?: DiscoveredSubaccount[]
+    permission_warning?: string
+    permission_warning_zh?: string
+  }> {
     return req('/api/v1/exchanges/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
   },
-  upsertExchange(body: {
-    venue_id: string
-    label: string
-    api_key: string
-    api_secret: string
-    passphrase?: string
-    expected_revision?: string
-  }): Promise<{ ok: boolean; health?: VenueHealthState }> {
+  upsertExchange(body: ExchangeUpsertPayload): Promise<{ ok: boolean; account_id?: string; health?: VenueHealthState }> {
     return req('/api/v1/exchanges', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -202,17 +212,14 @@ export const api = {
   },
   triggerSync(
     venueId?: string,
-    candidateCredential?: {
-      venue_id: string
-      label: string
-      api_key: string
-      api_secret: string
-      passphrase?: string
-      expected_revision?: string
-    },
+    candidateCredential?: ExchangeUpsertPayload,
   ): Promise<{
     ok: boolean
     committed?: boolean
+    account_id?: string
+    adapter_id?: string
+    subaccounts?: DiscoveredSubaccount[]
+    added_subaccounts?: string[]
     auth_status?: AuthStatusPayload
     venues?: Record<
       string,

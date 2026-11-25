@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from pydantic import BaseModel
 
+from opentradeledger.core.account_partition import AccountIdentityError
 from opentradeledger.security.vault import ExchangeCredentialRecord
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ class AdapterMeta(BaseModel):
     display_name: str
     display_name_zh: str
     color_token: str
+    auth_mode: str = "api_key"  # "api_key" | "wallet_address"
     requires_passphrase: bool = False
     capabilities: ExchangeCapabilities = ExchangeCapabilities()
     docs_url: str = ""
@@ -106,20 +108,30 @@ class VenueLedgerBundle:
 class BaseExchangeAdapter(ABC):
     """Standard independent interface for read-only exchange integrations.
 
-    Every exchange (`binance`, `okx`, `bybit`, `gate`, `bitget`, `mexc`, `easicoin`)
-    implements this identical contract with its own isolated `client.py`, `sync.py`,
-    and `accounting.py`, storing data strictly inside its own `venue_id` partition.
+    Every exchange implements this identical contract with its own isolated
+    `client.py`, `sync.py`, and `accounting.py`, storing data strictly inside
+    its assigned account partition.
     """
 
     meta: AdapterMeta
 
     @abstractmethod
     def create_client(self, cred: ExchangeCredentialRecord) -> Any:
-        """Instantiate the exchange's strictly GET-only API client."""
+        """Instantiate the exchange's strictly read-only API client."""
 
     @abstractmethod
     async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
-        """Verify read-only connectivity via a safe GET endpoint."""
+        """Verify read-only connectivity and optionally report `remote_uid` & `account_role`."""
+
+    async def probe_identity(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
+        """Best-effort read-only identity check (`remote_uid`, `account_role`, `subaccounts`)."""
+        try:
+            info = await self.test_connection(cred)
+            return info if isinstance(info, dict) else {}
+        except AccountIdentityError:
+            raise
+        except Exception:
+            return {}
 
     async def sync_venue(
         self,

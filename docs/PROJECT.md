@@ -6,7 +6,7 @@
 
 ## 1. 核心架构边界与安全红线
 
-1. **严格只读（`GET`-Only）网络护栏**：所有交易所适配器统一经由 `security/readonly_guard.py` 发起请求，底层强制拦截任何非只读写操作（下单、撤单、划转、提币）。
+1. **严格只读网络护栏**：所有交易所适配器统一经由 `security/readonly_guard.py` 发起请求，默认强制拦截任何非 `GET` 请求；仅针对协议设计上纯查询走 `POST` 的公开/账单查询端点（如 Hyperliquid 免私钥公开 `POST /info` 明确枚举的只读 `type`，以及 HTX 合约只读账单查询路径）开启白名单放行并物理封禁任何签名写字段或下单/撤单/提币端点。
 2. **本地落盘加密与零遥测**：
    - 交易所 API 密钥保存在 `data/vault.enc`（Fernet 对称加密，权限 `0600`）；AI API Key 与 Bark Push Key 同样在 SQLite 偏好表中加密存储。
    - 局域网 / NAS 访问密码采用 `scrypt` 随机加盐哈希存储于本地，无云端账号依赖、零遥测上报。
@@ -28,11 +28,11 @@ OKX 同时记录合约张数、合约面值及面值币种。交易详情和成�
 OpenTradeLedger/
 ├── backend/
 │   ├── src/opentradeledger/
-│   │   ├── adapters/        # 7 大交易所全独立包（各自含 client.py / sync.py / accounting.py）
-│   │   ├── api/             # FastAPI 路由层（账本聚合、设置、鉴权、公开盯盘、OTA 热更新）
-│   │   ├── core/            # 统一领域模型与枚举定义
+│   │   ├── adapters/        # 11 大交易所全独立包（各自含 client.py / sync.py / accounting.py）
+│   │   ├── api/             # FastAPI 路由层（账本聚合、多账号配置、鉴权、公开盯盘、OTA 热更新）
+│   │   ├── core/            # 统一领域模型、account_partition 多账号分区代理与同步/聚合服务
 │   │   ├── demo/            # 内置 100% 脱敏模拟数据集
-│   │   ├── security/        # GET-only 只读拦截器、Fernet 密钥保险箱、scrypt 会话锁
+│   │   ├── security/        # 只读请求拦截器、Fernet 多账号密钥保险箱、scrypt 会话锁
 │   │   ├── services/        # SyncManager、LedgerService、AI 复盘、Bark 通知、公开盯盘、OTA 升级
 │   │   └── storage/         # SQLite 按 venue_id 物理分区存储与自动迁移
 │   └── tests/               # 后端单元测试与隐私/架构 AST 守卫测试
@@ -56,9 +56,12 @@ OpenTradeLedger/
 
 ## 3. 核心业务口径与模块约定
 
-### 3.1 七平台全独立对等架构与封存机制
-- 内置 **Binance**、**OKX (v5)**、**Bybit (v5)**、**Gate**、**Bitget (UTA)**、**MEXC**、**EasiCoin** 七套完全解耦的适配器包（由 AST 测试强制禁止跨平台互引）。
-- SQLite 存储按 `venue_id` 严格隔离（`otl_venue_kv` / `otl_venue_records`）。移除交易所时支持 **「仅解绑 API，保留本地历史记录（已封存）」** 与 **「彻底删除 API 及该分区全部本地数据」** 两种模式，互不影响其他平台。
+### 3.1 十一平台全独立对等架构、同交易所多账号与封存机制
+- 内置 **Binance**、**OKX (v5)**、**Bybit (v5)**、**Gate**、**Bitget (UTA)**、**MEXC**、**Hyperliquid（免密钥 `0x` 地址）**、**KuCoin**、**BingX**、**火币 HTX**、**EasiCoin（易币）** 11 套完全解耦的适配器包（由 AST 测试强制禁止跨平台互引，且 `SyncManager` / `LedgerService` 零平台硬编码分支）。
+- **同交易所多账号与主/子账户识别（`core/account_partition.py`）**：
+  - 将交易所协议类型 `adapter_id`（如 `binance`）与本地账本分区主键 `account_id` 解耦：首个账号保持原 `venue_id`（如 `binance`）实现历史数据零迁移无损兼容；同平台新增第 2 个及以上子账户或独立账号自动分配独立分区（如 `binance__<8hex>`），经 `AccountScopedStore` 透明隔离存储、独立退避轮询并独立输出 `0.00 U` 闭环核账卡片。
+  - 接入与同步时自动提取远端脱敏 `UID` 及账户角色（OKX `uid` vs `mainUid`、Bybit `isMaster`、Bitget/HTX `parentId`、KuCoin `isSub`、Hyperliquid 主地址与 `subAccounts` 链上子账户自动发现），拦截同交易所重复绑定相同 `UID`（防止总净资产翻倍）以及编辑旧账号误填跨账号密钥（防止历史混账）。
+- SQLite 存储按 `account_id` 严格隔离（`otl_venue_kv` / `otl_venue_records`）。移除任意账号时均支持 **「仅解绑凭证，保留本地历史记录（已封存）」** 与 **「彻底删除凭证及该分区全部本地数据」** 两种模式，互不影响同交易所其他账号或其他平台。
 
 ### 3.2 资产分类与双腿手续费精算口径
 - **衍生品合约 vs 正股/代币 vs 全量现货**：

@@ -26,10 +26,22 @@ def test_full_api_lifecycle_demo_exchanges_settings_and_ai(tmp_path: Path):
     assert payload["trades"][0]["entry_leg"]["gross_fee_usd"] > 0
     assert payload["trades"][0]["exit_leg"]["gross_fee_usd"] > 0
 
-    # 3. Exchanges endpoint lists all 7 registered adapters and encrypts new OKX/Bybit keys
+    # 3. Exchanges endpoint lists all 11 registered adapters and encrypts new OKX/Bybit keys
     ex = client.get("/api/v1/exchanges").json()
-    assert len(ex["adapters"]) == 7
-    assert {a["venue_id"] for a in ex["adapters"]} == {"binance", "okx", "bybit", "gate", "bitget", "mexc", "easicoin"}
+    assert len(ex["adapters"]) == 11
+    assert {a["venue_id"] for a in ex["adapters"]} == {
+        "binance",
+        "okx",
+        "bybit",
+        "gate",
+        "bitget",
+        "mexc",
+        "hyperliquid",
+        "kucoin",
+        "bingx",
+        "htx",
+        "easicoin",
+    }
 
     # OKX requires passphrase
     bad_okx = client.post(

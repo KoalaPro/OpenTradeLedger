@@ -26,16 +26,30 @@ from opentradeledger.security.vault import ExchangeCredentialRecord
 def test_default_registry_includes_all_seven_venues_and_supports_custom_plugins():
     reg = build_default_registry()
     ids = [m.venue_id for m in reg.list_all()]
-    assert ids == ["binance", "okx", "bybit", "gate", "bitget", "mexc", "easicoin"]
+    assert ids == [
+        "binance",
+        "okx",
+        "bybit",
+        "gate",
+        "bitget",
+        "mexc",
+        "hyperliquid",
+        "kucoin",
+        "bingx",
+        "htx",
+        "easicoin",
+    ]
     assert reg.get("okx").meta.requires_passphrase is True
+    assert reg.get("kucoin").meta.requires_passphrase is True
+    assert reg.get("hyperliquid").meta.auth_mode == "wallet_address"
     assert reg.get("bybit").meta.requires_passphrase is False
 
-    class DummyHyperliquidAdapter(BaseExchangeAdapter):
+    class DummyKrakenAdapter(BaseExchangeAdapter):
         meta = AdapterMeta(
-            venue_id="hyperliquid",
-            display_name="Hyperliquid",
-            display_name_zh="Hyperliquid",
-            color_token="hyperliquid",
+            venue_id="kraken",
+            display_name="Kraken",
+            display_name_zh="Kraken",
+            color_token="kraken",
         )
 
         def create_client(self, cred):
@@ -44,9 +58,9 @@ def test_default_registry_includes_all_seven_venues_and_supports_custom_plugins(
         async def test_connection(self, cred):
             return {"ok": True}
 
-    reg.register(DummyHyperliquidAdapter())
-    assert reg.get("hyperliquid") is not None
-    assert "hyperliquid" in [m.venue_id for m in reg.list_all()]
+    reg.register(DummyKrakenAdapter())
+    assert reg.get("kraken") is not None
+    assert "kraken" in [m.venue_id for m in reg.list_all()]
 
 
 def test_okx_signature_readonly_guard_and_per_leg_fees():

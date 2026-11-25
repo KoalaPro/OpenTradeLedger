@@ -46,7 +46,7 @@ Most open-source portfolio trackers focus on spot holdings without futures fee a
 - **Live 7-Currency FX Switching**: Switch the entire ledger instantaneously across `USDT`, `USD`, `CNY`, `GBP`, `EUR`, `HKD`, and `JPY` backed by live FX feeds (`open.er-api.com` + `frankfurter.dev` fallback, cached in SQLite).
 - **Adaptive Idle-Account Backoff Polling**: Active accounts sync every `20s`; idle accounts (`< 20 U` equity with no open positions) automatically back off (`15m → 30m → 1h → 2h → 4h`) to save API quota, snapping straight back to `20s` on any balance delta (`>= 0.05 U`) or new activity.
 - **4-Tier Automatic Instrument Logo Cache**: Automatically resolves crypto pairs (including `1000PEPE`-style multiplier contracts) and tokenized US stocks (`NVDAX`, `AAPLX`, `STOCK`, `ON`) into a 30-day local disk cache with deterministic SVG fallback.
-- **Zero-Hardcode Pluggable Exchange Architecture**: Ships with built-in read-only adapters for **Binance**, **OKX (v5)**, **Bybit (v5)**, **Gate**, **Bitget (UTA)**, **MEXC**, and **EasiCoin**. Adding another exchange requires implementing one Python adapter class — zero frontend edits.
+- **Zero-Hardcode 11-Venue & Multi-Account Architecture**: Ships with 11 fully independent read-only adapters — **Binance**, **OKX (v5)**, **Bybit (v5)**, **Gate**, **Bitget (UTA)**, **MEXC**, **Hyperliquid (Keyless `0x`)**, **KuCoin**, **BingX**, **HTX**, and **EasiCoin**. Every exchange natively supports **multiple isolated accounts (Master, Sub-Accounts, and separate accounts)** with automatic remote UID verification, `Main` / `Sub` role badges, duplicate-UID anti-double-counting protection, and keyless `0x` sub-account discovery on Hyperliquid.
 - **Strict Local-First Security & NAS Access Lock**:
   - Runtime `assert_readonly_request()` guard blocks any non-`GET` HTTP method and enforces per-venue read-only path allowlists before signing requests.
   - Credentials entered in the Web Settings UI are encrypted locally with **Fernet (AES-128-CBC + HMAC-SHA256)** using a `0600` local key file inside your `data/` directory. Zero cloud upload, zero telemetry.
@@ -62,7 +62,7 @@ Most open-source portfolio trackers focus on spot holdings without futures fee a
 
 ---
 
-## Supported Built-in Exchanges (Read-Only)
+## Supported Built-in Exchanges (Read-Only · Multi-Account & Sub-Account Ready)
 
 | Exchange | Futures | Real-Time Rebates | Token Fee Discount | Copy Trading | Spot / Tokenized Stocks | Auth |
 |---|:---:|:---:|:---:|:---:|:---:|---|
@@ -72,9 +72,13 @@ Most open-source portfolio trackers focus on spot holdings without futures fee a
 | **Gate** | ✓ | ✓ | ✓ (GT/Points) | ✓ | ✓ | API Key + Secret |
 | **Bitget (UTA)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret + Passphrase |
 | **MEXC** | ✓ | ✓ | ✓ (MX) | — | ✓ | API Key + Secret |
+| **Hyperliquid** | ✓ | ✓ (Maker Rebates) | — | — | ✓ (Spot / HIP-3) | **Public `0x` Address (Zero Keys · Auto Sub-Account Discovery)** |
+| **KuCoin** | ✓ | ✓ | ✓ (KCS) | — | ✓ | API Key + Secret + Passphrase |
+| **BingX** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret |
+| **HTX** | ✓ | ✓ | ✓ (HTX) | ✓ | ✓ | API Key + Secret |
 | **EasiCoin** | ✓ | ✓ | — | — | ✓ | API Key + Secret |
 
-Want to add Hyperliquid, Kraken, KuCoin, or another venue? See [CONTRIBUTING.md](CONTRIBUTING.md).
+Want to add Kraken, Coinbase, Backpack, or another venue? See [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 

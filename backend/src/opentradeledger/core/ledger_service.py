@@ -11,6 +11,11 @@ from typing import Any
 from opentradeledger.adapters.base import BaseExchangeAdapter, VenueLedgerBundle
 from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.config import UserPreferences
+from opentradeledger.core.account_partition import (
+    parse_adapter_id,
+    stamp_bundle_for_account,
+    stamp_fee_row_for_account,
+)
 from opentradeledger.core.ai_reviewer import build_zero_trade_texts
 from opentradeledger.core.demo_provider import build_demo_dashboard
 from opentradeledger.core.store import LedgerStore
@@ -47,6 +52,15 @@ _EN_RECONCILE_TITLE_BY_KEY: dict[str, str] = {
     "okx_earn_spot": "OKX Earn, Tokenized Equities & Spot Valuation",
     "bybit_futures": "Bybit Manual Futures Net PnL",
     "bybit_earn_spot": "Bybit Earn, Tokenized Equities & Spot Valuation",
+    "hyperliquid_futures": "Hyperliquid Perp Net PnL (incl. Maker Rebates & Funding)",
+    "hyperliquid_earn_spot": "Hyperliquid Spot & HLP Valuation",
+    "kucoin_futures": "KuCoin Futures Net PnL",
+    "kucoin_earn_spot": "KuCoin Spot & Margin Valuation",
+    "bingx_futures": "BingX Perpetual Net PnL",
+    "bingx_copy_trading": "BingX Copy Trading Net PnL",
+    "bingx_earn_spot": "BingX Spot & Wealth Valuation",
+    "htx_futures": "HTX Linear Swap Net PnL",
+    "htx_earn_spot": "HTX Spot & Earn Valuation",
     "copy_trading": "Gate Copy Trading Combined PnL",
     "stock": "Equities & Tokenized Stocks Net PnL",
     "earn": "Earn & Lending Interest",
@@ -240,10 +254,30 @@ class LedgerService:
         self.demo_mode = bool(enabled)
         self.store.set_meta("demo_mode_override", self.demo_mode)
 
+    def _iter_account_targets(self) -> list[tuple[BaseExchangeAdapter, str]]:
+        vault_creds = self.vault.list_decrypted()
+        targets: list[tuple[BaseExchangeAdapter, str]] = []
+        for adapter in self.registry.iter_adapters():
+            ad_id = adapter.meta.venue_id.lower()
+            cand_ids: list[str] = [ad_id]
+            for cred in vault_creds:
+                cid = cred.venue_id.lower()
+                if cred.effective_adapter_id == ad_id and cid not in cand_ids:
+                    cand_ids.append(cid)
+            for pid in self.store.list_partition_account_ids(ad_id):
+                if pid not in cand_ids:
+                    cand_ids.append(pid)
+            for acct_id in cand_ids:
+                targets.append((adapter, acct_id))
+        return targets
+
     def has_live_data(self) -> bool:
         if self.vault.list_decrypted():
             return True
-        return any(adapter.has_venue_data(self.store) for adapter in self.registry.iter_adapters())
+        return any(
+            adapter.has_venue_data(self.store.for_account(acct_id, adapter.meta.venue_id))
+            for adapter, acct_id in self._iter_account_targets()
+        )
 
     def is_demo_active(self) -> bool:
         return self.demo_mode or (not self.has_live_data())
@@ -323,24 +357,53 @@ class LedgerService:
             cutoff_sec = now_s - 30 * 86400
         cutoff_day_bj = fmt_bj(cutoff_sec, "%Y-%m-%d") if cutoff_sec > 0 else ""
 
-        # 1. Gather cross-venue spot ticker fallback map uniformly across all registered adapters
+        # 1. Gather cross-venue spot ticker fallback map uniformly across all active account partitions
+        account_targets = self._iter_account_targets()
         global_spot_prices: dict[str, float] = {}
-        for adapter in self.registry.iter_adapters():
-            for sym, px in adapter.extract_spot_prices(self.store).items():
+        for adapter, acct_id in account_targets:
+            scoped_store = self.store.for_account(acct_id, adapter.meta.venue_id)
+            for sym, px in adapter.extract_spot_prices(scoped_store).items():
                 if px > 0:
                     global_spot_prices.setdefault(sym, px)
 
-        # 2. Compute each active exchange's self-contained ledger bundle independently
-        active_entries: list[tuple[BaseExchangeAdapter, VenueLedgerBundle]] = []
-        for adapter in self.registry.iter_adapters():
+        # 2. Compute each active account's self-contained ledger bundle independently
+        vault_creds = self.vault.list_decrypted()
+        creds_by_acct = {c.venue_id.lower(): c for c in vault_creds}
+        raw_bundles: list[tuple[BaseExchangeAdapter, str, VenueLedgerBundle]] = []
+        sibling_counts: dict[str, int] = defaultdict(int)
+        for adapter, acct_id in account_targets:
+            scoped_store = self.store.for_account(acct_id, adapter.meta.venue_id)
             bundle = adapter.build_venue_ledger(
-                self.store,
+                scoped_store,
                 journals=journals,
                 now_s=now_s,
                 global_spot_prices=global_spot_prices,
             )
             if bundle is not None:
-                active_entries.append((adapter, bundle))
+                raw_bundles.append((adapter, acct_id, bundle))
+                sibling_counts[adapter.meta.venue_id.lower()] += 1
+
+        ordinals: dict[str, int] = defaultdict(int)
+        active_entries: list[tuple[BaseExchangeAdapter, VenueLedgerBundle]] = []
+        for adapter, acct_id, bundle in raw_bundles:
+            ad_id = adapter.meta.venue_id.lower()
+            ordinals[ad_id] += 1
+            cred_rec = creds_by_acct.get(acct_id)
+            raw_sc = self.store.venue_scope(acct_id)
+            saved_uid = str((cred_rec.remote_uid if cred_rec else "") or raw_sc.get_kv("account_uid") or "")
+            saved_role = str((cred_rec.account_role if cred_rec else "") or raw_sc.get_kv("account_role") or "")
+            stamp_bundle_for_account(
+                bundle,
+                account_id=acct_id,
+                meta=adapter.meta,
+                cred=cred_rec,
+                remote_uid=saved_uid,
+                account_role=saved_role,
+                sibling_count=sibling_counts[ad_id],
+                ordinal=ordinals[ad_id],
+                journals=journals,
+            )
+            active_entries.append((adapter, bundle))
 
         # Order exchange cards by descending equity, then descending principal, then venue_id
         active_entries.sort(
@@ -424,7 +487,10 @@ class LedgerService:
                 ex_card["trade_count"] = len(v_range_trades)
             exchanges.append(ex_card)
 
-            fee_row = adapter.build_fee_matrix_row(bundle, v_range_sym_trades)
+            fee_row = stamp_fee_row_for_account(
+                adapter.build_fee_matrix_row(bundle, v_range_sym_trades),
+                bundle,
+            )
             if fee_row is not None:
                 fee_matrix.append(fee_row)
 
@@ -582,16 +648,31 @@ class LedgerService:
         for tr in trades:
             sym_groups[(str(tr["venue_id"]), str(tr["symbol"]))].append(tr)
 
+        ex_card_by_vid = {str(ex["venue_id"]): ex for ex in exchanges}
         symbol_attribution: list[dict[str, Any]] = []
         for (s_vid, s_sym), grp in sym_groups.items():
-            meta_sb = self.registry.get(s_vid).meta if self.registry.get(s_vid) else None
+            ex_meta = ex_card_by_vid.get(s_vid)
+            ad_obj = self.registry.get(parse_adapter_id(s_vid))
+            meta_sb = ad_obj.meta if ad_obj else None
             wins_cnt = sum(1 for x in grp if dec(x["net_pnl_usd"]) > 0)
             symbol_attribution.append(
                 {
                     "venue_id": s_vid,
-                    "venue_name": meta_sb.display_name if meta_sb else s_vid.upper(),
-                    "venue_name_zh": meta_sb.display_name_zh if meta_sb else s_vid.upper(),
-                    "color_token": meta_sb.color_token if meta_sb else s_vid,
+                    "venue_name": (
+                        str(ex_meta["display_name"])
+                        if ex_meta
+                        else (meta_sb.display_name if meta_sb else s_vid.upper())
+                    ),
+                    "venue_name_zh": (
+                        str(ex_meta.get("display_name_zh") or ex_meta["display_name"])
+                        if ex_meta
+                        else (meta_sb.display_name_zh if meta_sb else s_vid.upper())
+                    ),
+                    "color_token": (
+                        str(ex_meta["color_token"])
+                        if ex_meta
+                        else (meta_sb.color_token if meta_sb else parse_adapter_id(s_vid))
+                    ),
                     "symbol": s_sym,
                     "trade_count": len(grp),
                     "win_rate_pct": f2(Decimal(wins_cnt) / Decimal(len(grp)) * Decimal("100"), 1) if grp else 0.0,

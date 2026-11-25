@@ -1,0 +1,417 @@
+"""Strictly read-only Hyperliquid Info API client (`0x` public wallet address, zero private keys).
+
+Security guarantee:
+  - Only `POST /info` with explicitly whitelisted read-only `type` values is permitted.
+  - `/exchange` (order/cancel/withdraw) and any signed action payloads are hard-blocked by `readonly_guard`.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import time
+from typing import Any, Callable, Optional
+
+import httpx
+
+from opentradeledger.core.account_partition import AccountIdentityError, normalize_evm_address
+from opentradeledger.security.readonly_guard import assert_readonly_request
+
+TZ_UTC8 = timezone(timedelta(hours=8))
+
+HYPERLIQUID_ALLOWED_POST_PATHS: tuple[str, ...] = ("/info",)
+HYPERLIQUID_ALLOWED_INFO_TYPES: tuple[str, ...] = (
+    "clearinghouseState",
+    "spotClearinghouseState",
+    "userFills",
+    "userFillsByTime",
+    "userFunding",
+    "userNonFundingLedgerUpdates",
+    "subAccounts",
+    "allMids",
+    "meta",
+    "spotMeta",
+)
+
+
+class HyperliquidApiError(RuntimeError):
+    """Raised when Hyperliquid `/info` returns an HTTP error or unexpected payload."""
+
+
+def _fmt_bj_ms(ms: int) -> str:
+    if not ms:
+        return ""
+    return datetime.fromtimestamp(ms / 1000.0, tz=TZ_UTC8).strftime("%m-%d %H:%M")
+
+
+class HyperliquidReadOnlyClient:
+    """Zero-secret read-only client querying Hyperliquid L1 public `/info` state by `0x` address."""
+
+    def __init__(
+        self,
+        *,
+        wallet_address: str,
+        base_url: str = "https://api.hyperliquid.xyz",
+        client: Optional[httpx.AsyncClient] = None,
+        timeout_sec: float = 14.0,
+        clock_ms: Optional[Callable[[], int]] = None,
+        max_fill_pages: int = 5,
+    ) -> None:
+        norm_addr = normalize_evm_address(wallet_address)
+        if not norm_addr:
+            raise AccountIdentityError("INVALID_WALLET_ADDRESS")
+        self.wallet_address = norm_addr
+        self.base_url = base_url.rstrip("/")
+        self._owns_client = client is None
+        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout_sec, connect=6.0))
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self.max_fill_pages = max(1, int(max_fill_pages))
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+    async def request_info(self, payload: dict[str, Any], *, method: str = "POST", path: str = "/info") -> Any:
+        assert_readonly_request(
+            method,
+            path,
+            (),
+            allowed_post_paths=HYPERLIQUID_ALLOWED_POST_PATHS,
+            allowed_post_types=HYPERLIQUID_ALLOWED_INFO_TYPES,
+            post_payload=payload,
+        )
+        url = f"{self.base_url}{path}"
+        resp = await self._client.post(url, json=payload, headers={"Content-Type": "application/json"})
+        if resp.status_code >= 400:
+            raise HyperliquidApiError(f"Hyperliquid POST {path} HTTP {resp.status_code}: {resp.text[:240]}")
+        return resp.json()
+
+    async def get_clearinghouse_state(self) -> dict[str, Any]:
+        res = await self.request_info({"type": "clearinghouseState", "user": self.wallet_address})
+        return res if isinstance(res, dict) else {}
+
+    async def get_spot_state(self) -> dict[str, Any]:
+        res = await self.request_info({"type": "spotClearinghouseState", "user": self.wallet_address})
+        return res if isinstance(res, dict) else {}
+
+    async def get_subaccounts(self) -> list[dict[str, str]]:
+        res = await self.request_info({"type": "subAccounts", "user": self.wallet_address})
+        if not isinstance(res, list):
+            return []
+        out: list[dict[str, str]] = []
+        for row in res:
+            if not isinstance(row, dict):
+                continue
+            addr = normalize_evm_address(str(row.get("subAccountUser") or ""))
+            if not addr or addr == self.wallet_address:
+                continue
+            name = str(row.get("name") or "").strip() or f"Sub {addr[:6]}...{addr[-4:]}"
+            ch = row.get("clearinghouseState") if isinstance(row.get("clearinghouseState"), dict) else {}
+            ms = ch.get("marginSummary") if isinstance(ch.get("marginSummary"), dict) else {}
+            eq_str = str(ms.get("accountValue") or "0")
+            out.append({"name": name, "address": addr, "equity_usd": eq_str})
+        return out
+
+    async def get_all_mids(self) -> dict[str, float]:
+        res = await self.request_info({"type": "allMids"})
+        if not isinstance(res, dict):
+            return {}
+        mids: dict[str, float] = {}
+        for k, v in res.items():
+            sym = str(k or "").strip().upper()
+            if not sym or sym.startswith("@"):
+                continue
+            try:
+                px = float(v)
+                if px > 0:
+                    mids[sym] = px
+            except (TypeError, ValueError):
+                continue
+        return mids
+
+    async def get_user_fills(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
+        if since_ms <= 0:
+            res = await self.request_info({"type": "userFills", "user": self.wallet_address})
+            return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+
+        collected: dict[str, dict[str, Any]] = {}
+        cursor_start = max(0, int(since_ms))
+        for _ in range(self.max_fill_pages):
+            res = await self.request_info(
+                {
+                    "type": "userFillsByTime",
+                    "user": self.wallet_address,
+                    "startTime": cursor_start,
+                }
+            )
+            if not isinstance(res, list) or not res:
+                break
+            max_ts = cursor_start
+            new_cnt = 0
+            for r in res:
+                if not isinstance(r, dict):
+                    continue
+                fk = str(r.get("tid") or r.get("hash") or f"{r.get('oid')}_{r.get('time')}_{r.get('coin')}")
+                if fk not in collected:
+                    collected[fk] = r
+                    new_cnt += 1
+                rts = int(r.get("time") or 0)
+                if rts > max_ts:
+                    max_ts = rts
+            if len(res) < 2000 or new_cnt == 0 or max_ts <= cursor_start:
+                break
+            cursor_start = max_ts + 1
+        return list(collected.values())
+
+    async def get_user_funding(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
+        start = max(0, int(since_ms)) if since_ms > 0 else max(0, self._clock_ms() - 365 * 86_400_000)
+        res = await self.request_info(
+            {"type": "userFunding", "user": self.wallet_address, "startTime": start}
+        )
+        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+
+    async def get_ledger_updates(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
+        start = max(0, int(since_ms)) if since_ms > 0 else 0
+        res = await self.request_info(
+            {"type": "userNonFundingLedgerUpdates", "user": self.wallet_address, "startTime": start}
+        )
+        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+
+    async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
+        warnings: list[str] = []
+        clearinghouse = await self.get_clearinghouse_state()
+
+        async def _opt(name: str, coro: Any, default: Any) -> Any:
+            try:
+                return await coro
+            except Exception as exc:
+                warnings.append(f"{name}: {exc}")
+                return default
+
+        spot = await _opt("spot", self.get_spot_state(), {})
+        mids = await _opt("mids", self.get_all_mids(), {})
+        fills = await _opt("fills", self.get_user_fills(since_ms=since_ms), [])
+        funding = await _opt("funding", self.get_user_funding(since_ms=since_ms), [])
+        ledger_updates = await _opt("ledger_updates", self.get_ledger_updates(since_ms=since_ms), [])
+        subaccounts = await _opt("subaccounts", self.get_subaccounts(), [])
+
+        return {
+            "venue_id": "hyperliquid",
+            "wallet_address": self.wallet_address,
+            "clearinghouse": clearinghouse,
+            "spot": spot,
+            "tickers": mids,
+            "fills": fills,
+            "funding_history": funding,
+            "ledger_updates": ledger_updates,
+            "subaccounts": subaccounts,
+            "warnings": warnings,
+        }
+
+
+def _norm_hl_symbol(raw_coin: str) -> str:
+    c = (raw_coin or "").strip()
+    if not c:
+        return "UNKNOWN_USDC"
+    if ":" in c:
+        c = c.split(":", 1)[1]
+    c_up = c.upper()
+    if "_" in c_up:
+        return c_up
+    if c_up.endswith(("USDC", "USDT", "USD")) and len(c_up) > 4:
+        return f"{c_up[:-4]}_{c_up[-4:]}"
+    return f"{c_up}_USDC"
+
+
+def normalize_hyperliquid_closed_trades(
+    fills: list[dict[str, Any]],
+    funding_rows: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
+    """Reconstructs closed perpetual trades with exact entry/exit fees, Maker rebates (`fee < 0`), and funding."""
+    sorted_fills = sorted(
+        (f for f in fills if isinstance(f, dict) and not str(f.get("coin") or "").startswith("@")),
+        key=lambda f: (int(f.get("time") or 0), int(f.get("tid") or 0)),
+    )
+
+    funding_by_coin: dict[str, list[dict[str, Any]]] = {}
+    consumed_funding: set[str] = set()
+    for idx, fr in enumerate(funding_rows or []):
+        if not isinstance(fr, dict):
+            continue
+        delta = fr.get("delta") if isinstance(fr.get("delta"), dict) else fr
+        coin = str(delta.get("coin") or fr.get("coin") or "").strip().upper()
+        if not coin:
+            continue
+        ts = int(fr.get("time") or delta.get("time") or 0)
+        usdc = float(delta.get("usdc") or fr.get("usdc") or 0.0)
+        fid = str(fr.get("hash") or f"fund_{coin}_{ts}_{idx}")
+        funding_by_coin.setdefault(coin, []).append({"_id": fid, "time": ts, "usdc": usdc})
+
+    open_lots: dict[str, dict[str, float]] = {}
+    records: list[dict[str, Any]] = []
+
+    for idx, fill in enumerate(sorted_fills):
+        raw_coin = str(fill.get("coin") or "").strip()
+        if not raw_coin or "/" in raw_coin:
+            continue
+        coin_key = raw_coin.upper()
+        px = float(fill.get("px") or 0.0)
+        sz = abs(float(fill.get("sz") or 0.0))
+        if px <= 0 or sz <= 0:
+            continue
+        ts = int(fill.get("time") or 0)
+        raw_fee = float(fill.get("fee") or 0.0)
+        fee_paid = max(0.0, raw_fee)
+        maker_rebate = max(0.0, -raw_fee)
+        crossed = bool(fill.get("crossed", True))
+        dir_str = str(fill.get("dir") or "").strip()
+        closed_pnl = float(fill.get("closedPnl") or 0.0)
+        side_tok = str(fill.get("side") or "").upper()
+
+        is_close = ("Close" in dir_str) or (">" in dir_str) or (abs(closed_pnl) > 1e-9)
+        if not is_close:
+            lot = open_lots.setdefault(
+                coin_key,
+                {
+                    "qty": 0.0,
+                    "notional": 0.0,
+                    "gross_fee": 0.0,
+                    "rebate": 0.0,
+                    "open_ms": float(ts),
+                    "maker_notional": 0.0,
+                },
+            )
+            if lot["qty"] <= 1e-12:
+                lot["open_ms"] = float(ts)
+            lot["qty"] += sz
+            lot["notional"] += px * sz
+            lot["gross_fee"] += fee_paid
+            lot["rebate"] += maker_rebate
+            if not crossed:
+                lot["maker_notional"] += px * sz
+            continue
+
+        # Determine closed trade direction: closing Long sells ("A"), closing Short buys ("B")
+        if "Long" in dir_str and not dir_str.startswith("Short >"):
+            trade_side = "LONG"
+        elif "Short" in dir_str and not dir_str.startswith("Long >"):
+            trade_side = "SHORT"
+        else:
+            trade_side = "LONG" if side_tok in {"A", "SELL"} else "SHORT"
+
+        lot = open_lots.get(coin_key)
+        if lot and lot["qty"] > 1e-12:
+            alloc_ratio = min(1.0, sz / lot["qty"])
+            open_ms = int(lot["open_ms"])
+            entry_notional = lot["notional"] * alloc_ratio
+            entry_px = (lot["notional"] / lot["qty"]) if lot["qty"] > 0 else px
+            entry_gross_fee = lot["gross_fee"] * alloc_ratio
+            entry_rebate = lot["rebate"] * alloc_ratio
+            entry_is_maker = lot["maker_notional"] >= (lot["notional"] * 0.5)
+            lot["qty"] = max(0.0, lot["qty"] - sz)
+            lot["notional"] = max(0.0, lot["notional"] - entry_notional)
+            lot["gross_fee"] = max(0.0, lot["gross_fee"] - entry_gross_fee)
+            lot["rebate"] = max(0.0, lot["rebate"] - entry_rebate)
+            lot["maker_notional"] = max(0.0, lot["maker_notional"] * (1.0 - alloc_ratio))
+        else:
+            open_ms = ts
+            # Infer entry price from closedPnl when opening fill predates history window
+            if sz > 0:
+                entry_px = (px - closed_pnl / sz) if trade_side == "LONG" else (px + closed_pnl / sz)
+                if entry_px <= 0:
+                    entry_px = px
+            else:
+                entry_px = px
+            entry_notional = entry_px * sz
+            entry_gross_fee = 0.0
+            entry_rebate = 0.0
+            entry_is_maker = False
+
+        exit_notional = px * sz
+        exit_gross_fee = fee_paid
+        exit_rebate = maker_rebate
+        exit_is_maker = not crossed
+
+        funding_pnl = 0.0
+        for fl in funding_by_coin.get(coin_key, []):
+            if fl["_id"] in consumed_funding:
+                continue
+            if open_ms - 5_000 <= fl["time"] <= ts + 5_000:
+                consumed_funding.add(fl["_id"])
+                funding_pnl += float(fl["usdc"])
+
+        total_fee = round(entry_gross_fee + exit_gross_fee, 6)
+        total_rebate = round(entry_rebate + exit_rebate, 6)
+        net_fee = round(total_fee - total_rebate, 6)
+        book_pnl = round(closed_pnl - total_fee + funding_pnl, 6)
+        net_pnl = round(book_pnl + total_rebate, 6)
+
+        entry_bps = (entry_gross_fee / entry_notional * 10_000) if entry_notional > 0 else 0.0
+        exit_bps = (exit_gross_fee / exit_notional * 10_000) if exit_notional > 0 else 0.0
+        tid_str = str(fill.get("tid") or fill.get("oid") or idx)
+        sym = _norm_hl_symbol(raw_coin)
+        settled_str = _fmt_bj_ms(ts) if total_rebate > 0 else ""
+
+        records.append(
+            {
+                "trade_id": f"hl_{tid_str}_{ts}",
+                "venue_id": "hyperliquid",
+                "venue_name": "Hyperliquid",
+                "venue_name_zh": "Hyperliquid",
+                "symbol": sym,
+                "side": trade_side,
+                "qty": sz,
+                "open_time_ms": open_ms,
+                "close_time_ms": ts,
+                "gross_pnl_usd": round(closed_pnl, 4),
+                "funding_pnl_usd": round(funding_pnl, 4),
+                "book_pnl_usd": round(book_pnl, 4),
+                "total_fee_usd": round(total_fee, 4),
+                "total_rebate_usd": round(total_rebate, 4),
+                "total_discount_saved_usd": 0.0,
+                "net_fee_usd": round(max(0.0, net_fee), 4),
+                "net_pnl_usd": round(net_pnl, 4),
+                "rebate_status": "SETTLED",
+                "is_partial_close": bool(lot and lot["qty"] > 1e-9),
+                "entry_leg": {
+                    "role": "MAKER" if entry_is_maker else "TAKER",
+                    "mode_code": "LIMIT_MAKER" if entry_is_maker else "MARKET_TAKER",
+                    "fee_known": lot is not None,
+                    "fee_bps": round(entry_bps, 2) if lot is not None else None,
+                    "time_ms": open_ms,
+                    "avg_price": round(entry_px, 6),
+                    "notional_usd": round(entry_notional, 2),
+                    "gross_fee_usd": round(entry_gross_fee, 4),
+                    "discount_saved_usd": 0.0,
+                    "discount_asset": "",
+                    "rebate_usd": round(entry_rebate, 4),
+                    "rebate_pct": 100.0 if entry_rebate > 0 and entry_gross_fee == 0 else (
+                        round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else 0.0
+                    ),
+                    "net_fee_usd": round(max(0.0, entry_gross_fee - entry_rebate), 4),
+                    "rebate_status": "SETTLED",
+                    "settled_at": settled_str,
+                },
+                "exit_leg": {
+                    "role": "MAKER" if exit_is_maker else "TAKER",
+                    "mode_code": "LIMIT_MAKER" if exit_is_maker else "MARKET_TAKER",
+                    "fee_known": True,
+                    "fee_bps": round(exit_bps, 2),
+                    "time_ms": ts,
+                    "avg_price": round(px, 6),
+                    "notional_usd": round(exit_notional, 2),
+                    "gross_fee_usd": round(exit_gross_fee, 4),
+                    "discount_saved_usd": 0.0,
+                    "discount_asset": "",
+                    "rebate_usd": round(exit_rebate, 4),
+                    "rebate_pct": 100.0 if exit_rebate > 0 and exit_gross_fee == 0 else (
+                        round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else 0.0
+                    ),
+                    "net_fee_usd": round(max(0.0, exit_gross_fee - exit_rebate), 4),
+                    "rebate_status": "SETTLED",
+                    "settled_at": settled_str,
+                },
+            }
+        )
+
+    records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)
+    return records

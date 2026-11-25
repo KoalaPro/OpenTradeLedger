@@ -18,6 +18,13 @@ from opentradeledger.adapters.binance.accounting import (
 )
 from opentradeledger.adapters.binance.client import BinanceReadOnlyClient
 from opentradeledger.adapters.binance.sync import sync_binance_venue
+from opentradeledger.adapters.bingx.accounting import (
+    build_bingx_fee_matrix_row,
+    build_bingx_venue_ledger,
+    extract_bingx_spot_prices,
+)
+from opentradeledger.adapters.bingx.client import BingxReadOnlyClient
+from opentradeledger.adapters.bingx.sync import sync_bingx_venue
 from opentradeledger.adapters.bitget.accounting import (
     build_bitget_fee_matrix_row,
     build_bitget_venue_ledger,
@@ -53,6 +60,27 @@ from opentradeledger.adapters.gate.accounting import (
 )
 from opentradeledger.adapters.gate.client import GateReadOnlyClient
 from opentradeledger.adapters.gate.sync import sync_gate_venue
+from opentradeledger.adapters.htx.accounting import (
+    build_htx_fee_matrix_row,
+    build_htx_venue_ledger,
+    extract_htx_spot_prices,
+)
+from opentradeledger.adapters.htx.client import HtxReadOnlyClient
+from opentradeledger.adapters.htx.sync import sync_htx_venue
+from opentradeledger.adapters.hyperliquid.accounting import (
+    build_hyperliquid_fee_matrix_row,
+    build_hyperliquid_venue_ledger,
+    extract_hyperliquid_spot_prices,
+)
+from opentradeledger.adapters.hyperliquid.client import HyperliquidReadOnlyClient
+from opentradeledger.adapters.hyperliquid.sync import sync_hyperliquid_venue
+from opentradeledger.adapters.kucoin.accounting import (
+    build_kucoin_fee_matrix_row,
+    build_kucoin_venue_ledger,
+    extract_kucoin_spot_prices,
+)
+from opentradeledger.adapters.kucoin.client import KucoinReadOnlyClient
+from opentradeledger.adapters.kucoin.sync import sync_kucoin_venue
 from opentradeledger.adapters.mexc.accounting import (
     build_mexc_fee_matrix_row,
     build_mexc_venue_ledger,
@@ -113,6 +141,8 @@ class BinanceAdapter(BaseExchangeAdapter):
                 "read_only": len(non_readonly_perms) == 0,
                 "account_type": acct_type,
             }
+            if isinstance(account, dict) and account.get("uid") not in (None, "", 0):
+                out["remote_uid"] = str(account["uid"]).strip()
             if non_readonly_perms:
                 out["permission_warning"] = (
                     f"API key has write permissions enabled ({', '.join(non_readonly_perms)}); "
@@ -163,7 +193,25 @@ class OkxAdapter(BaseExchangeAdapter):
     async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
         client = self.create_client(cred)
         balances = await client.get_account_balance()
-        return {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "balances_count": len(balances)}
+        out: dict[str, Any] = {
+            "ok": True,
+            "venue_id": self.meta.venue_id,
+            "read_only": True,
+            "balances_count": len(balances),
+        }
+        try:
+            cfg_rows = await client.request_readonly("GET", "/api/v5/account/config")
+            if isinstance(cfg_rows, list) and cfg_rows and isinstance(cfg_rows[0], dict):
+                cfg = cfg_rows[0]
+                uid = str(cfg.get("uid") or "").strip()
+                main_uid = str(cfg.get("mainUid") or "").strip()
+                if uid:
+                    out["remote_uid"] = uid
+                    if main_uid:
+                        out["account_role"] = "subaccount" if uid != main_uid else "master"
+        except Exception:
+            pass
+        return out
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_okx_venue(client, store, now_s=now_s, force_full=force_full)
@@ -209,15 +257,22 @@ class BybitAdapter(BaseExchangeAdapter):
         }
         try:
             key_info = await client.get_api_key_info()
-            if isinstance(key_info, dict) and str(key_info.get("readOnly", "1")) == "0":
-                out["read_only"] = False
-                out["permission_warning"] = (
-                    "API key has Read-Write permissions on Bybit; "
-                    "OpenTradeLedger enforces GET-only locally, but Read-Only keys are recommended."
-                )
-                out["permission_warning_zh"] = (
-                    "检测到该 Bybit API Key 为读写权限。虽然本程序本地强制拦截一切非 GET 请求，仍建议仅开启只读权限。"
-                )
+            if isinstance(key_info, dict):
+                uid = str(key_info.get("userID") or "").strip()
+                if uid and uid != "0":
+                    out["remote_uid"] = uid
+                is_master = key_info.get("isMaster")
+                if isinstance(is_master, bool):
+                    out["account_role"] = "master" if is_master else "subaccount"
+                if str(key_info.get("readOnly", "1")) == "0":
+                    out["read_only"] = False
+                    out["permission_warning"] = (
+                        "API key has Read-Write permissions on Bybit; "
+                        "OpenTradeLedger enforces GET-only locally, but Read-Only keys are recommended."
+                    )
+                    out["permission_warning_zh"] = (
+                        "检测到该 Bybit API Key 为读写权限。虽然本程序本地强制拦截一切非 GET 请求，仍建议仅开启只读权限。"
+                    )
         except Exception:
             pass
         return out
@@ -260,7 +315,14 @@ class GateAdapter(BaseExchangeAdapter):
         try:
             wt = await client.raw_get("/wallet/total_balance")
             total_amt = ((wt or {}).get("total") or {}).get("amount") if isinstance(wt, dict) else None
-            return {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "has_balance": total_amt is not None}
+            out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "has_balance": total_amt is not None}
+            try:
+                det = await client.raw_get("/account/detail")
+                if isinstance(det, dict) and det.get("user_id") not in (None, "", 0):
+                    out["remote_uid"] = str(det["user_id"]).strip()
+            except Exception:
+                pass
+            return out
         finally:
             await client.aclose()
 
@@ -310,7 +372,18 @@ class BitgetAdapter(BaseExchangeAdapter):
                 assets = await client.get("/api/v2/spot/account/assets")
                 mode = "CLASSIC"
             count = len(assets) if isinstance(assets, list) else (1 if isinstance(assets, dict) else 0)
-            return {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "account_mode": mode, "assets": count}
+            out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "account_mode": mode, "assets": count}
+            try:
+                info = await client.get("/api/v2/spot/account/info")
+                if isinstance(info, dict):
+                    uid = str(info.get("userId") or "").strip()
+                    parent_id = str(info.get("parentId") or "").strip()
+                    if uid:
+                        out["remote_uid"] = uid
+                        out["account_role"] = "subaccount" if (parent_id and parent_id != uid) else "master"
+            except Exception:
+                pass
+            return out
         finally:
             await client.aclose()
 
@@ -353,7 +426,10 @@ class MexcAdapter(BaseExchangeAdapter):
         try:
             account = await client.spot_request("GET", "/api/v3/account", signed=True)
             balances = account.get("balances") if isinstance(account, dict) else []
-            return {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "balances": len(balances or [])}
+            out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "balances": len(balances or [])}
+            if isinstance(account, dict) and account.get("uid") not in (None, "", 0):
+                out["remote_uid"] = str(account["uid"]).strip()
+            return out
         finally:
             await client.aclose()
 
@@ -419,6 +495,221 @@ class EasiCoinAdapter(BaseExchangeAdapter):
         return build_easicoin_fee_matrix_row(bundle, range_trades)
 
 
+class HyperliquidAdapter(BaseExchangeAdapter):
+    meta = AdapterMeta(
+        venue_id="hyperliquid",
+        display_name="Hyperliquid",
+        display_name_zh="Hyperliquid",
+        color_token="hyperliquid",
+        auth_mode="wallet_address",
+        requires_passphrase=False,
+        capabilities=ExchangeCapabilities(
+            futures=True, rebates=True, token_discount=False, copy_trading=False, stocks=True, tokenized_stocks=True
+        ),
+        api_base_url="https://api.hyperliquid.xyz",
+        docs_url="https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint",
+    )
+
+    def create_client(self, cred: ExchangeCredentialRecord) -> HyperliquidReadOnlyClient:
+        return HyperliquidReadOnlyClient(wallet_address=cred.api_key)
+
+    async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
+        client = self.create_client(cred)
+        try:
+            ch = await client.get_clearinghouse_state()
+            ms = ch.get("marginSummary") if isinstance(ch, dict) and isinstance(ch.get("marginSummary"), dict) else {}
+            subs: list[dict[str, str]] = []
+            try:
+                subs = await client.get_subaccounts()
+            except Exception:
+                pass
+            return {
+                "ok": True,
+                "venue_id": self.meta.venue_id,
+                "read_only": True,
+                "remote_uid": client.wallet_address,
+                "account_role": cred.account_role or ("master" if subs else "wallet"),
+                "account_value": float(ms.get("accountValue") or 0.0),
+                "subaccounts": subs,
+            }
+        finally:
+            await client.aclose()
+
+    async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
+        return await sync_hyperliquid_venue(client, store, now_s=now_s, force_full=force_full)
+
+    def has_venue_data(self, store: "LedgerStore") -> bool:
+        return isinstance(store.venue_scope("hyperliquid").get_kv("snapshot"), dict)
+
+    def extract_spot_prices(self, store: "LedgerStore") -> dict[str, float]:
+        return extract_hyperliquid_spot_prices(store)
+
+    def build_venue_ledger(self, store: "LedgerStore", *, journals: Mapping[str, Mapping[str, Any]], now_s: float, global_spot_prices: Mapping[str, float] | None = None) -> VenueLedgerBundle | None:
+        return build_hyperliquid_venue_ledger(store, self.meta, journals=journals, now_s=now_s, global_spot_prices=global_spot_prices)
+
+    def build_fee_matrix_row(self, bundle: VenueLedgerBundle, range_trades: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+        return build_hyperliquid_fee_matrix_row(bundle, range_trades)
+
+
+class KucoinAdapter(BaseExchangeAdapter):
+    meta = AdapterMeta(
+        venue_id="kucoin",
+        display_name="KuCoin",
+        display_name_zh="KuCoin",
+        color_token="kucoin",
+        requires_passphrase=True,
+        capabilities=ExchangeCapabilities(
+            futures=True, rebates=True, token_discount=True, copy_trading=False, stocks=False, tokenized_stocks=False
+        ),
+        api_base_url="https://api-futures.kucoin.com",
+        docs_url="https://www.kucoin.com/docs-new/introduction",
+    )
+
+    def create_client(self, cred: ExchangeCredentialRecord) -> KucoinReadOnlyClient:
+        return KucoinReadOnlyClient(api_key=cred.api_key, api_secret=cred.api_secret, passphrase=cred.passphrase)
+
+    async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
+        client = self.create_client(cred)
+        try:
+            try:
+                ov = await client.get_futures_overview("USDT")
+                has_eq = ov.get("accountEquity") is not None
+            except Exception:
+                accts = await client.get_spot_accounts()
+                has_eq = isinstance(accts, list)
+            out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "has_balance": has_eq}
+            try:
+                uinfo = await client.get_user_info()
+                if isinstance(uinfo, dict) and uinfo.get("uid") not in (None, "", 0):
+                    out["remote_uid"] = str(uinfo["uid"]).strip()
+                    is_sub = bool(uinfo.get("isSub") or uinfo.get("parentUid"))
+                    out["account_role"] = "subaccount" if is_sub else "master"
+            except Exception:
+                pass
+            return out
+        finally:
+            await client.aclose()
+
+    async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
+        return await sync_kucoin_venue(client, store, now_s=now_s, force_full=force_full)
+
+    def has_venue_data(self, store: "LedgerStore") -> bool:
+        return isinstance(store.venue_scope("kucoin").get_kv("snapshot"), dict)
+
+    def extract_spot_prices(self, store: "LedgerStore") -> dict[str, float]:
+        return extract_kucoin_spot_prices(store)
+
+    def build_venue_ledger(self, store: "LedgerStore", *, journals: Mapping[str, Mapping[str, Any]], now_s: float, global_spot_prices: Mapping[str, float] | None = None) -> VenueLedgerBundle | None:
+        return build_kucoin_venue_ledger(store, self.meta, journals=journals, now_s=now_s, global_spot_prices=global_spot_prices)
+
+    def build_fee_matrix_row(self, bundle: VenueLedgerBundle, range_trades: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+        return build_kucoin_fee_matrix_row(bundle, range_trades)
+
+
+class BingxAdapter(BaseExchangeAdapter):
+    meta = AdapterMeta(
+        venue_id="bingx",
+        display_name="BingX",
+        display_name_zh="BingX",
+        color_token="bingx",
+        requires_passphrase=False,
+        capabilities=ExchangeCapabilities(
+            futures=True, rebates=True, token_discount=False, copy_trading=True, stocks=True, tokenized_stocks=False
+        ),
+        api_base_url="https://open-api.bingx.com",
+        docs_url="https://bingx-api.github.io/docs/",
+    )
+
+    def create_client(self, cred: ExchangeCredentialRecord) -> BingxReadOnlyClient:
+        return BingxReadOnlyClient(api_key=cred.api_key, api_secret=cred.api_secret)
+
+    async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
+        client = self.create_client(cred)
+        try:
+            bals = await client.get_swap_balance()
+            out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "accounts": len(bals)}
+            try:
+                uid = await client.get_uid()
+                if uid:
+                    out["remote_uid"] = uid
+            except Exception:
+                pass
+            return out
+        finally:
+            await client.aclose()
+
+    async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
+        return await sync_bingx_venue(client, store, now_s=now_s, force_full=force_full)
+
+    def has_venue_data(self, store: "LedgerStore") -> bool:
+        return isinstance(store.venue_scope("bingx").get_kv("snapshot"), dict)
+
+    def extract_spot_prices(self, store: "LedgerStore") -> dict[str, float]:
+        return extract_bingx_spot_prices(store)
+
+    def build_venue_ledger(self, store: "LedgerStore", *, journals: Mapping[str, Mapping[str, Any]], now_s: float, global_spot_prices: Mapping[str, float] | None = None) -> VenueLedgerBundle | None:
+        return build_bingx_venue_ledger(store, self.meta, journals=journals, now_s=now_s, global_spot_prices=global_spot_prices)
+
+    def build_fee_matrix_row(self, bundle: VenueLedgerBundle, range_trades: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+        return build_bingx_fee_matrix_row(bundle, range_trades)
+
+
+class HtxAdapter(BaseExchangeAdapter):
+    meta = AdapterMeta(
+        venue_id="htx",
+        display_name="HTX",
+        display_name_zh="火币 HTX",
+        color_token="htx",
+        requires_passphrase=False,
+        capabilities=ExchangeCapabilities(
+            futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=False, tokenized_stocks=False
+        ),
+        api_base_url="https://api.hbdm.com",
+        docs_url="https://www.htx.com/en-us/opend/newApiPages/",
+    )
+
+    def create_client(self, cred: ExchangeCredentialRecord) -> HtxReadOnlyClient:
+        return HtxReadOnlyClient(api_key=cred.api_key, api_secret=cred.api_secret)
+
+    async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
+        client = self.create_client(cred)
+        try:
+            ident: dict[str, str] = {}
+            try:
+                ident = await client.get_identity()
+            except Exception:
+                pass
+            try:
+                sw = await client.get_swap_accounts()
+                count = len(sw)
+            except Exception:
+                sp = await client.get_spot_balances()
+                count = len(sp)
+            out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "accounts": count}
+            if ident.get("remote_uid"):
+                out["remote_uid"] = ident["remote_uid"]
+            if ident.get("account_role"):
+                out["account_role"] = ident["account_role"]
+            return out
+        finally:
+            await client.aclose()
+
+    async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
+        return await sync_htx_venue(client, store, now_s=now_s, force_full=force_full)
+
+    def has_venue_data(self, store: "LedgerStore") -> bool:
+        return isinstance(store.venue_scope("htx").get_kv("snapshot"), dict)
+
+    def extract_spot_prices(self, store: "LedgerStore") -> dict[str, float]:
+        return extract_htx_spot_prices(store)
+
+    def build_venue_ledger(self, store: "LedgerStore", *, journals: Mapping[str, Mapping[str, Any]], now_s: float, global_spot_prices: Mapping[str, float] | None = None) -> VenueLedgerBundle | None:
+        return build_htx_venue_ledger(store, self.meta, journals=journals, now_s=now_s, global_spot_prices=global_spot_prices)
+
+    def build_fee_matrix_row(self, bundle: VenueLedgerBundle, range_trades: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+        return build_htx_fee_matrix_row(bundle, range_trades)
+
+
 class AdapterRegistry:
     def __init__(self) -> None:
         self._adapters: dict[str, BaseExchangeAdapter] = {}
@@ -445,6 +736,10 @@ def build_default_registry() -> AdapterRegistry:
         GateAdapter(),
         BitgetAdapter(),
         MexcAdapter(),
+        HyperliquidAdapter(),
+        KucoinAdapter(),
+        BingxAdapter(),
+        HtxAdapter(),
         EasiCoinAdapter(),
     ):
         registry.register(adapter)

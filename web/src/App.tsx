@@ -609,14 +609,24 @@ export default function App() {
                         }}
                         onUpsertExchange={async (body, onStep) => {
                           onStep?.('verifying')
-                          await api.verifyExchange(body)
+                          const verRes = await api.verifyExchange(body)
                           onStep?.('syncing')
-                          const syncRes = await api.triggerSync(body.venue_id, body)
+                          const resolvedAccountId = verRes.account_id || body.account_id || body.venue_id
+                          const syncBody = verRes.account_id
+                            ? {
+                                ...body,
+                                account_id: verRes.account_id,
+                                create_new: false,
+                                expected_revision: body.create_new ? 'absent' : body.expected_revision,
+                              }
+                            : body
+                          const syncRes = await api.triggerSync(resolvedAccountId, syncBody)
                           if (syncRes.auth_status) {
                             session.changed(syncRes.auth_status)
                             if (syncRes.auth_status.require_setup || syncRes.auth_status.authenticated === false) return
                           }
-                          const venueRes = syncRes.venues?.[body.venue_id]
+                          const finalAccountId = syncRes.account_id || resolvedAccountId
+                          const venueRes = syncRes.venues?.[finalAccountId] ?? syncRes.venues?.[body.venue_id]
                           if (syncRes.ok === false || syncRes.committed === false || venueRes?.ok === false) {
                             const isZh = settings.locale === 'zh-CN'
                             throw new Error(
@@ -625,7 +635,7 @@ export default function App() {
                                 (isZh ? '交易所同步失败' : 'Exchange sync failed'),
                             )
                           }
-                          if (syncRes.committed === undefined) await api.upsertExchange(body)
+                          if (syncRes.committed === undefined) await api.upsertExchange(syncBody)
                           await loadAll()
                           onStep?.('done')
                         }}

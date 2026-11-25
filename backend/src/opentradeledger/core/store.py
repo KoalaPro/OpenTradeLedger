@@ -11,6 +11,7 @@ import time
 from typing import Any, Mapping, Sequence
 
 from opentradeledger.config import UserPreferences
+from opentradeledger.core.account_partition import AccountScopedStore, is_secondary_account_id, parse_adapter_id
 from opentradeledger.core.legacy_store import GateManualStore
 from opentradeledger.core.notifier import parse_bark_input
 from opentradeledger.security.vault import CredentialVault
@@ -102,6 +103,8 @@ class VenueDataScope:
         if key == "snapshot":
             snap = self._store.load_plugin_snapshots().get(self.venue_id)
             return snap if snap is not None else default
+        if is_secondary_account_id(self.venue_id):
+            return default
         legacy_key = _VENUE_KV_FALLBACK.get((self.venue_id, key))
         if legacy_key:
             return self._store.legacy.get_meta(legacy_key, default)
@@ -193,6 +196,8 @@ class VenueDataScope:
         return self._load_legacy_stream_fallback(stream)
 
     def _load_legacy_stream_fallback(self, stream: str) -> list[dict[str, Any]]:
+        if is_secondary_account_id(self.venue_id):
+            return []
         ls = self._store.legacy
         if self.venue_id == "gate":
             if stream == "futures_closes":
@@ -273,6 +278,27 @@ class LedgerStore:
 
     def venue_scope(self, venue_id: str) -> VenueDataScope:
         return VenueDataScope(self, venue_id)
+
+    def for_account(self, account_id: str, adapter_id: str | None = None) -> AccountScopedStore:
+        return AccountScopedStore(self, account_id, adapter_id)
+
+    def list_partition_account_ids(self, adapter_id: str) -> list[str]:
+        base = parse_adapter_id(adapter_id)
+        if not base:
+            return []
+        like_pat = f"{base}__%"
+        found: set[str] = set()
+        with self._connect() as conn:
+            for tbl in ("otl_venue_kv", "otl_venue_records", "otl_plugin_snapshots"):
+                rows = conn.execute(
+                    f"SELECT DISTINCT venue_id FROM {tbl} WHERE venue_id = ? OR venue_id LIKE ?",
+                    (base, like_pat),
+                ).fetchall()
+                for r in rows:
+                    vid = str(r["venue_id"] or "").strip().lower()
+                    if vid and parse_adapter_id(vid) == base:
+                        found.add(vid)
+        return sorted(found, key=lambda x: (0 if x == base else 1, x))
 
     def _harden_db_permissions(self) -> None:
         for suffix in ("", "-wal", "-shm"):
@@ -499,7 +525,8 @@ class LedgerStore:
 
     @staticmethod
     def _default_snapshot_merge_specs(vid: str) -> dict[str, Any]:
-        if vid == "okx":
+        base_vid = parse_adapter_id(vid)
+        if base_vid == "okx":
             return {
                 "instruments": lambda r: (r.get("instId"), r.get("listTime")),
                 "positions_history": lambda r: f"{r.get('posId')}_{r.get('uTime')}_{r.get('instId')}",
@@ -510,7 +537,7 @@ class LedgerStore:
                 "withdrawals": lambda r: str(r.get("wdId") or r.get("txId") or f"{r.get('ts')}_{r.get('amt')}"),
                 "copy_history": lambda r: str(r.get("subPosId") or f"{r.get('instId')}_{r.get('uTime')}"),
             }
-        if vid == "bybit":
+        if base_vid == "bybit":
             return {
                 "closed_pnl": lambda r: f"{r.get('orderId')}_{r.get('updatedTime')}_{r.get('symbol')}",
                 "executions": lambda r: str(r.get("execId") or f"{r.get('orderId')}_{r.get('execTime')}"),
@@ -518,6 +545,34 @@ class LedgerStore:
                 "deposits": lambda r: str(r.get("id") or r.get("txID") or f"{r.get('successAt')}_{r.get('amount')}"),
                 "internal_deposits": lambda r: str(r.get("id") or f"{r.get('createdTime')}_{r.get('amount')}"),
                 "withdrawals": lambda r: str(r.get("withdrawId") or r.get("txID") or f"{r.get('createTime')}_{r.get('amount')}"),
+            }
+        if base_vid == "hyperliquid":
+            return {
+                "fills": lambda r: str(r.get("tid") or r.get("hash") or f"{r.get('oid')}_{r.get('time')}_{r.get('coin')}"),
+                "funding_history": lambda r: str(r.get("hash") or f"{r.get('time')}_{(r.get('delta') or {}).get('coin')}_{(r.get('delta') or {}).get('usdc')}"),
+                "ledger_updates": lambda r: str(r.get("hash") or f"{r.get('time')}_{(r.get('delta') or {}).get('type')}"),
+            }
+        if base_vid == "kucoin":
+            return {
+                "history_positions": lambda r: str(r.get("closeId") or f"{r.get('positionId')}_{r.get('closeTimestamp')}_{r.get('symbol')}"),
+                "fills": lambda r: str(r.get("tradeId") or f"{r.get('orderId')}_{r.get('createdAt')}"),
+                "tx_history": lambda r: str(r.get("offset") or f"{r.get('time')}_{r.get('type')}_{r.get('amount')}"),
+                "deposits": lambda r: str(r.get("walletTxId") or f"{r.get('createdAt')}_{r.get('amount')}"),
+                "withdrawals": lambda r: str(r.get("id") or r.get("walletTxId") or f"{r.get('createdAt')}_{r.get('amount')}"),
+            }
+        if base_vid == "bingx":
+            return {
+                "fills": lambda r: str(r.get("tradeId") or f"{r.get('orderId')}_{r.get('filledTm') or r.get('time')}"),
+                "income": lambda r: str(r.get("tranId") or f"{r.get('time')}_{r.get('incomeType')}_{r.get('income')}"),
+                "deposits": lambda r: str(r.get("txId") or r.get("id") or f"{r.get('insertTime')}_{r.get('amount')}"),
+                "withdrawals": lambda r: str(r.get("id") or r.get("txId") or f"{r.get('applyTime')}_{r.get('amount')}"),
+            }
+        if base_vid == "htx":
+            return {
+                "matches": lambda r: str(r.get("match_id") or r.get("id") or f"{r.get('order_id')}_{r.get('create_date')}"),
+                "financials": lambda r: str(r.get("id") or f"{r.get('ts')}_{r.get('type')}_{r.get('amount')}"),
+                "deposits": lambda r: str(r.get("id") or r.get("tx-hash") or f"{r.get('created-at')}_{r.get('amount')}"),
+                "withdrawals": lambda r: str(r.get("id") or r.get("tx-hash") or f"{r.get('created-at')}_{r.get('amount')}"),
             }
         return {}
 

@@ -1,4 +1,4 @@
-"""Multi-exchange read-only sync manager with adaptive idle-account backoff polling.
+"""Multi-exchange & multi-account read-only sync manager with adaptive idle-account backoff polling.
 
 Orchestrates all registered `BaseExchangeAdapter` modules uniformly with zero venue-specific branching.
 """
@@ -13,6 +13,11 @@ from typing import Any
 
 from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.adapters.registry import AdapterRegistry
+from opentradeledger.core.account_partition import (
+    AccountIdentityError,
+    mask_uid,
+    parse_adapter_id,
+)
 from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.notifier import bark_configured, dispatch_notification
 from opentradeledger.core.store import LedgerStore
@@ -211,6 +216,54 @@ class SyncManager:
             "venues": schedule,
         }
 
+    def check_identity_conflicts(
+        self,
+        *,
+        account_id: str,
+        adapter_id: str,
+        api_key: str,
+        resolved_uid: str,
+        bound_uid: str,
+        exchange_name: str = "",
+        exchange_name_zh: str = "",
+    ) -> None:
+        acct_id = account_id.strip().lower()
+        ad_id = parse_adapter_id(adapter_id)
+        clean_uid = (resolved_uid or "").strip()
+        clean_bound = (bound_uid or "").strip()
+
+        if clean_bound and clean_uid and clean_bound.lower() != clean_uid.lower():
+            raise AccountIdentityError(
+                "ACCOUNT_UID_MISMATCH",
+                masked_uid=mask_uid(clean_uid),
+                exchange_name=exchange_name,
+                exchange_name_zh=exchange_name_zh,
+            )
+
+        clean_key = (api_key or "").strip()
+        for other in self.vault.list_decrypted():
+            other_acct = other.venue_id.strip().lower()
+            if other_acct == acct_id or other.effective_adapter_id != ad_id:
+                continue
+            other_uid = str(
+                other.remote_uid or self.store.venue_scope(other_acct).get_kv("account_uid") or ""
+            ).strip()
+            if clean_uid and other_uid and clean_uid.lower() == other_uid.lower():
+                raise AccountIdentityError(
+                    "DUPLICATE_ACCOUNT_UID",
+                    masked_uid=mask_uid(clean_uid),
+                    existing_label=other.label or other_acct,
+                    exchange_name=exchange_name,
+                    exchange_name_zh=exchange_name_zh,
+                )
+            if clean_key and other.api_key.strip() and clean_key.lower() == other.api_key.strip().lower():
+                raise AccountIdentityError(
+                    "DUPLICATE_ACCOUNT_KEY",
+                    existing_label=other.label or other_acct,
+                    exchange_name=exchange_name,
+                    exchange_name_zh=exchange_name_zh,
+                )
+
     async def start(self) -> None:
         if self._bg_task and not self._bg_task.done():
             return
@@ -261,16 +314,17 @@ class SyncManager:
                 for cred in self.vault.list_decrypted():
                     if not cred.enabled:
                         continue
-                    vid = cred.venue_id.lower()
-                    if target_vid and vid != target_vid:
+                    acct_id = cred.venue_id.lower()
+                    adapter_id = cred.effective_adapter_id
+                    if target_vid and acct_id != target_vid and adapter_id != target_vid:
                         continue
-                    adapter = self.registry.get(vid)
+                    adapter = self.registry.get(adapter_id)
                     if adapter is None:
                         continue
-                    force_this = force_all or (target_vid == vid)
-                    if not should_sync_venue(schedule, vid, now_s=now_s, force_run=force_this):
-                        st = schedule.get(vid) or {}
-                        results[vid] = {
+                    force_this = force_all or (target_vid in {acct_id, adapter_id})
+                    if not should_sync_venue(schedule, acct_id, now_s=now_s, force_run=force_this):
+                        st = schedule.get(acct_id) or {}
+                        results[acct_id] = {
                             "ok": True,
                             "mode": "skipped_idle_backoff",
                             "stage": int(st.get("stage") or 0),
@@ -279,15 +333,16 @@ class SyncManager:
                         }
                         continue
 
-                    prev_entry = schedule.get(vid) if isinstance(schedule.get(vid), dict) else {}
+                    prev_entry = schedule.get(acct_id) if isinstance(schedule.get(acct_id), dict) else {}
                     sched_fp_before = tuple(int(x) for x in (prev_entry.get("fingerprint") or []))
-                    prev_health = (self.health_tracker.get_all().get(vid) or {}).get("status")
+                    prev_health = (self.health_tracker.get_all().get(acct_id) or {}).get("status")
+                    scoped_store = self.store.for_account(acct_id, adapter_id)
                     client: Any = None
                     try:
                         client = adapter.create_client(cred)
                         outcome = await adapter.sync_venue(
                             client,
-                            self.store,
+                            scoped_store,
                             now_s=now_s,
                             force_full=force_this,
                         )
@@ -296,7 +351,7 @@ class SyncManager:
                         eff_fp_before = outcome.fp_before if outcome.fp_before else (sched_fp_before or outcome.fp_after)
                         sched = update_venue_schedule(
                             schedule,
-                            vid,
+                            acct_id,
                             now_s=now_s,
                             equity_usd=outcome.equity_usd,
                             has_open_activity=outcome.has_open_activity,
@@ -314,18 +369,19 @@ class SyncManager:
                         }
                         if outcome.warnings:
                             res_row["warnings"] = outcome.warnings
-                        results[vid] = res_row
-                        self.health_tracker.record_success(vid)
+                        results[acct_id] = res_row
+                        self.health_tracker.record_success(acct_id)
                         any_synced = True
+                        acct_title = cred.label or acct_id.upper()
                         if outcome.new_closed_delta > 0:
                             await self._maybe_notify(
-                                title=f"OpenTradeLedger · {vid.upper()} 新平仓入账",
-                                body=f"{vid.upper()} 新增 {outcome.new_closed_delta} 笔交割记录，当前权益 {outcome.equity_usd:.2f} USDT。",
+                                title=f"OpenTradeLedger · {acct_title} 新平仓入账",
+                                body=f"{acct_title} 新增 {outcome.new_closed_delta} 笔交割记录，当前权益 {outcome.equity_usd:.2f} USDT。",
                             )
                     except Exception as exc:
-                        err_state = self.health_tracker.record_error(vid, exc)
-                        logger.warning("Sync failed for %s: %s", vid, err_state["raw_error"])
-                        results[vid] = {
+                        err_state = self.health_tracker.record_error(acct_id, exc)
+                        logger.warning("Sync failed for %s: %s", acct_id, err_state["raw_error"])
+                        results[acct_id] = {
                             "ok": False,
                             "error": err_state["error_reason"],
                             "error_zh": err_state["error_reason_zh"],
@@ -336,8 +392,9 @@ class SyncManager:
                         consec = int(err_state.get("consecutive_failures") or 1)
                         should_alert = (consec == 3) if is_transient else (prev_health != "error")
                         if should_alert:
+                            acct_title = cred.label or acct_id.upper()
                             await self._maybe_notify(
-                                title=f"OpenTradeLedger · {vid.upper()} 同步异常",
+                                title=f"OpenTradeLedger · {acct_title} 同步异常",
                                 body=err_state["error_reason_zh"] or err_state["error_reason"],
                             )
                     finally:
@@ -363,8 +420,6 @@ class SyncManager:
 
     @asynccontextmanager
     async def credential_change(self, venue_id: str, expected_revision: str | None):
-        # Old clients omit a revision. At least detect changes while they queue
-        # behind another sync, even though their form-open version is unknown.
         expected = self.vault.revision(venue_id) if expected_revision is None else expected_revision
         async with self._sync_lock:
             if self.vault.revision(venue_id) != expected:
@@ -372,43 +427,87 @@ class SyncManager:
             yield
 
     async def sync_candidate_and_commit(self, cred: Any, expected_revision: str | None = None) -> dict[str, Any]:
-        """Atomically sync a candidate API credential BEFORE committing it to CredentialVault.
-
-        If historical backfill times out or fails mid-way, restores the venue's SQLite
-        partition snapshot and leaves any previously saved credential & health untouched.
-        """
-        vid = cred.venue_id.strip().lower()
-        adapter = self.registry.get(vid)
+        """Atomically verify identity & sync a candidate API credential BEFORE committing it to CredentialVault."""
+        acct_id = cred.venue_id.strip().lower()
+        adapter_id = parse_adapter_id(getattr(cred, "adapter_id", "") or acct_id)
+        adapter = self.registry.get(adapter_id)
         if adapter is None:
-            raise ValueError(f"Unsupported exchange adapter: {vid}")
+            raise ValueError(f"Unsupported exchange adapter: {adapter_id}")
 
-        async with self.credential_change(vid, expected_revision):
+        async with self.credential_change(acct_id, expected_revision):
             now_s = int(time.time())
             base_iv = max(1, int(round(self.poll_interval_sec)))
-            partition_snap = self.store.snapshot_venue_partition(vid)
+            existing_cred = self.vault.get_decrypted(acct_id)
+            raw_scope = self.store.venue_scope(acct_id)
+            prev_bound_uid = str(
+                (existing_cred.remote_uid if existing_cred else "")
+                or raw_scope.get_kv("account_uid")
+                or ""
+            ).strip()
+            partition_snap = self.store.snapshot_venue_partition(acct_id)
+            scoped_store = self.store.for_account(acct_id, adapter_id)
             self.ledger_service.syncing = True
             client: Any = None
             try:
+                probed = await adapter.probe_identity(cred)
+                early_uid = str(probed.get("remote_uid") or getattr(cred, "remote_uid", "") or "").strip()
+                self.check_identity_conflicts(
+                    account_id=acct_id,
+                    adapter_id=adapter_id,
+                    api_key=cred.api_key,
+                    resolved_uid=early_uid,
+                    bound_uid=prev_bound_uid,
+                    exchange_name=adapter.meta.display_name,
+                    exchange_name_zh=adapter.meta.display_name_zh,
+                )
+
                 client = adapter.create_client(cred)
                 outcome = await adapter.sync_venue(
                     client,
-                    self.store,
+                    scoped_store,
                     now_s=now_s,
                     force_full=True,
                 )
-                if outcome.mode == "custom_noop":
-                    await adapter.test_connection(cred)
+                if outcome.mode == "custom_noop" and not probed:
+                    conn_res = await adapter.test_connection(cred)
+                    if isinstance(conn_res, dict):
+                        probed = conn_res
 
-                # No awaits during the local commit: take shared metadata at this point,
-                # after the network calls and immediately before any metadata writes.
+                resolved_uid = str(
+                    probed.get("remote_uid")
+                    or getattr(cred, "remote_uid", "")
+                    or raw_scope.get_kv("account_uid")
+                    or ""
+                ).strip()
+                resolved_role = str(
+                    probed.get("account_role")
+                    or getattr(cred, "account_role", "")
+                    or raw_scope.get_kv("account_role")
+                    or ""
+                ).strip()
+                self.check_identity_conflicts(
+                    account_id=acct_id,
+                    adapter_id=adapter_id,
+                    api_key=cred.api_key,
+                    resolved_uid=resolved_uid,
+                    bound_uid=prev_bound_uid,
+                    exchange_name=adapter.meta.display_name,
+                    exchange_name_zh=adapter.meta.display_name_zh,
+                )
+
+                if resolved_uid:
+                    raw_scope.set_kv("account_uid", resolved_uid)
+                if resolved_role:
+                    raw_scope.set_kv("account_role", resolved_role)
+
                 partition_snap["sync_metadata"] = self.store.snapshot_sync_metadata()
                 schedule = self._load_schedule()
-                prev_entry = schedule.get(vid) if isinstance(schedule.get(vid), dict) else {}
+                prev_entry = schedule.get(acct_id) if isinstance(schedule.get(acct_id), dict) else {}
                 sched_fp_before = tuple(int(x) for x in (prev_entry.get("fingerprint") or []))
                 eff_fp_before = outcome.fp_before if outcome.fp_before else (sched_fp_before or outcome.fp_after)
                 sched = update_venue_schedule(
                     schedule,
-                    vid,
+                    acct_id,
                     now_s=now_s,
                     equity_usd=outcome.equity_usd,
                     has_open_activity=outcome.has_open_activity,
@@ -417,16 +516,26 @@ class SyncManager:
                     base_interval_sec=base_iv,
                 )
                 self._save_schedule(schedule)
-                h_state = self.health_tracker.record_success(vid)
+                h_state = self.health_tracker.record_success(acct_id)
                 now_ms = int(time.time() * 1000)
                 self.store.set_meta("last_sync_ms", now_ms)
-                result = {
+                updated_cred = cred.model_copy(
+                    update={
+                        "venue_id": acct_id,
+                        "adapter_id": adapter_id,
+                        "remote_uid": resolved_uid,
+                        "account_role": resolved_role,
+                    }
+                )
+                result: dict[str, Any] = {
                     "ok": True,
                     "committed": True,
+                    "account_id": acct_id,
+                    "adapter_id": adapter_id,
                     "health": h_state,
                     "synced_ms": now_ms,
                     "venues": {
-                        vid: {
+                        acct_id: {
                             "ok": True,
                             "mode": outcome.mode,
                             "equity_usd": round(outcome.equity_usd, 2),
@@ -436,15 +545,22 @@ class SyncManager:
                         }
                     },
                 }
-                result["credential"] = self.vault.upsert(cred)
+                if probed.get("subaccounts"):
+                    result["subaccounts"] = probed["subaccounts"]
+                result["credential"] = self.vault.upsert(updated_cred)
                 self.ledger_service.last_sync_ms = now_ms
                 return result
             except EasiCoinIdentityError:
-                # The adapter checks identity before its first partition write.
+                raise
+            except AccountIdentityError:
+                try:
+                    self.store.restore_venue_partition(acct_id, partition_snap)
+                except Exception as rollback_error:
+                    raise CandidateRollbackError("Could not restore venue data") from rollback_error
                 raise
             except Exception as exc:
                 try:
-                    self.store.restore_venue_partition(vid, partition_snap)
+                    self.store.restore_venue_partition(acct_id, partition_snap)
                 except Exception as rollback_error:
                     raise CandidateRollbackError("Could not restore venue data") from rollback_error
                 if "sync_metadata" in partition_snap:

@@ -101,7 +101,7 @@ export function VersionUpgradeCard({
             {isZh ? '版本与更新' : 'Version & Updates'}
           </h3>
           <span className="font-mono text-[12px] text-[var(--fg-2)]">
-            v{versionStatus?.current_version || '1.3.7'}
+            v{versionStatus?.current_version || '1.4.0'}
           </span>
         </div>
 

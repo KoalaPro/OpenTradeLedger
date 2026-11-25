@@ -64,6 +64,10 @@
   --dot-bitget: #2dd4bf;
   --dot-mexc: #4ade80;
   --dot-easicoin: #818cf8;
+  --dot-hyperliquid: #38e2be;
+  --dot-kucoin: #23af91;
+  --dot-bingx: #3b82f6;
+  --dot-htx: #0ea5e9;
 
   /* Brand Logo Adaptive Filter */
   --logo-filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.55));

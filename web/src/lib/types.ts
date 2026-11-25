@@ -109,9 +109,13 @@ export interface ClosedTrade {
 
 export interface ExchangeSummary {
   venue_id: string
+  adapter_id?: string
   display_name: string
   display_name_zh: string
   color_token: string
+  account_role?: string
+  masked_uid?: string
+  account_label?: string
   connected: boolean
   health_status?: 'connected' | 'error' | 'archived'
   error_reason?: string
@@ -538,11 +542,41 @@ export interface UserSettings {
   }
 }
 
+export interface DiscoveredSubaccount {
+  name: string
+  address: string
+  equity_usd?: string
+}
+
+export interface ExchangeAccountInstance {
+  account_id: string
+  adapter_id: string
+  configured: boolean
+  has_archived_data?: boolean
+  masked_uid?: string
+  account_role?: string
+  credential?: {
+    venue_id: string
+    account_id?: string
+    adapter_id?: string
+    label: string
+    masked_api_key: string
+    masked_uid?: string
+    account_role?: string
+    revision?: string
+    has_passphrase: boolean
+    enabled: boolean
+  } | null
+  poll_state?: Record<string, unknown> | null
+  health?: VenueHealthState
+}
+
 export interface ExchangeAdapterInfo {
   venue_id: string
   display_name: string
   display_name_zh: string
   color_token: string
+  auth_mode?: 'api_key' | 'wallet_address'
   requires_passphrase: boolean
   capabilities: Record<string, boolean>
   docs_url: string
@@ -551,12 +585,17 @@ export interface ExchangeAdapterInfo {
   has_archived_data?: boolean
   credential?: {
     venue_id: string
+    account_id?: string
+    adapter_id?: string
     label: string
     masked_api_key: string
+    masked_uid?: string
+    account_role?: string
     revision?: string
     has_passphrase: boolean
     enabled: boolean
   } | null
   poll_state?: Record<string, unknown> | null
   health?: VenueHealthState
+  accounts?: ExchangeAccountInstance[]
 }

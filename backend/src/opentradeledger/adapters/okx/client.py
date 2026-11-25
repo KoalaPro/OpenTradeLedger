@@ -32,6 +32,7 @@ OKX_ALLOWED_GET_PATHS: tuple[str, ...] = (
     "/api/v5/public/time",
     "/api/v5/public/instruments",
     "/api/v5/market/tickers",
+    "/api/v5/account/config",
     "/api/v5/account/balance",
     "/api/v5/account/positions",
     "/api/v5/account/positions-history",

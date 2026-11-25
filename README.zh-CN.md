@@ -46,7 +46,7 @@
 - **7 币种实时汇率一键切换**：顶部栏随时在 `USDT`、`USD`、`CNY`、`GBP`、`EUR`、`HKD`、`JPY` 之间无刷新切换全部金额与图表显示，实时拉取公开外汇源（`open.er-api.com` 主源 + `frankfurter.dev` 备源，本地 SQLite 缓存 1 小时）。
 - **自适应空仓退避轮询**：活跃账户保持 `20 秒` 高频同步；无仓位且净值 `< 20 U` 的闲置账户自动按 `15分钟 → 30分钟 → 1小时 → 2小时 → 4小时` 退避，大幅节省 API 额度与本机资源，一旦检测到 `≥ 0.05 U` 变动或新挂单立即切回 `20 秒` 实时同步。
 - **4 级自动标的图标缓存**：自动识别合约币种（兼容 `1000PEPE` 等倍数前缀）与代币化美股（`NVDAX`、`AAPLX`、`STOCK`、`ON` 等后缀），本地磁盘缓存 30 天并内置确定性 SVG 兜底。
-- **7 平台全独立对等架构（零单文件耦合、按平台物理隔离归档）**：开箱内置 **Binance（币安）**、**OKX（v5）**、**Bybit（v5）**、**Gate**、**Bitget（UTA）**、**MEXC**、**EasiCoin** 七套完全独立的只读交易所模块（各自拥有独立的 `client.py` + `sync.py` + `accounting.py` 与 SQLite `venue_id` 独立分区）；单改或清退任一平台绝不干扰其他平台，新增交易所无需改动前端代码或中央聚合器。
+- **11 平台全独立对等架构 & 同交易所多账号（主账户 / 子账户 / 独立号）隔离核账**：开箱内置 **Binance（币安）**、**OKX（v5）**、**Bybit（v5）**、**Gate**、**Bitget（UTA）**、**MEXC**、**Hyperliquid（链上免密钥）**、**KuCoin**、**BingX**、**火币 HTX**、**EasiCoin（易币）** 11 套完全独立的只读交易所模块（各自拥有独立的 `client.py` + `sync.py` + `accounting.py`）；**全部平台均支持绑定同一交易所下的多个独立账号或子账户**，自动提取远端脱敏 `UID`、自动识别「主账户 / 子账户」标签、拦截重复添加同一账号导致的资产翻倍，并在更换过期密钥时校验账号归属防止混账；Hyperliquid 更支持仅填公开 `0x` 钱包地址免私钥接入并一键发现勾选名下链上子账户。
 - **本地优先安全架构、NAS 密码锁与真实状态诊断**：
   - 底层统一强制经过 `assert_readonly_request()` 拦截器：只放行 `GET` 请求及各交易所只读路径白名单，从代码层面杜绝任何下单、划转或提币请求。
   - 在网页设置页录入的 API Key 经 **Fernet（AES-128-CBC + HMAC-SHA256）** 本地加密保存（密钥文件 `0600` 权限仅存于本地 `data/` 目录），零云端上传、零遥测。
@@ -61,9 +61,9 @@
 
 ---
 
-## 内置只读交易所支持
+## 内置只读交易所支持（全平台原生支持同所多账号 & 主/子账户识别）
 
-| 交易所 | 合约账本 | 实时返佣流水 | 平台币抵扣 | 跟单记录 | 现货 / 代币化美股 | 鉴权方式 |
+| 交易所 | 合约账本 | 实时返佣 / 挂单返费 | 平台币抵扣 | 跟单记录 | 现货 / 代币化美股 | 鉴权方式 |
 |---|:---:|:---:|:---:|:---:|:---:|---|
 | **币安 Binance** | ✓ | ✓ | ✓ (BNB) | ✓ | ✓ | API Key + Secret |
 | **OKX (v5)** | ✓ | ✓ | ✓ (OKB) | ✓ | ✓ | API Key + Secret + Passphrase |
@@ -71,9 +71,13 @@
 | **Gate** | ✓ | ✓ | ✓ (GT/点卡) | ✓ | ✓ | API Key + Secret |
 | **Bitget (UTA)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret + Passphrase |
 | **MEXC** | ✓ | ✓ | ✓ (MX) | — | ✓ | API Key + Secret |
-| **EasiCoin** | ✓ | ✓ | — | — | ✓ | API Key + Secret |
+| **Hyperliquid** | ✓ | ✓ (Maker 返费) | — | — | ✓ (链上现货 / HIP-3) | **免密钥公开 `0x` 钱包地址（支持自动发现链上子账户）** |
+| **KuCoin（库币）** | ✓ | ✓ | ✓ (KCS) | — | ✓ | API Key + Secret + Passphrase |
+| **BingX** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret |
+| **火币 HTX** | ✓ | ✓ | ✓ (HTX) | ✓ | ✓ | API Key + Secret |
+| **易币 EasiCoin** | ✓ | ✓ | — | — | ✓ | API Key + Secret |
 
-需要接入 Hyperliquid、Kraken、KuCoin 等更多交易所？请查看 [CONTRIBUTING.md](CONTRIBUTING.md)。
+需要接入 Kraken、Coinbase、Backpack 等更多交易所？请查看 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 

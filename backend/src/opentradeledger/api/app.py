@@ -18,6 +18,14 @@ from pydantic import BaseModel, Field
 from opentradeledger import __app_name__, __app_name_zh__, __version__
 from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.adapters.registry import AdapterRegistry, build_default_registry
+from opentradeledger.core.account_partition import (
+    AccountIdentityError,
+    is_secondary_account_id,
+    mask_uid,
+    mint_account_id,
+    normalize_evm_address,
+    parse_adapter_id,
+)
 from opentradeledger.core.ai_reviewer import (
     _normalize_ai_base,
     generate_ai_review,
@@ -57,12 +65,16 @@ class JournalUpdateRequest(BaseModel):
 
 class ExchangeUpsertRequest(BaseModel):
     venue_id: str
+    account_id: str = ""
+    create_new: bool = False
     label: str = ""
-    api_key: str
-    api_secret: str
+    api_key: str = ""
+    api_secret: str = ""
+    wallet_address: str = ""
     passphrase: str = ""
     enabled: bool = True
     expected_revision: str | None = None
+    include_subaccounts: list[dict[str, str]] = Field(default_factory=list)
 
 
 class DemoToggleRequest(BaseModel):
@@ -502,23 +514,65 @@ def create_app(
             "committed": False,
         })
 
-    async def commit_candidate(cand: ExchangeUpsertRequest, request: Request, *, finish_onboarding: bool) -> Response:
-        vid = cand.venue_id.strip().lower()
-        adapter = reg.get(vid)
+    def _occupied_account_ids(adapter_id: str, adapter: Any) -> set[str]:
+        occupied = {c.venue_id.lower() for c in vault.list_for_adapter(adapter_id)}
+        occupied.update(store.list_partition_account_ids(adapter_id))
+        if adapter.has_venue_data(store.for_account(adapter_id, adapter_id)):
+            occupied.add(adapter_id)
+        return occupied
+
+    def _prepare_candidate(cand: ExchangeUpsertRequest) -> tuple[str, str, Any, ExchangeCredentialRecord]:
+        raw_target = (cand.account_id or cand.venue_id).strip().lower()
+        adapter_id = parse_adapter_id(raw_target)
+        adapter = reg.get(adapter_id)
         if adapter is None:
-            raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
-        if adapter.meta.requires_passphrase and not cand.passphrase.strip():
-            raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
-        if not cand.api_key.strip() or not cand.api_secret.strip():
-            raise HTTPException(status_code=400, detail="API Key and API Secret are required")
-        temp_cred = ExchangeCredentialRecord(
-            venue_id=vid,
+            raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {adapter_id}")
+
+        if cand.account_id.strip():
+            acct_id = cand.account_id.strip().lower()
+        elif is_secondary_account_id(raw_target):
+            acct_id = raw_target
+        elif cand.create_new:
+            acct_id = mint_account_id(adapter_id, _occupied_account_ids(adapter_id, adapter))
+        else:
+            acct_id = adapter_id
+
+        if adapter.meta.auth_mode == "wallet_address":
+            raw_addr = (cand.wallet_address or cand.api_key).strip()
+            norm_addr = normalize_evm_address(raw_addr)
+            if not norm_addr:
+                err = AccountIdentityError("INVALID_WALLET_ADDRESS")
+                raise HTTPException(status_code=400, detail=err.reason_zh)
+            eff_key = norm_addr
+            eff_sec = ""
+            eff_uid = norm_addr
+            eff_role = "wallet"
+        else:
+            if adapter.meta.requires_passphrase and not cand.passphrase.strip():
+                raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
+            if not cand.api_key.strip() or not cand.api_secret.strip():
+                raise HTTPException(status_code=400, detail="API Key and API Secret are required")
+            eff_key = cand.api_key.strip()
+            eff_sec = cand.api_secret.strip()
+            eff_uid = ""
+            eff_role = ""
+
+        rec = ExchangeCredentialRecord(
+            venue_id=acct_id,
+            adapter_id=adapter_id,
             label=cand.label.strip() or adapter.meta.display_name,
-            api_key=cand.api_key.strip(),
-            api_secret=cand.api_secret.strip(),
+            api_key=eff_key,
+            api_secret=eff_sec,
             passphrase=cand.passphrase.strip(),
+            remote_uid=eff_uid,
+            account_role=eff_role,
             enabled=cand.enabled,
         )
+        return acct_id, adapter_id, adapter, rec
+
+    async def commit_candidate(cand: ExchangeUpsertRequest, request: Request, *, finish_onboarding: bool) -> Response:
+        acct_id, adapter_id, adapter, temp_cred = _prepare_candidate(cand)
+        eff_expected_rev = "absent" if (cand.create_new and not cand.account_id.strip()) else cand.expected_revision
         # Existing users can edit credentials while intentionally viewing the demo.
         # Also finish onboarding for older installations that saved a key before setup.
         enter_live_ledger = finish_onboarding and ledger_service.demo_mode and (
@@ -526,10 +580,10 @@ def create_app(
             or auth_manager.get_status(request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False)["require_setup"]
         )
         try:
-            res = await sync_manager.sync_candidate_and_commit(temp_cred, cand.expected_revision)
+            res = await sync_manager.sync_candidate_and_commit(temp_cred, eff_expected_rev)
         except CredentialEditConflict:
             raise
-        except EasiCoinIdentityError as exc:
+        except (EasiCoinIdentityError, AccountIdentityError) as exc:
             return JSONResponse(status_code=409, content={
                 "detail": exc.reason, "detail_zh": exc.reason_zh,
                 "error_code": exc.code, "committed": False,
@@ -548,7 +602,7 @@ def create_app(
                 "committed": False,
             })
         except Exception as exc:
-            diag = humanize_exchange_error(vid, exc)
+            diag = humanize_exchange_error(adapter_id, exc)
             return JSONResponse(
                 status_code=502,
                 content={
@@ -559,6 +613,41 @@ def create_app(
                     "committed": False,
                 },
             )
+
+        # Optional batch import of selected on-chain sub-accounts (e.g. Hyperliquid subAccounts)
+        if res.get("committed") and cand.include_subaccounts and adapter.meta.auth_mode == "wallet_address":
+            added_subs: list[str] = []
+            for sub in cand.include_subaccounts:
+                sub_addr = normalize_evm_address(str(sub.get("address") or sub.get("subAccountUser") or ""))
+                if not sub_addr or sub_addr == temp_cred.api_key:
+                    continue
+                sub_name = str(sub.get("name") or sub.get("label") or "").strip() or f"Sub {sub_addr[:6]}"
+                occ = _occupied_account_ids(adapter_id, adapter)
+                sub_acct_id = mint_account_id(
+                    adapter_id,
+                    occ,
+                    preferred_suffix=f"sub_{sub_addr[2:8]}",
+                    force_secondary=True,
+                )
+                sub_cred = ExchangeCredentialRecord(
+                    venue_id=sub_acct_id,
+                    adapter_id=adapter_id,
+                    label=sub_name,
+                    api_key=sub_addr,
+                    api_secret="",
+                    remote_uid=sub_addr,
+                    account_role="subaccount",
+                    enabled=True,
+                )
+                try:
+                    sub_res = await sync_manager.sync_candidate_and_commit(sub_cred, expected_revision="absent")
+                    if sub_res.get("committed"):
+                        added_subs.append(sub_acct_id)
+                        res.setdefault("venues", {}).update(sub_res.get("venues") or {})
+                except Exception:
+                    continue
+            if added_subs:
+                res["added_subaccounts"] = added_subs
 
         if res.get("committed") and enter_live_ledger and ledger_service.demo_mode:
             ledger_service.set_demo_mode(False)
@@ -641,62 +730,129 @@ def create_app(
 
     @app.get("/api/v1/exchanges")
     async def list_exchanges() -> dict[str, Any]:
-        configured = {item["venue_id"]: item for item in vault.list_masked()}
+        configured_list = vault.list_masked()
+        configured = {item["venue_id"]: item for item in configured_list}
         sched_venues = sync_manager.get_schedule_summary().get("venues") or {}
         available = []
         error_count = 0
         for meta in reg.list_all():
-            cred_item = configured.get(meta.venue_id)
-            is_conf = cred_item is not None
-            is_enabled = bool(cred_item.get("enabled", True)) if cred_item else True
-            ad_obj = reg.get(meta.venue_id)
-            has_data = bool(ad_obj and ad_obj.has_venue_data(store))
-            h_state = health_tracker.resolve_state(
-                meta.venue_id,
-                configured=is_conf,
-                enabled=is_enabled,
-                poll_state=sched_venues.get(meta.venue_id),
-            )
-            if not is_conf and has_data:
-                h_state = {**h_state, "status": "archived"}
-            if is_conf and is_enabled and h_state.get("status") == "error":
-                error_count += 1
+            ad_id = meta.venue_id.lower()
+            ad_obj = reg.get(ad_id)
+
+            acct_ids: list[str] = [ad_id]
+            for c_item in configured_list:
+                cid = str(c_item.get("venue_id") or "").lower()
+                if parse_adapter_id(cid) == ad_id and cid not in acct_ids:
+                    acct_ids.append(cid)
+            for pid in store.list_partition_account_ids(ad_id):
+                if pid not in acct_ids:
+                    acct_ids.append(pid)
+
+            accounts_out: list[dict[str, Any]] = []
+            for acct_id in acct_ids:
+                c_item = configured.get(acct_id)
+                is_c = c_item is not None
+                is_en = bool(c_item.get("enabled", True)) if c_item else True
+                has_d = bool(ad_obj and ad_obj.has_venue_data(store.for_account(acct_id, ad_id)))
+                if not is_c and not has_d:
+                    continue
+                h_st = health_tracker.resolve_state(
+                    acct_id,
+                    configured=is_c,
+                    enabled=is_en,
+                    poll_state=sched_venues.get(acct_id),
+                )
+                if not is_c and has_d:
+                    h_st = {**h_st, "status": "archived"}
+                if is_c and is_en and h_st.get("status") == "error":
+                    error_count += 1
+                raw_sc = store.venue_scope(acct_id)
+                saved_uid = str((c_item.get("masked_uid") if c_item else "") or mask_uid(str(raw_sc.get_kv("account_uid") or "")))
+                saved_role = str((c_item.get("account_role") if c_item else "") or raw_sc.get_kv("account_role") or "")
+                accounts_out.append(
+                    {
+                        "account_id": acct_id,
+                        "adapter_id": ad_id,
+                        "configured": is_c,
+                        "has_archived_data": has_d,
+                        "masked_uid": saved_uid,
+                        "account_role": saved_role,
+                        "credential": c_item,
+                        "poll_state": sched_venues.get(acct_id),
+                        "health": h_st,
+                    }
+                )
+
+            primary_acct = next((a for a in accounts_out if a["configured"]), accounts_out[0] if accounts_out else None)
+            if primary_acct is not None:
+                is_conf = bool(primary_acct["configured"])
+                has_data = bool(primary_acct["has_archived_data"])
+                cred_item = primary_acct["credential"]
+                poll_st = primary_acct["poll_state"]
+                h_state = primary_acct["health"]
+            else:
+                is_conf = False
+                has_data = False
+                cred_item = None
+                poll_st = None
+                h_state = health_tracker.resolve_state(ad_id, configured=False, enabled=True)
+
             entry = meta.model_dump()
             entry["configured"] = is_conf
             entry["has_archived_data"] = has_data
             entry["credential"] = cred_item
-            entry["poll_state"] = sched_venues.get(meta.venue_id)
+            entry["poll_state"] = poll_st
             entry["health"] = h_state
+            entry["accounts"] = accounts_out
             available.append(entry)
         return {
             "adapters": available,
-            "configured": list(configured.values()),
+            "configured": configured_list,
             "error_count": error_count,
         }
 
     @app.post("/api/v1/exchanges/verify")
     async def verify_exchange_before_save(body: ExchangeUpsertRequest) -> Response:
-        vid = body.venue_id.strip().lower()
-        adapter = reg.get(vid)
-        if adapter is None:
-            raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
-        if adapter.meta.requires_passphrase and not body.passphrase.strip():
-            raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
-        if not body.api_key.strip() or not body.api_secret.strip():
-            raise HTTPException(status_code=400, detail="API Key and API Secret are required")
-        temp_cred = ExchangeCredentialRecord(
-            venue_id=vid,
-            label=body.label.strip() or adapter.meta.display_name,
-            api_key=body.api_key.strip(),
-            api_secret=body.api_secret.strip(),
-            passphrase=body.passphrase.strip(),
-            enabled=body.enabled,
-        )
+        acct_id, adapter_id, adapter, temp_cred = _prepare_candidate(body)
+        existing_cred = vault.get_decrypted(acct_id)
+        bound_uid = str(
+            (existing_cred.remote_uid if existing_cred else "")
+            or store.venue_scope(acct_id).get_kv("account_uid")
+            or ""
+        ).strip()
         try:
             res = await adapter.test_connection(temp_cred)
-            return JSONResponse(content={**res, "verified": True})
+            probed_uid = str((res.get("remote_uid") if isinstance(res, dict) else "") or temp_cred.remote_uid or "").strip()
+            sync_manager.check_identity_conflicts(
+                account_id=acct_id,
+                adapter_id=adapter_id,
+                api_key=temp_cred.api_key,
+                resolved_uid=probed_uid,
+                bound_uid=bound_uid,
+                exchange_name=adapter.meta.display_name,
+                exchange_name_zh=adapter.meta.display_name_zh,
+            )
+            out_payload = {
+                **(res if isinstance(res, dict) else {}),
+                "verified": True,
+                "account_id": acct_id,
+                "adapter_id": adapter_id,
+                "masked_uid": mask_uid(probed_uid),
+            }
+            out_payload.pop("remote_uid", None)
+            return JSONResponse(content=out_payload)
+        except (AccountIdentityError, EasiCoinIdentityError) as exc:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": exc.reason,
+                    "detail_zh": exc.reason_zh,
+                    "error_code": exc.code,
+                    "committed": False,
+                },
+            )
         except Exception as exc:
-            diag = humanize_exchange_error(vid, exc)
+            diag = humanize_exchange_error(adapter_id, exc)
             return JSONResponse(
                 status_code=502,
                 content={
@@ -709,31 +865,44 @@ def create_app(
 
     @app.post("/api/v1/exchanges")
     async def upsert_exchange(request: Request, body: ExchangeUpsertRequest) -> Response:
-        vid = body.venue_id.strip().lower()
-        adapter = reg.get(vid)
-        if adapter is None:
-            raise HTTPException(status_code=400, detail=f"Unsupported exchange adapter: {vid}")
-        if adapter.meta.requires_passphrase and not body.passphrase.strip():
-            raise HTTPException(status_code=400, detail=f"{adapter.meta.display_name} requires an API passphrase")
-        if vid == "easicoin":
+        acct_id, adapter_id, adapter, temp_cred = _prepare_candidate(body)
+        if adapter_id == "easicoin":
             return await commit_candidate(body, request, finish_onboarding=False)
-        async with sync_manager.credential_change(vid, body.expected_revision):
-            masked = vault.upsert(
-                ExchangeCredentialRecord(
-                    venue_id=vid,
-                    label=body.label.strip() or adapter.meta.display_name,
-                    api_key=body.api_key.strip(),
-                    api_secret=body.api_secret.strip(),
-                    passphrase=body.passphrase.strip(),
-                    enabled=body.enabled,
+        eff_expected_rev = "absent" if (body.create_new and not body.account_id.strip()) else body.expected_revision
+        async with sync_manager.credential_change(acct_id, eff_expected_rev):
+            existing_cred = vault.get_decrypted(acct_id)
+            bound_uid = str(
+                (existing_cred.remote_uid if existing_cred else "")
+                or store.venue_scope(acct_id).get_kv("account_uid")
+                or ""
+            ).strip()
+            try:
+                sync_manager.check_identity_conflicts(
+                    account_id=acct_id,
+                    adapter_id=adapter_id,
+                    api_key=temp_cred.api_key,
+                    resolved_uid=temp_cred.remote_uid,
+                    bound_uid=bound_uid,
+                    exchange_name=adapter.meta.display_name,
+                    exchange_name_zh=adapter.meta.display_name_zh,
                 )
-            )
+            except AccountIdentityError as exc:
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "detail": exc.reason,
+                        "detail_zh": exc.reason_zh,
+                        "error_code": exc.code,
+                        "committed": False,
+                    },
+                )
+            masked = vault.upsert(temp_cred)
             health_state = (
-                health_tracker.mark_unverified(vid)
+                health_tracker.mark_unverified(acct_id)
                 if body.enabled
-                else health_tracker.resolve_state(vid, configured=True, enabled=False)
+                else health_tracker.resolve_state(acct_id, configured=True, enabled=False)
             )
-            return JSONResponse(content={"ok": True, "credential": masked, "health": health_state})
+            return JSONResponse(content={"ok": True, "account_id": acct_id, "credential": masked, "health": health_state})
 
     @app.delete("/api/v1/exchanges/{venue_id}")
     async def delete_exchange(
@@ -742,10 +911,12 @@ def create_app(
         expected_revision: str | None = Query(default=None),
     ) -> dict[str, Any]:
         vid = venue_id.strip().lower()
-        adapter = reg.get(vid)
+        adapter_id = parse_adapter_id(vid)
+        adapter = reg.get(adapter_id)
+        scoped_store = store.for_account(vid, adapter_id)
         async with sync_manager.credential_change(vid, expected_revision):
             had_cred = vault.delete(vid)
-            had_data = bool(adapter and adapter.has_venue_data(store))
+            had_data = bool(adapter and adapter.has_venue_data(scoped_store))
             if not had_cred and not had_data:
                 raise HTTPException(status_code=404, detail="Exchange credential not found")
             health_tracker.remove(vid)
@@ -755,10 +926,11 @@ def create_app(
                 store.set_meta("sync_schedule", sched)
             if not keep_data:
                 store.purge_venue_data(vid)
-            still_has_data = bool(adapter and adapter.has_venue_data(store))
+            still_has_data = bool(adapter and adapter.has_venue_data(scoped_store))
             return {
                 "ok": True,
                 "venue_id": vid,
+                "account_id": vid,
                 "kept_data": bool(keep_data and still_has_data),
                 "has_archived_data": still_has_data,
             }
@@ -766,14 +938,16 @@ def create_app(
     @app.post("/api/v1/exchanges/{venue_id}/test")
     async def test_exchange(venue_id: str) -> Response:
         vid = venue_id.strip().lower()
-        adapter = reg.get(vid)
+        adapter_id = parse_adapter_id(vid)
+        adapter = reg.get(adapter_id)
         cred = vault.get_decrypted(vid)
         if adapter is None or cred is None:
             raise HTTPException(status_code=404, detail="Exchange adapter or credential not found")
         try:
             res = await adapter.test_connection(cred)
             h_state = health_tracker.record_success(vid)
-            return JSONResponse(content={**res, "health": h_state})
+            clean_res = {k: v for k, v in (res.items() if isinstance(res, dict) else ()) if k != "remote_uid"}
+            return JSONResponse(content={**clean_res, "account_id": vid, "health": h_state})
         except Exception as exc:
             h_state = health_tracker.record_error(vid, exc)
             return JSONResponse(
