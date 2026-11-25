@@ -6,7 +6,7 @@ export const en: Record<MessageKey, string> = {
   nav_trades: 'Trades',
   nav_analytics: 'Analytics',
   nav_fees: 'Fees & AI',
-  nav_extensions: 'Modules',
+  nav_extensions: 'Radar & Modules',
   nav_settings: 'Settings',
 
   read_only: 'Read-Only',
@@ -134,6 +134,7 @@ export const en: Record<MessageKey, string> = {
   ai_empty: 'Click Generate Review to analyze per-leg fees, rebates, and holding discipline.',
   ai_commentary_title: 'AI Actionable Review',
 
+  ext_watcher_tab: 'Public Radar',
   ext_copy_tab: 'Copy Trading',
   ext_stock_tab: 'Equities & Tokens',
   ext_toggle_hint: 'Optional modules can be toggled in Settings',
@@ -184,6 +185,7 @@ export const en: Record<MessageKey, string> = {
   set_privacy_default: 'Hide balances by default',
   set_goal_title: 'Show custom equity goal tracker',
   set_goal_target: 'Target Equity (USDT)',
+  set_mod_watcher: 'Enable Public Copy Radar (slot & lead-trade alerts)',
   set_mod_copy: 'Enable Copy Trading module',
   set_mod_stock: 'Enable Equities & Tokenized Stocks module',
   set_mod_note: 'Note: Disabling a module hides its tab only; Total Equity & 0.00 closed-loop reconciliation stay intact.',

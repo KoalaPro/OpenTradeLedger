@@ -57,7 +57,7 @@
   - **三套精致主题**：曜石黑（默认）、深海蓝、纯净亮色，配统一微动效抽屉与面板过渡。
   - **中英文一键切换** & **盈亏配色切换**（「红涨绿跌」↔「绿涨红跌」）。
   - **隐私打码模式**：一键模糊全部金额、盈亏和费率，方便截图分享或投屏复盘。
-  - **扩展模块开关 & 个人目标就地编辑**：跟单记录、美股模块自由开关，个人净值目标支持就地快捷设置，并支持 Webhook / Telegram / Bark 多渠道告警。
+  - **扩展模块开关 & 公开带单盯盘雷达**：内置免密钥公开带单车位监控（空余名额 iOS Bark 持续响铃 + 点击通知直跳币安 App 秒抢）与实时在途持仓推算，跟单记录、美股模块自由开关，个人净值目标支持就地快捷设置，并支持 Bark（支持直接粘贴整条链接自动识别） / Telegram / Webhook 多渠道告警。
 
 ---
 
@@ -85,10 +85,12 @@
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/KoalaPro/OpenTradeLedger/main/docker-compose.yml
+# 如在中国大陆 NAS 拉取 ghcr.io 超时，可执行下一行切换南京大学 GHCR 镜像加速源：
+# sed -i 's|ghcr.io/koalapro/opentradeledger:latest|ghcr.nju.edu.cn/koalapro/opentradeledger:latest|' docker-compose.yml
 docker compose up -d
 ```
 
-启动后访问 **http://127.0.0.1:8012**（或 NAS 局域网 IP `:8012`），即可体验内置的脱敏演示模式。
+启动后访问 **http://127.0.0.1:8012**（或 NAS 局域网 IP `:8012`；如需自定义外部端口，在同目录 `.env` 写入 `OTL_EXTERNAL_PORT=8013` 即可），即可体验内置的脱敏演示模式。
 
 **NAS 实盘接入与后续无缝升级**：
 1. 在 `docker-compose.yml` 同目录新建 `.env` 写入 `OTL_DEMO_MODE=false`，执行 `docker compose up -d`。

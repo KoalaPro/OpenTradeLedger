@@ -58,7 +58,7 @@ Most open-source portfolio trackers focus on spot holdings without futures fee a
   - **Bilingual**: Instant `简体中文` / `English` switching.
   - **Regional PnL Polarity**: One-click switch between `Red Up / Green Down` (CN/Asia) and `Green Up / Red Down` (Global).
   - **Privacy Blur Mode**: One-click masking of all balances, PnL, and fee figures for safe screenshots or screen sharing.
-  - **Toggleable Modules & Inline Goal Editor**: Show/hide Copy Trading and Equities modules, customize your personal equity target inline, and configure Webhook, Telegram, or Bark alerts.
+  - **Public Copy-Trade Radar & Toggleable Modules**: Built-in keyless public copy-trading slot alarm (urgent iOS Bark ring + `bnc://` deep link when full traders open slots) and live inferred position tracking, toggleable Copy Trading & Equities modules, inline equity goal editor, and smart Bark URL / Telegram / Webhook alerts.
 
 ---
 

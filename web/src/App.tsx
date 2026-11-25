@@ -13,6 +13,7 @@ import type {
   CurrencyCode,
   DashboardData,
   ExchangeAdapterInfo,
+  ExtensionSubTab,
   FxRatesPayload,
   NavPage,
   UserSettings,
@@ -38,8 +39,9 @@ const DEFAULT_SETTINGS: UserSettings = {
   ai_base_url: '',
   ai_api_key: '',
   ai_model: '',
+  outbound_proxy_url: '',
   copy_watcher_targets: [],
-  modules: { copy_trading: true, stocks: true },
+  modules: { copy_watcher: true, copy_trading: true, stocks: true },
   notifications: {
     webhook_url: '',
     telegram_bot_token: '',
@@ -51,19 +53,19 @@ const DEFAULT_SETTINGS: UserSettings = {
 
 const VALID_PAGES: NavPage[] = ['overview', 'trades', 'analytics', 'fees', 'extensions', 'settings']
 
-function parseHashRoute(hash: string): { page: NavPage; extTab?: 'copy' | 'stock' } {
+function parseHashRoute(hash: string): { page: NavPage; extTab?: ExtensionSubTab } {
   const cleaned = hash.replace(/^#\/?/, '').trim()
   if (!cleaned) return { page: 'overview' }
   const [seg0, seg1] = cleaned.split('/')
   const matched = VALID_PAGES.find(p => p === seg0)
   if (!matched) return { page: 'overview' }
-  if (matched === 'extensions' && (seg1 === 'copy' || seg1 === 'stock')) {
+  if (matched === 'extensions' && (seg1 === 'watcher' || seg1 === 'copy' || seg1 === 'stock')) {
     return { page: 'extensions', extTab: seg1 }
   }
   return { page: matched }
 }
 
-function buildHashRoute(page: NavPage, extTab?: 'copy' | 'stock'): string {
+function buildHashRoute(page: NavPage, extTab?: ExtensionSubTab): string {
   if (page === 'extensions' && extTab) {
     return `#/extensions/${extTab}`
   }
@@ -73,7 +75,7 @@ function buildHashRoute(page: NavPage, extTab?: 'copy' | 'stock'): string {
 export default function App() {
   const initialRoute = parseHashRoute(typeof window !== 'undefined' ? window.location.hash : '')
   const [page, setPage] = useState<NavPage>(initialRoute.page)
-  const [extTab, setExtTab] = useState<'copy' | 'stock' | undefined>(initialRoute.extTab)
+  const [extTab, setExtTab] = useState<ExtensionSubTab | undefined>(initialRoute.extTab)
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
   const [privacyMode, setPrivacyMode] = useState(false)
   const initializedPrivacyRef = useRef(false)
@@ -155,7 +157,7 @@ export default function App() {
   }, [])
 
   const navigateTo = useCallback(
-    (nextPage: NavPage, nextExtTab?: 'copy' | 'stock') => {
+    (nextPage: NavPage, nextExtTab?: ExtensionSubTab) => {
       setPage(nextPage)
       if (nextPage === 'extensions' && nextExtTab) {
         setExtTab(nextExtTab)
@@ -332,7 +334,8 @@ export default function App() {
     navigateTo('trades')
   }
 
-  const showExtensions = settings.modules.copy_trading || settings.modules.stocks
+  const showExtensions =
+    settings.modules.copy_watcher !== false || settings.modules.copy_trading || settings.modules.stocks
   const activeCurrency: CurrencyCode = settings.display_currency || 'USDT'
 
   return (
@@ -446,6 +449,7 @@ export default function App() {
                     {page === 'extensions' && showExtensions && (
                       <ExtensionsPage
                         data={data}
+                        enableWatcher={settings.modules.copy_watcher !== false}
                         enableCopy={settings.modules.copy_trading}
                         enableStocks={settings.modules.stocks}
                         requestedTab={extTab}
@@ -459,6 +463,7 @@ export default function App() {
                           }
                         }}
                         onInspectSymbol={handleInspectSymbol}
+                        onGoSettings={() => navigateTo('settings')}
                       />
                     )}
                     {page === 'settings' && (

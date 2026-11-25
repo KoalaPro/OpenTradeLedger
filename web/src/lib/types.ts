@@ -3,6 +3,7 @@ export type Theme = 'obsidian' | 'ocean' | 'light'
 export type Polarity = 'cn' | 'global'
 export type CurrencyCode = 'USDT' | 'USD' | 'CNY' | 'GBP' | 'EUR' | 'HKD' | 'JPY'
 export type NavPage = 'overview' | 'trades' | 'analytics' | 'fees' | 'extensions' | 'settings'
+export type ExtensionSubTab = 'watcher' | 'copy' | 'stock'
 
 export interface AuthStatusPayload {
   demo_bypass?: boolean
@@ -407,6 +408,77 @@ export interface DashboardData {
   }
 }
 
+export interface CopyWatcherInferredPosition {
+  symbol: string
+  position_side: 'LONG' | 'SHORT' | string
+  side_zh: string
+  qty: number
+  avg_entry_price: number
+  notional_usd: number
+  mark_price: number
+  unrealized_pnl_usd: number
+  unrealized_roi_pct: number
+  opened_at_bj: string
+  last_action_bj: string
+}
+
+export interface CopyWatcherOrderItem {
+  order_time_ms: number
+  time_bj: string
+  symbol: string
+  side: string
+  position_side: string
+  action_zh: string
+  action_en?: string
+  order_type: string
+  executed_qty: number
+  avg_price: number
+  realized_pnl: number
+}
+
+export interface CopyWatcherTargetItem {
+  portfolio_id: string
+  venue: string
+  nickname: string
+  status: string
+  portfolio_type: string
+  enabled: boolean
+  slot_alert: boolean
+  trade_alert: boolean
+  current_copy_count: number
+  max_copy_count: number
+  available_slots: number
+  has_open_slot: boolean
+  min_copy_usd: number
+  profit_sharing_rate: string
+  lead_url: string
+  app_deeplink: string
+  last_alert_ms: number
+  inferred_positions: CopyWatcherInferredPosition[]
+  recent_orders: CopyWatcherOrderItem[]
+  probe_error?: string
+  probe_error_zh?: string
+}
+
+export interface CopyWatcherStatusPayload {
+  demo_mode: boolean
+  watcher_running: boolean
+  interval_sec: number
+  trade_poll_sec: number
+  cooldown_sec: number
+  updated_at_ms: number
+  last_error?: string
+  last_error_zh?: string
+  open_slot_count: number
+  channels: {
+    webhook: boolean
+    telegram: boolean
+    bark: boolean
+  }
+  configured_targets: string[]
+  items: CopyWatcherTargetItem[]
+}
+
 export interface UserSettings {
   locale: Locale
   theme: Theme
@@ -421,8 +493,10 @@ export interface UserSettings {
   ai_api_key: string
   ai_api_key_set?: boolean
   ai_model: string
+  outbound_proxy_url?: string
   copy_watcher_targets: string[]
   modules: {
+    copy_watcher?: boolean
     copy_trading: boolean
     stocks: boolean
   }

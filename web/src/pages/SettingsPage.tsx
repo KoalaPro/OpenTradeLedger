@@ -12,6 +12,7 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
+  Smartphone,
   Trash2,
 } from 'lucide-react'
 import { AnimatedCollapse } from '../components/AnimatedCollapse'
@@ -118,6 +119,7 @@ export function SettingsPage({
     settings.notifications?.bark_server_url || 'https://api.day.app',
   )
   const [barkKey, setBarkKey] = useState('')
+  const [outboundProxyUrl, setOutboundProxyUrl] = useState(settings.outbound_proxy_url || '')
   const [testingNotify, setTestingNotify] = useState(false)
 
   // Local NAS password management state
@@ -162,11 +164,13 @@ export function SettingsPage({
     setWebhookUrl(settings.notifications?.webhook_url || '')
     setTgChat(settings.notifications?.telegram_chat_id || '')
     setBarkServerUrl(settings.notifications?.bark_server_url || 'https://api.day.app')
+    setOutboundProxyUrl(settings.outbound_proxy_url || '')
   }, [
     settings.goal_label,
     settings.goal_target_usd,
     settings.ai_base_url,
     settings.ai_model,
+    settings.outbound_proxy_url,
     settings.notifications?.webhook_url,
     settings.notifications?.telegram_chat_id,
     settings.notifications?.bark_server_url,
@@ -979,6 +983,23 @@ export function SettingsPage({
                 </button>
               </div>
               <div className="flex items-center justify-between gap-2">
+                <span className="text-[var(--fg-2)]">{t('set_mod_watcher')}</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-label={t('set_mod_watcher')}
+                  aria-checked={settings.modules.copy_watcher !== false}
+                  onClick={() =>
+                    void onUpdateSettings({
+                      modules: { copy_watcher: !(settings.modules.copy_watcher !== false) },
+                    })
+                  }
+                  className="otl-switch"
+                >
+                  <span className="otl-switch-knob" />
+                </button>
+              </div>
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-[var(--fg-2)]">{t('set_mod_copy')}</span>
                 <button
                   type="button"
@@ -1195,63 +1216,116 @@ export function SettingsPage({
           </div>
 
           {/* Multi-Channel Notifications (Webhook / Telegram / Bark) */}
-          <div data-testid="notifications-card" className="otl-card p-5 space-y-3">
+          <div data-testid="notifications-card" className="otl-card p-5 space-y-3.5">
             <div>
               <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('set_notify_title')}</h3>
               <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">{t('set_notify_sub')}</p>
             </div>
-            <input
-              type="text"
-              value={webhookUrl}
-              onChange={e => setWebhookUrl(e.target.value)}
-              placeholder="Webhook URL (https://...)"
-              className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-            />
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="password"
-                value={tgToken}
-                onChange={e => setTgToken(e.target.value)}
-                placeholder={
-                  settings.notifications?.telegram_bot_token_set
-                    ? isZh
-                      ? 'Telegram Token（已保存）'
-                      : 'Bot Token (configured)'
-                    : 'Telegram Bot Token'
-                }
-                className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-              />
+
+            {/* Beginner Step-by-Step Bark Guide */}
+            <div
+              data-testid="bark-onboarding-guide"
+              className="otl-surface-2 rounded-xl p-3.5 space-y-1.5 text-[11.5px] text-[var(--fg-2)] border border-[var(--border)]"
+            >
+              <div className="font-semibold text-[12px] text-[var(--fg)] inline-flex items-center gap-1.5">
+                <Smartphone size={13} className="text-[var(--accent)] shrink-0" />
+                <span>
+                  {isZh
+                    ? 'iPhone / iPad 新用户如何获取 Bark 推送？'
+                    : 'How to set up iOS Bark Push Notifications'}
+                </span>
+              </div>
+              <ol className="m-0 pl-4 space-y-0.5 list-decimal leading-relaxed">
+                <li>
+                  {isZh
+                    ? '在苹果 App Store 搜索并安装免费开源应用「Bark」；'
+                    : 'Install the free open-source "Bark" app from the iOS App Store;'}
+                </li>
+                <li>
+                  {isZh
+                    ? '打开 Bark App，点击首页第一条示例链接右侧的「复制」，直接整条粘贴到下方右侧「Bark 链接或专属 Key」输入框即可（系统会自动识别拆出服务器与 Key）；'
+                    : 'Open Bark, tap "Copy" next to the sample URL, and paste the full URL (or device key) into the right-hand Bark box below;'}
+                </li>
+                <li>
+                  {isZh
+                    ? '直接点击「测试推送」即可自动保存并听手机响铃！开启后将在：① 盯盘带单员空出名额、② 带单员新开/平仓、③ 个人账户新平仓入账、④ 交易所后台同步异常报错 时实时推送。'
+                    : 'Click "Test Push" directly to auto-save & verify! Alerts fire on: open copy slots, lead-trader fills, closed trades, and background sync errors.'}
+                </li>
+              </ol>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-medium text-[var(--fg-2)]">
+                  {isZh ? 'Bark 服务器地址（默认官方即可）' : 'Bark Server URL (Default OK)'}
+                </label>
+                <input
+                  type="text"
+                  data-testid="bark-server-url-input"
+                  value={barkServerUrl}
+                  onChange={e => setBarkServerUrl(e.target.value)}
+                  placeholder="https://api.day.app"
+                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-medium text-[var(--fg)]">
+                  {isZh ? 'Bark 链接或专属 Key（直接粘贴处）' : 'Bark App URL or Push Key (Paste here)'}
+                </label>
+                <input
+                  type="password"
+                  data-testid="bark-push-key-input"
+                  value={barkKey}
+                  onChange={e => setBarkKey(e.target.value)}
+                  placeholder={
+                    settings.notifications?.bark_push_key_set
+                      ? isZh
+                        ? '已配置（粘贴新链接或 Key 可覆盖）'
+                        : 'Configured (paste new URL/Key to replace)'
+                      : isZh
+                        ? '粘贴 Bark 完整链接或设备 Key'
+                        : 'Paste full Bark URL or Push Key'
+                  }
+                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-1 border-t border-[var(--border)]">
+              <div className="text-[11.5px] font-medium text-[var(--fg-3)]">
+                {isZh ? '其他渠道（可选：Telegram 机器人 / Webhook）' : 'Other Channels (Optional: Telegram / Webhook)'}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="password"
+                  value={tgToken}
+                  onChange={e => setTgToken(e.target.value)}
+                  placeholder={
+                    settings.notifications?.telegram_bot_token_set
+                      ? isZh
+                        ? 'Telegram Token（已保存）'
+                        : 'Bot Token (configured)'
+                      : 'Telegram Bot Token'
+                  }
+                  className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                />
+                <input
+                  type="text"
+                  value={tgChat}
+                  onChange={e => setTgChat(e.target.value)}
+                  placeholder="Telegram Chat ID"
+                  className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                />
+              </div>
               <input
                 type="text"
-                value={tgChat}
-                onChange={e => setTgChat(e.target.value)}
-                placeholder="Telegram Chat ID"
-                className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+                value={webhookUrl}
+                onChange={e => setWebhookUrl(e.target.value)}
+                placeholder="Webhook URL (https://...)"
+                className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
               />
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <input
-                type="text"
-                data-testid="bark-server-url-input"
-                value={barkServerUrl}
-                onChange={e => setBarkServerUrl(e.target.value)}
-                placeholder="Bark Server (https://api.day.app)"
-                className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-              />
-              <input
-                type="password"
-                value={barkKey}
-                onChange={e => setBarkKey(e.target.value)}
-                placeholder={
-                  settings.notifications?.bark_push_key_set
-                    ? isZh
-                      ? 'Bark Push Key（已保存）'
-                      : 'Bark Key (configured)'
-                    : 'Bark Push Key'
-                }
-                className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-              />
-            </div>
+
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
@@ -1261,12 +1335,25 @@ export function SettingsPage({
                   setTestingNotify(true)
                   setErrorMsg('')
                   try {
-                    const res = await api.testNotify()
+                    const pendingNotifications = {
+                      webhook_url: webhookUrl.trim(),
+                      telegram_bot_token: tgToken.trim(),
+                      telegram_chat_id: tgChat.trim(),
+                      bark_server_url: barkServerUrl.trim() || 'https://api.day.app',
+                      bark_push_key: barkKey.trim(),
+                    }
+                    const res = await api.testNotify({ notifications: pendingNotifications })
+                    if (res.settings) {
+                      setBarkServerUrl(res.settings.notifications?.bark_server_url || 'https://api.day.app')
+                      await onUpdateSettings({})
+                    }
+                    setTgToken('')
+                    setBarkKey('')
                     const sentList = (res.sent || []).join(', ')
                     flashOk(
                       isZh
-                        ? `测试通知已成功发送（${sentList}）`
-                        : `Test alert delivered (${sentList})`,
+                        ? `配置已自动保存，测试推送已送达（${sentList}）`
+                        : `Saved & test alert delivered (${sentList})`,
                     )
                   } catch (err) {
                     setErrorMsg(err instanceof Error ? err.message : 'Test notification failed')
@@ -1296,6 +1383,57 @@ export function SettingsPage({
                   flashOk(t('set_save_ok'), 2500)
                 }}
                 className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
+                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+              >
+                {t('save_config')}
+              </button>
+            </div>
+          </div>
+
+          {/* Optional Outbound Network Proxy (for Mainland China NAS reaching Binance) */}
+          <div data-testid="outbound-proxy-card" className="otl-card p-5 space-y-2.5">
+            <div>
+              <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">
+                {isZh ? '网络代理配置（国内 NAS 连币安可选）' : 'Outbound Network Proxy (Optional)'}
+              </h3>
+              <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">
+                {isZh
+                  ? '若 NAS 直连币安超时，可填入局域网代理地址（如 http://192.168.x.x:7890；注意 Docker 容器内请填宿主机/软路由局域网 IP，勿填 127.0.0.1），留空则直连。'
+                  : 'Optional HTTP/HTTPS/SOCKS5 proxy for exchange APIs & public copy radar. In Docker on NAS, use LAN IP rather than 127.0.0.1.'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                data-testid="outbound-proxy-input"
+                value={outboundProxyUrl}
+                onChange={e => setOutboundProxyUrl(e.target.value)}
+                placeholder={
+                  isZh
+                    ? '例如 http://192.168.x.x:7890（NAS 容器勿填 127.0.0.1，留空直连）'
+                    : 'e.g. http://192.168.x.x:7890 (leave blank for direct)'
+                }
+                className="h-8 flex-1 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+              />
+              <button
+                type="button"
+                data-testid="save-proxy-btn"
+                onClick={async () => {
+                  try {
+                    await onUpdateSettings({ outbound_proxy_url: outboundProxyUrl.trim() })
+                    flashOk(
+                      isZh
+                        ? outboundProxyUrl.trim()
+                          ? '网络代理已生效'
+                          : '已清除网络代理，恢复直连模式'
+                        : 'Proxy settings saved',
+                      2500,
+                    )
+                  } catch (err) {
+                    setErrorMsg(err instanceof Error ? err.message : 'Invalid proxy URL')
+                  }
+                }}
+                className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer whitespace-nowrap"
                 style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
               >
                 {t('save_config')}

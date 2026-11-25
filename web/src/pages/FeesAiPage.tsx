@@ -306,7 +306,7 @@ export function FeesAiPage({
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-[var(--fg-2)]">
                     <div>
                       <b className="text-[var(--fg)]">
-                        {locale === 'en' ? 'Included Metrics' : '已喂给 AI 的 8 类脱敏数据：'}
+                        {locale === 'en' ? 'Included Metrics (4 Sanitized Groups)' : '已喂给 AI 的 4 大类脱敏汇总数据：'}
                       </b>
                       <ul className="mt-1 pl-4 space-y-0.5 list-disc">
                         <li>

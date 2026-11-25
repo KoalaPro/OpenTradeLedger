@@ -1,53 +1,66 @@
 import { useEffect, useState } from 'react'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
+import { PublicCopyWatcherPanel } from '../components/PublicCopyWatcherPanel'
 import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
 import { fmtSignedPct, fmtUsd, pnlTone } from '../lib/format'
-import type { DashboardData } from '../lib/types'
+import type { DashboardData, ExtensionSubTab } from '../lib/types'
 
 export function ExtensionsPage({
   data,
+  enableWatcher = true,
   enableCopy,
   enableStocks,
   requestedTab,
   onTabChange,
   onInspectSymbol,
+  onGoSettings,
 }: {
   data: DashboardData
+  enableWatcher?: boolean
   enableCopy: boolean
   enableStocks: boolean
-  requestedTab?: 'copy' | 'stock'
-  onTabChange?: (tab: 'copy' | 'stock') => void
+  requestedTab?: ExtensionSubTab
+  onTabChange?: (tab: ExtensionSubTab) => void
   onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
+  onGoSettings?: () => void
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
   const vName = (en: string, zh?: string) => (locale === 'en' ? en : zh || en)
-  const defaultTab: 'copy' | 'stock' =
-    requestedTab === 'stock' && enableStocks
-      ? 'stock'
-      : requestedTab === 'copy' && enableCopy
-        ? 'copy'
-        : enableCopy
-          ? 'copy'
-          : 'stock'
-  const [subTab, setSubTab] = useState<'copy' | 'stock'>(defaultTab)
+
+  const pickFallbackTab = (): ExtensionSubTab => {
+    if (enableWatcher) return 'watcher'
+    if (enableCopy) return 'copy'
+    return 'stock'
+  }
+
+  const resolveInitialTab = (req?: ExtensionSubTab): ExtensionSubTab => {
+    if (req === 'watcher' && enableWatcher) return 'watcher'
+    if (req === 'copy' && enableCopy) return 'copy'
+    if (req === 'stock' && enableStocks) return 'stock'
+    return pickFallbackTab()
+  }
+
+  const [subTab, setSubTab] = useState<ExtensionSubTab>(() => resolveInitialTab(requestedTab))
 
   useEffect(() => {
-    if (requestedTab === 'stock' && enableStocks) {
-      setSubTab('stock')
-    } else if (requestedTab === 'copy' && enableCopy) {
-      setSubTab('copy')
+    if (requestedTab) {
+      setSubTab(resolveInitialTab(requestedTab))
     }
-  }, [requestedTab, enableCopy, enableStocks])
+  }, [requestedTab, enableWatcher, enableCopy, enableStocks])
 
-  const activeTab: 'copy' | 'stock' =
-    subTab === 'copy' && !enableCopy ? 'stock' : subTab === 'stock' && !enableStocks ? 'copy' : subTab
+  const activeTab: ExtensionSubTab =
+    (subTab === 'watcher' && enableWatcher) ||
+    (subTab === 'copy' && enableCopy) ||
+    (subTab === 'stock' && enableStocks)
+      ? subTab
+      : pickFallbackTab()
 
-  const handleSelectTab = (next: 'copy' | 'stock') => {
+  const handleSelectTab = (next: ExtensionSubTab) => {
     setSubTab(next)
     onTabChange?.(next)
   }
@@ -85,12 +98,17 @@ export function ExtensionsPage({
           value={activeTab}
           onChange={handleSelectTab}
           options={[
+            ...(enableWatcher ? [{ value: 'watcher' as const, label: t('ext_watcher_tab'), testId: 'ext-tab-watcher' }] : []),
             ...(enableCopy ? [{ value: 'copy' as const, label: t('ext_copy_tab'), testId: 'ext-tab-copy' }] : []),
             ...(enableStocks ? [{ value: 'stock' as const, label: t('ext_stock_tab'), testId: 'ext-tab-stock' }] : []),
           ]}
         />
         <span className="text-[12px] text-[var(--fg-3)]">{t('ext_toggle_hint')}</span>
       </div>
+
+      {activeTab === 'watcher' && enableWatcher && (
+        <PublicCopyWatcherPanel onGoConfigureBark={onGoSettings} />
+      )}
 
       {activeTab === 'copy' && enableCopy && (
         <div key="copy" data-testid="copy-module-view" className="otl-panel-swap space-y-4">
@@ -245,12 +263,12 @@ export function ExtensionsPage({
               sub={
                 activeFeeRates.length > 0 ? (
                   <div className="flex flex-wrap gap-1 mt-0.5">
-                    {activeFeeRates.map(vr => (
+                    {activeFeeRates.map((vr, idx) => (
                       <span
                         key={vr.venue_id}
                         className="px-1.5 py-0.5 rounded text-[10.5px] bg-[var(--surface-2)] text-[var(--fg-2)] whitespace-nowrap"
                       >
-                        {vr.dispVenue} {vr.cleanedSummary}
+                        {idx > 0 ? ' ' : ''}{vr.dispVenue} {vr.cleanedSummary}
                       </span>
                     ))}
                   </div>

@@ -4,7 +4,7 @@ export const zhCN = {
   nav_trades: '合约交易',
   nav_analytics: '收益分析',
   nav_fees: '成本与复盘',
-  nav_extensions: '扩展账本',
+  nav_extensions: '盯盘与专账',
   nav_settings: '设置与连接',
 
   read_only: '只读模式',
@@ -132,6 +132,7 @@ export const zhCN = {
   ai_empty: '点击右上角「生成最新复盘」，结合逐笔进出场费用与持仓纪律生成复盘报告。',
   ai_commentary_title: 'AI 复盘建议',
 
+  ext_watcher_tab: '公开盯盘',
   ext_copy_tab: '跟单专账',
   ext_stock_tab: '股票与代币账户',
   ext_toggle_hint: '扩展模块可在「设置与连接」中随时关闭',
@@ -182,6 +183,7 @@ export const zhCN = {
   set_privacy_default: '默认开启隐私打码',
   set_goal_title: '启用自定义目标进度条',
   set_goal_target: '目标金额 (USDT)',
+  set_mod_watcher: '显示「公开盯盘」扩展模块（车位秒抢与带单持仓雷达）',
   set_mod_copy: '显示「跟单专账」扩展模块',
   set_mod_stock: '显示「股票与代币」扩展模块',
   set_mod_note: '注：关闭扩展模块仅隐藏侧边栏页签，不影响全账户总净资产与 0.00 闭环对账',

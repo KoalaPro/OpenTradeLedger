@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from opentradeledger.config import UserPreferences
 from opentradeledger.core.legacy_store import GateManualStore
+from opentradeledger.core.notifier import parse_bark_input
 from opentradeledger.security.vault import CredentialVault
 
 
@@ -385,6 +386,13 @@ class LedgerStore:
 
     def save_preferences(self, prefs: UserPreferences) -> UserPreferences:
         now_ms = int(time.time() * 1000)
+        norm_srv, norm_key = parse_bark_input(
+            prefs.notifications.bark_server_url,
+            prefs.notifications.bark_push_key,
+        )
+        prefs.notifications.bark_server_url = norm_srv
+        prefs.notifications.bark_push_key = norm_key
+
         disk_dict = prefs.model_dump()
         if disk_dict.get("ai_api_key"):
             disk_dict["ai_api_key"] = self._vault.encrypt_secret_str(str(disk_dict["ai_api_key"]))

@@ -663,9 +663,9 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 .otl-modal-backdrop {
-  background: rgba(5, 8, 14, 0.56);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(5, 8, 14, 0.76);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   animation: otlBackdropIn 220ms ease-out both;
   transition: opacity 190ms ease;
 }
@@ -730,9 +730,9 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 .otl-drawer-backdrop {
-  background: rgba(5, 8, 14, 0.48);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgba(5, 8, 14, 0.68);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   animation: otlBackdropIn 240ms ease-out both;
   transition: opacity 220ms ease;
 }

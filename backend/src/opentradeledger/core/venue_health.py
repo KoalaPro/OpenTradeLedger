@@ -171,7 +171,10 @@ def humanize_exchange_error(venue_id: str, raw_err: Any) -> dict[str, str]:
         for k in (
             "timeout",
             "timed out",
+            "connecttimeout",
+            "readtimeout",
             "connecterror",
+            "failed (0)",
             "connection refused",
             "network is unreachable",
             "name or service not known",

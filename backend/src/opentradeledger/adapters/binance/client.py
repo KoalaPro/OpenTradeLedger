@@ -219,7 +219,12 @@ class BinanceReadOnlyClient:
                 continue
 
         if resp is None:
-            raise BinanceApiError(0, clean_path, str(last_exc or "connection failed"))
+            err_msg = (
+                f"{type(last_exc).__name__}: {last_exc}".rstrip(": ")
+                if last_exc is not None
+                else "ConnectTimeout"
+            )
+            raise BinanceApiError(0, clean_path, err_msg)
 
         is_json = "json" in resp.headers.get("content-type", "").lower()
         payload: Any

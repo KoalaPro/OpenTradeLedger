@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 
 class ModuleSettings(BaseModel):
+    copy_watcher: bool = True
     copy_trading: bool = True
     stocks: bool = True
 
@@ -35,6 +36,7 @@ class UserPreferences(BaseModel):
     ai_base_url: str = ""
     ai_api_key: str = ""
     ai_model: str = ""
+    outbound_proxy_url: str = ""
     copy_watcher_targets: list[str] = Field(default_factory=list)
     modules: ModuleSettings = Field(default_factory=ModuleSettings)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)

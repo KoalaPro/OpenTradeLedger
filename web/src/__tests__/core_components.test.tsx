@@ -40,6 +40,6 @@ describe('OpenTradeLedger Core Components', () => {
     expect(sidebar.textContent).not.toContain('5所')
     expect(sidebar.textContent).not.toContain('3所')
     expect(screen.getByTestId('nav-trades').textContent).toBe('合约交易')
-    expect(screen.getByTestId('nav-extensions').textContent).toBe('扩展账本')
+    expect(screen.getByTestId('nav-extensions').textContent).toBe('盯盘与专账')
   })
 })

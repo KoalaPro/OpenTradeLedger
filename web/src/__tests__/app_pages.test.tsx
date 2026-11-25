@@ -296,8 +296,10 @@ describe('OpenTradeLedger Full 6-Page Integration', () => {
     expect(screen.getByTestId('ai-stale-banner')).toBeTruthy()
     expect(screen.getByTestId('fees-ai-page').textContent).not.toContain('*major pairs*')
 
-    // Extensions page renders both full-width tables
+    // Extensions page opens on Public Radar first, then switches to Copy & Stocks
     fireEvent.click(screen.getByTestId('nav-extensions'))
+    await waitFor(() => expect(screen.getByTestId('public-watcher-view')).toBeTruthy())
+    fireEvent.click(screen.getByTestId('ext-tab-copy'))
     await waitFor(() => expect(screen.getByTestId('copy-rebates-fullwidth')).toBeTruthy())
     fireEvent.click(screen.getByTestId('ext-tab-stock'))
     expect(screen.getByTestId('stock-perps-fullwidth').textContent).toContain('SNDK_USDT')

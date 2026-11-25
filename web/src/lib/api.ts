@@ -1,5 +1,6 @@
 import type {
   AuthStatusPayload,
+  CopyWatcherStatusPayload,
   DashboardData,
   ExchangeAdapterInfo,
   FxRatesPayload,
@@ -233,7 +234,48 @@ export const api = {
       body: JSON.stringify({ base_url: baseUrl, api_key: apiKey }),
     })
   },
-  testNotify(): Promise<{ ok: boolean; sent: string[]; errors?: Record<string, string> }> {
-    return req('/api/v1/extensions/copy-watcher/test-notify', { method: 'POST' })
+  getCopyWatcher(refresh = false): Promise<CopyWatcherStatusPayload> {
+    const qs = refresh ? '?refresh=true' : ''
+    return req(`/api/v1/extensions/copy-watcher${qs}`)
+  },
+  addCopyWatcherTargets(
+    rawInput: string,
+    slotAlert = true,
+    tradeAlert = true,
+  ): Promise<{ ok: boolean } & CopyWatcherStatusPayload> {
+    return req('/api/v1/extensions/copy-watcher/targets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        raw_input: rawInput,
+        slot_alert: slotAlert,
+        trade_alert: tradeAlert,
+      }),
+    })
+  },
+  patchCopyWatcherTarget(
+    portfolioId: string,
+    patch: { enabled?: boolean; slot_alert?: boolean; trade_alert?: boolean },
+  ): Promise<{ ok: boolean } & CopyWatcherStatusPayload> {
+    return req(`/api/v1/extensions/copy-watcher/targets/${encodeURIComponent(portfolioId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+  },
+  deleteCopyWatcherTarget(portfolioId: string): Promise<{ ok: boolean } & CopyWatcherStatusPayload> {
+    return req(`/api/v1/extensions/copy-watcher/targets/${encodeURIComponent(portfolioId)}`, {
+      method: 'DELETE',
+    })
+  },
+  testNotify(options?: {
+    portfolio_id?: string
+    notifications?: Record<string, unknown>
+  }): Promise<{ ok: boolean; sent: string[]; errors?: Record<string, string>; settings?: UserSettings }> {
+    return req('/api/v1/extensions/copy-watcher/test-notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options ?? {}),
+    })
   },
 }

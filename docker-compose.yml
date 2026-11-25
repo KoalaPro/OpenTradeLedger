@@ -1,11 +1,13 @@
 services:
   opentradeledger:
     image: ghcr.io/koalapro/opentradeledger:latest
+    # Mainland China NAS mirror (uncomment if ghcr.io times out):
+    # image: ghcr.nju.edu.cn/koalapro/opentradeledger:latest
     # Uncomment `build: .` below if you cloned the source repo and want to compile local edits:
     # build: .
     container_name: opentradeledger
     ports:
-      - "8012:8012"
+      - "${OTL_EXTERNAL_PORT:-8012}:8012"
     environment:
       OTL_HOST: "0.0.0.0"
       OTL_PORT: "8012"

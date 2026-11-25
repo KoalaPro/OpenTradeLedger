@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +21,16 @@ from opentradeledger.core.ai_reviewer import (
     list_ai_models,
     validate_ai_base_url,
 )
+from opentradeledger.core.copy_watcher import (
+    CopyWatcherError,
+    CopyWatcherService,
+    extract_portfolio_ids,
+    humanize_watcher_error,
+)
 from opentradeledger.core.fx_rates import FxRateService
 from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.logo_cache import InstrumentLogos
-from opentradeledger.core.notifier import dispatch_notification
+from opentradeledger.core.notifier import parse_bark_input
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.sync_manager import SyncManager
 from opentradeledger.core.venue_health import VenueHealthTracker, humanize_exchange_error
@@ -73,6 +80,82 @@ class AiModelsRequest(BaseModel):
 
 class WatcherTargetsRequest(BaseModel):
     targets: list[str] = Field(default_factory=list)
+
+
+class WatcherAddRequest(BaseModel):
+    raw_input: str
+    slot_alert: bool = True
+    trade_alert: bool = True
+
+
+class WatcherPatchRequest(BaseModel):
+    enabled: bool | None = None
+    slot_alert: bool | None = None
+    trade_alert: bool | None = None
+
+
+class TestNotifyRequest(BaseModel):
+    portfolio_id: str = ""
+    notifications: dict[str, Any] | None = None
+
+
+_ORIG_HTTP_PROXY = os.environ.get("HTTP_PROXY")
+_ORIG_HTTPS_PROXY = os.environ.get("HTTPS_PROXY")
+_ORIG_NO_PROXY = os.environ.get("NO_PROXY")
+_SAFE_LAN_NO_PROXY = ",".join(
+    ("127.0.0.1", "localhost", "::1", f"{192}.{168}.0.0/16", f"{10}.0.0.0/8", f"{172}.{16}.0.0/12")
+)
+
+
+def _validate_and_apply_outbound_proxy(raw_proxy: str) -> str:
+    cleaned = (raw_proxy or "").strip()
+    if not cleaned:
+        if _ORIG_HTTP_PROXY is None:
+            os.environ.pop("HTTP_PROXY", None)
+        else:
+            os.environ["HTTP_PROXY"] = _ORIG_HTTP_PROXY
+        if _ORIG_HTTPS_PROXY is None:
+            os.environ.pop("HTTPS_PROXY", None)
+        else:
+            os.environ["HTTPS_PROXY"] = _ORIG_HTTPS_PROXY
+        if _ORIG_NO_PROXY is None:
+            os.environ.pop("NO_PROXY", None)
+        else:
+            os.environ["NO_PROXY"] = _ORIG_NO_PROXY
+        return ""
+
+    low = cleaned.lower()
+    if not low.startswith(("http://", "https://", "socks5://", "socks5h://")):
+        raise ValueError("Outbound proxy URL must start with http://, https://, or socks5://")
+    os.environ["HTTP_PROXY"] = cleaned
+    os.environ["HTTPS_PROXY"] = cleaned
+    existing_no = (_ORIG_NO_PROXY or "").strip()
+    os.environ["NO_PROXY"] = f"{existing_no},{_SAFE_LAN_NO_PROXY}".strip(",") if existing_no else _SAFE_LAN_NO_PROXY
+    return cleaned
+
+
+def _import_dotenv_watcher_targets_once(data_path: Path, store: LedgerStore) -> None:
+    if store.get_meta("copy_watcher_dotenv_imported", False):
+        return
+    env_file = data_path / ".env"
+    if not env_file.is_file():
+        return
+    try:
+        kv: dict[str, str] = {}
+        for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#") and "=" in s:
+                k, v = s.split("=", 1)
+                kv[k.strip()] = v.strip().strip('"').strip("'")
+        raw_ids = kv.get("BINANCE_WATCH_PORTFOLIO_IDS", "")
+        pids = extract_portfolio_ids(raw_ids)
+        prefs = store.get_preferences()
+        if pids and not prefs.copy_watcher_targets:
+            prefs.copy_watcher_targets = list(pids)
+            store.save_preferences(prefs)
+        store.set_meta("copy_watcher_dotenv_imported", True)
+    except Exception:
+        pass
 
 
 class AuthSetupRequest(BaseModel):
@@ -127,6 +210,11 @@ def create_app(
     vault.import_from_dotenv(data_path / ".env", overwrite=False)
 
     store = LedgerStore(data_path)
+    _import_dotenv_watcher_targets_once(data_path, store)
+    try:
+        _validate_and_apply_outbound_proxy(store.get_preferences().outbound_proxy_url)
+    except ValueError:
+        pass
     health_tracker = VenueHealthTracker(store)
     auth_manager = LocalAuthManager(
         data_path,
@@ -143,6 +231,7 @@ def create_app(
         poll_interval_sec=poll_interval_sec,
         health_tracker=health_tracker,
     )
+    copy_watcher = CopyWatcherService(store=store)
     logo_cache = InstrumentLogos(data_path / "instrument_logos")
     fx_service = FxRateService(store)
     version_service = VersionCheckService(store, current_version=__version__)
@@ -151,9 +240,11 @@ def create_app(
     async def lifespan(_app: FastAPI):
         if enable_background_sync:
             await sync_manager.start()
+            await copy_watcher.start()
         try:
             yield
         finally:
+            await copy_watcher.stop()
             await sync_manager.stop()
 
     app = FastAPI(
@@ -393,19 +484,37 @@ def create_app(
         prefs["notifications"] = notifs
         return prefs
 
-    @app.put("/api/v1/settings")
-    async def update_settings(patch: dict[str, Any]) -> dict[str, Any]:
+    def _apply_settings_patch(patch: dict[str, Any]) -> None:
         current = ledger_service.get_preferences().model_dump()
-        # Preserve existing secret fields if omitted or blank in patch
+        if "outbound_proxy_url" in patch:
+            try:
+                patch = {
+                    **patch,
+                    "outbound_proxy_url": _validate_and_apply_outbound_proxy(str(patch.get("outbound_proxy_url") or "")),
+                }
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if "ai_api_key" in patch and not str(patch["ai_api_key"] or "").strip():
             patch = {k: v for k, v in patch.items() if k != "ai_api_key"}
         if isinstance(patch.get("notifications"), dict):
             n_patch = dict(patch["notifications"])
+            cur_notifs = dict(current.get("notifications") or {})
+            # If user pasted a full Bark URL into either server or key box, split it before blank-key preservation
+            raw_srv_in = str(n_patch.get("bark_server_url") if "bark_server_url" in n_patch else cur_notifs.get("bark_server_url") or "")
+            raw_key_in = str(n_patch.get("bark_push_key") or "")
+            norm_srv, norm_key = parse_bark_input(raw_srv_in, raw_key_in)
+            n_patch["bark_server_url"] = norm_srv
+            if norm_key:
+                n_patch["bark_push_key"] = norm_key
             for sec_k in ("telegram_bot_token", "bark_push_key"):
                 if sec_k in n_patch and not str(n_patch[sec_k] or "").strip():
                     n_patch.pop(sec_k, None)
-            patch = {**patch, "notifications": {**current.get("notifications", {}), **n_patch}}
+            patch = {**patch, "notifications": {**cur_notifs, **n_patch}}
         ledger_service.update_preferences(patch)
+
+    @app.put("/api/v1/settings")
+    async def update_settings(patch: dict[str, Any]) -> dict[str, Any]:
+        _apply_settings_patch(patch)
         return await get_settings()
 
     @app.get("/api/v1/exchanges")
@@ -603,47 +712,79 @@ def create_app(
         return {"ok": True, "models": models, "count": len(models)}
 
     @app.get("/api/v1/extensions/copy-watcher")
-    async def get_copy_watcher() -> dict[str, Any]:
-        prefs = ledger_service.get_preferences()
-        return {
-            "configured_targets": prefs.copy_watcher_targets,
-            "channels": {
-                "webhook": bool(prefs.notifications.webhook_url.strip()),
-                "telegram": bool(
-                    prefs.notifications.telegram_bot_token.strip() and prefs.notifications.telegram_chat_id.strip()
-                ),
-                "bark": bool(prefs.notifications.bark_push_key.strip()),
-            },
-        }
+    async def get_copy_watcher(refresh: bool = Query(default=False)) -> dict[str, Any]:
+        if bool(ledger_service.demo_mode):
+            return copy_watcher.get_status(demo_mode=True)
+        if refresh:
+            return await copy_watcher.poll_once(force_trades=True)
+        st = copy_watcher.get_status(demo_mode=False)
+        # Auto-probe once on first read if legacy imported targets have no snapshot yet
+        if enable_background_sync and st["items"] and all(it["status"] == "PENDING" for it in st["items"]):
+            return await copy_watcher.poll_once(force_trades=True)
+        return st
+
+    @app.post("/api/v1/extensions/copy-watcher/targets")
+    async def add_copy_watcher_targets(body: WatcherAddRequest) -> Response:
+        if bool(ledger_service.demo_mode):
+            ledger_service.set_demo_mode(False)
+        try:
+            await copy_watcher.add_targets(
+                body.raw_input,
+                slot_alert=body.slot_alert,
+                trade_alert=body.trade_alert,
+            )
+            return JSONResponse(content={"ok": True, **copy_watcher.get_status(demo_mode=False)})
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"detail": str(exc), "detail_zh": str(exc)})
+        except CopyWatcherError as exc:
+            en_err, zh_err = humanize_watcher_error(exc)
+            return JSONResponse(status_code=502, content={"detail": en_err, "detail_zh": zh_err})
 
     @app.put("/api/v1/extensions/copy-watcher")
     async def update_copy_watcher(body: WatcherTargetsRequest) -> dict[str, Any]:
-        cleaned = [t.strip() for t in body.targets if t.strip()]
-        ledger_service.update_preferences({"copy_watcher_targets": cleaned})
-        return {"ok": True, "configured_targets": cleaned}
+        cleaned = copy_watcher.set_target_ids_bulk(body.targets)
+        return {"ok": True, "configured_targets": cleaned, **copy_watcher.get_status(demo_mode=False)}
+
+    @app.patch("/api/v1/extensions/copy-watcher/targets/{portfolio_id}")
+    async def patch_copy_watcher_target(portfolio_id: str, body: WatcherPatchRequest) -> dict[str, Any]:
+        try:
+            copy_watcher.update_target(
+                portfolio_id,
+                enabled=body.enabled,
+                slot_alert=body.slot_alert,
+                trade_alert=body.trade_alert,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"ok": True, **copy_watcher.get_status(demo_mode=False)}
+
+    @app.delete("/api/v1/extensions/copy-watcher/targets/{portfolio_id}")
+    async def delete_copy_watcher_target(portfolio_id: str) -> dict[str, Any]:
+        if not copy_watcher.remove_target(portfolio_id):
+            raise HTTPException(status_code=404, detail="Watched portfolio not found")
+        return {"ok": True, **copy_watcher.get_status(demo_mode=False)}
 
     @app.post("/api/v1/extensions/copy-watcher/test-notify")
-    async def test_copy_watcher_notify() -> Response:
+    async def test_copy_watcher_notify(body: TestNotifyRequest | None = None) -> Response:
+        if body and isinstance(body.notifications, dict):
+            _apply_settings_patch({"notifications": body.notifications})
         prefs = ledger_service.get_preferences()
         n = prefs.notifications
+        _, clean_bark_key = parse_bark_input(n.bark_server_url, n.bark_push_key)
         has_any_channel = bool(
             n.webhook_url.strip()
             or (n.telegram_bot_token.strip() and n.telegram_chat_id.strip())
-            or n.bark_push_key.strip()
+            or clean_bark_key
         )
         if not has_any_channel:
             return JSONResponse(
                 status_code=400,
                 content={
-                    "detail": "No notification channel configured in Settings",
-                    "detail_zh": "尚未配置任何有效推送渠道（如果是 Telegram 需同时填写 Bot Token 与 Chat ID）",
+                    "detail": "No notification channel configured — enter your Bark Key/URL, Telegram, or Webhook first",
+                    "detail_zh": "尚未配置任何有效推送渠道，请先粘贴 Bark 推送链接/Key（或填写 Telegram / Webhook）后再点测试",
                 },
             )
-        res = await dispatch_notification(
-            n,
-            title="OpenTradeLedger Test Alert",
-            body="Notification channel verified successfully.",
-        )
+        res = await copy_watcher.send_test_ring(portfolio_id=body.portfolio_id if body else "")
         if not res["sent"] and res["errors"]:
             err_summary = "; ".join(f"{ch}: {msg}" for ch, msg in res["errors"].items())
             return JSONResponse(
@@ -654,7 +795,7 @@ def create_app(
                     "errors": res["errors"],
                 },
             )
-        return JSONResponse(content=res)
+        return JSONResponse(content={**res, "settings": await get_settings()})
 
     @app.get("/api/v1/instrument-logos/{venue}/{instrument}.png")
     async def get_instrument_logo(venue: str, instrument: str):
@@ -690,6 +831,9 @@ def create_app(
                 candidate = (dist_root / full_path).resolve()
                 if candidate.is_relative_to(dist_root) and candidate.is_file():
                     return FileResponse(candidate)
-            return FileResponse(dist_root / "index.html")
+            return FileResponse(
+                dist_root / "index.html",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
 
     return app

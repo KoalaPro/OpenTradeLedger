@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Radio } from 'lucide-react'
 import { EquityChart } from '../components/EquityChart'
 import { FloatingModal } from '../components/FloatingModal'
 import { InstrumentMark } from '../components/InstrumentMark'
@@ -8,7 +9,7 @@ import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
 import { fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
-import type { DashboardData, NavPage } from '../lib/types'
+import type { DashboardData, ExtensionSubTab, NavPage } from '../lib/types'
 
 const BAR_COLORS: Record<string, string> = {
   binance: '#f6cd76',
@@ -26,7 +27,7 @@ export function OverviewPage({
   onInspectSymbol,
 }: {
   data: DashboardData
-  onNavigate: (page: NavPage, extTab?: 'copy' | 'stock') => void
+  onNavigate: (page: NavPage, extTab?: ExtensionSubTab) => void
   onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
 }) {
   const { locale, t } = useI18n()
@@ -398,13 +399,24 @@ export function OverviewPage({
         <div className="lg:col-span-5 otl-card p-5 flex flex-col gap-4">
           <div className="flex items-center justify-between gap-2">
             <h2 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('ov_alloc_title')}</h2>
-            <button
-              type="button"
-              onClick={() => onNavigate('settings')}
-              className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
-            >
-              {t('ov_manage_accounts')}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                data-testid="overview-open-watcher-btn"
+                onClick={() => onNavigate('extensions', 'watcher')}
+                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer whitespace-nowrap"
+              >
+                <Radio size={12} className="text-emerald-400" />
+                <span>{locale === 'en' ? 'Public Radar' : '公开盯盘'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('settings')}
+                className="h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer whitespace-nowrap"
+              >
+                {t('ov_manage_accounts')}
+              </button>
+            </div>
           </div>
 
           <div className="h-2 rounded-full overflow-hidden flex gap-0.5 bg-[var(--track)]">
