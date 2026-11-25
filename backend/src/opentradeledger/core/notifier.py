@@ -96,6 +96,14 @@ async def dispatch_notification(
         else:
             response = await client.get(bark_url, params=params)
         response.raise_for_status()
+        try:
+            receipt = response.json()
+        except ValueError:
+            raise ValueError("Bark did not return a JSON delivery acknowledgement") from None
+        if not isinstance(receipt, dict) or "code" not in receipt:
+            raise ValueError("Bark delivery acknowledgement is missing its code")
+        if str(receipt["code"]) != "200":
+            raise ValueError(f"Bark rejected the push (code {receipt['code']})")
     except Exception as exc:
         error = _sanitize_notify_error(exc, [bark_key, settings.bark_push_key])
         return {"ok": False, "sent": [], "errors": {"bark": error}}

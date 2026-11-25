@@ -199,6 +199,23 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
     expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ slot_alert: false, trade_alert: false })
   })
 
+  it('labels unavailable history, one-way positions and pending Bark delivery', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      channels: { bark: true }, items: [{
+        portfolio_id: '3988776655443322110', nickname: 'Fixture', enabled: true,
+        recent_orders: [], inferred_positions: [], trade_stale: true, trade_updated_at_ms: 0,
+        uncertain_symbols: ['BTCUSDT'], pending_alert_count: 2,
+      }],
+    })))
+    render(<I18nProvider locale="zh-CN"><CurrencyProvider currency="USDT" fx={DEFAULT_FX}>
+      <ExtensionsPage data={emptyDash} enableWatcher enableCopy enableStocks requestedTab="watcher" />
+    </CurrencyProvider></I18nProvider>)
+    expect(await screen.findByText(/公开成交数据暂不可用/)).toBeTruthy()
+    expect(screen.getByText(/BTCUSDT.*无法确认净持仓/)).toBeTruthy()
+    expect(screen.getByText(/2 条手机提醒待重试/)).toBeTruthy()
+    expect(screen.queryByText(/当前空仓观望中/)).toBeNull()
+  })
+
   it('shows Bark onboarding guide in Settings and auto-saves pasted Bark URL when clicking Test Push directly', async () => {
     let capturedBody: { notifications?: { bark_push_key?: string } } | null = null
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

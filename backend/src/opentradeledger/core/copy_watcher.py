@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import Counter
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import logging
@@ -22,7 +25,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from opentradeledger.core.notifier import bark_configured, dispatch_notification
+from opentradeledger.config import NotificationSettings
+from opentradeledger.core.notifier import bark_configured, dispatch_notification, parse_bark_input
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 
 if TYPE_CHECKING:
@@ -100,6 +104,7 @@ class LeadOrderRecord:
     executed_qty: float
     avg_price: float
     realized_pnl: float
+    order_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -121,19 +126,60 @@ class InferredOpenPosition:
 class LeadTradeActivity:
     inferred_positions: tuple[InferredOpenPosition, ...]
     recent_orders: tuple[LeadOrderRecord, ...]
+    orders: tuple[LeadOrderRecord, ...]
+    uncertain_symbols: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class AggregatedTradeAlert:
-    symbol: str
-    action_zh: str
-    action_en: str
-    leg_count: int
-    total_qty: float
-    weighted_avg_price: float
-    total_realized_pnl: float
-    latest_time_bj: str
-    max_order_time_ms: int
+def _bark_destination(settings: NotificationSettings) -> str:
+    server, key = parse_bark_input(settings.bark_server_url, settings.bark_push_key)
+    return hashlib.sha256(f"{server}/{key}".encode()).hexdigest() if key else ""
+
+
+def _order_keys(orders: Sequence[LeadOrderRecord]) -> dict[str, LeadOrderRecord]:
+    """Prefer upstream IDs. Without IDs only multiplicity distinguishes identical fills."""
+    occurrences: Counter[str] = Counter()
+    result = {}
+    for order in orders:
+        if order.order_id:
+            key = f"{order.symbol}:{order.order_id}"
+        else:
+            fields = (
+                order.order_time_ms,
+                order.symbol,
+                order.side,
+                order.position_side,
+                order.order_type,
+                order.executed_qty,
+                order.avg_price,
+                order.realized_pnl,
+            )
+            digest = hashlib.sha256(json.dumps(fields).encode()).hexdigest()
+            occurrences[digest] += 1
+            key = f"{digest}:{occurrences[digest]}"
+        result[key] = order
+    return result
+
+
+def _advance_cursor(
+    cursor: Any, orders: Sequence[LeadOrderRecord], now_ms: int
+) -> tuple[dict, list[LeadOrderRecord]]:
+    batch = _order_keys(orders)
+    if not isinstance(cursor, dict):
+        # Older ledgers only know the timestamp. Treat its already visible ties as acknowledged.
+        floor = int(cursor or max((o.order_time_ms for o in orders), default=now_ms))
+        seen = {key: o.order_time_ms for key, o in batch.items() if o.order_time_ms == floor}
+    else:
+        floor, seen = cursor["floor_ms"], dict(cursor["seen"])
+    fresh = []
+    for key, order in batch.items():
+        if order.order_time_ms >= floor and key not in seen:
+            fresh.append(order)
+            seen[key] = order.order_time_ms
+    # Retain the overlap of the public 100-record feed, including all ties at its boundary.
+    if len(seen) > 100:
+        floor = max(floor, sorted(seen.values(), reverse=True)[99])
+        seen = {k: ts for k, ts in seen.items() if ts >= floor}
+    return {"floor_ms": floor, "seen": seen}, sorted(fresh, key=lambda o: o.order_time_ms)
 
 
 def extract_portfolio_ids(raw: str) -> tuple[str, ...]:
@@ -154,15 +200,13 @@ def _fmt_bj_ms(ts_ms: int) -> str:
     return datetime.fromtimestamp(ts_ms / 1000.0, tz=_BJ_TZ).strftime("%m-%d %H:%M:%S")
 
 
-def _classify_order_action(side: str, position_side: str, realized_pnl: float) -> tuple[str, str]:
+def _classify_order_action(side: str, position_side: str) -> tuple[str, str]:
     s = (side or "").upper()
     ps = (position_side or "").upper()
     if ps == "LONG":
         return ("开多", "Open Long") if s == "BUY" else ("平多", "Close Long")
     if ps == "SHORT":
         return ("开空", "Open Short") if s == "SELL" else ("平空", "Close Short")
-    if abs(realized_pnl) > 1e-8:
-        return ("平多", "Close Long") if s == "SELL" else ("平空", "Close Short")
     return ("买入", "Buy") if s == "BUY" else ("卖出", "Sell")
 
 
@@ -283,6 +327,17 @@ class PublicCopyWatcherClient:
             pass
         return 0.0
 
+    async def _history_rows(self, path: str, query: dict[str, Any]) -> list:
+        response = await self._public_post(f"{self.web_base_url}{path}", query)
+        endpoint = path.rsplit("/", 1)[-1]
+        if response.status_code != 200:
+            raise CopyWatcherError(f"Binance {endpoint} HTTP {response.status_code} for {query['portfolioId']}")
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, Mapping) and payload.get("code") == "000000" else None
+        if not isinstance(data, Mapping) or not isinstance(data.get("list"), list):
+            raise CopyWatcherError(f"Binance {endpoint} unavailable for {query['portfolioId']}")
+        return data["list"]
+
     async def fetch_trade_activity(
         self,
         portfolio_id: str,
@@ -294,16 +349,9 @@ class PublicCopyWatcherClient:
         cur_ms = int(now_ms if now_ms is not None else time.time() * 1000)
         start_ms = max(0, cur_ms - 14 * 86400 * 1000)
 
-        pos_resp = await self._public_post(
-            f"{self.web_base_url}{BINANCE_POSITION_HISTORY_PATH}",
-            {"portfolioId": pid, "pageNumber": 1, "pageSize": 30},
+        pos_list = await self._history_rows(
+            BINANCE_POSITION_HISTORY_PATH, {"portfolioId": pid, "pageNumber": 1, "pageSize": 30}
         )
-        if pos_resp.status_code != 200:
-            raise CopyWatcherError(f"Binance position-history HTTP {pos_resp.status_code} for {pid}")
-        pos_json = pos_resp.json()
-        if not isinstance(pos_json, Mapping) or str(pos_json.get("code") or "") != "000000":
-            raise CopyWatcherError(f"Binance position-history unavailable for {pid}")
-        pos_list = ((pos_json.get("data") or {}) if isinstance(pos_json.get("data"), Mapping) else {}).get("list") or []
 
         latest_all_closed_ms: dict[tuple[str, str], int] = {}
         for row in pos_list:
@@ -318,16 +366,9 @@ class PublicCopyWatcherClient:
                 if closed_ts > latest_all_closed_ms.get((sym, side_up), 0):
                     latest_all_closed_ms[(sym, side_up)] = closed_ts
 
-        ord_resp = await self._public_post(
-            f"{self.web_base_url}{BINANCE_ORDER_HISTORY_PATH}",
-            {"portfolioId": pid, "startTime": start_ms, "endTime": cur_ms, "pageSize": 100},
+        raw_orders = await self._history_rows(
+            BINANCE_ORDER_HISTORY_PATH, {"portfolioId": pid, "startTime": start_ms, "endTime": cur_ms, "pageSize": 100}
         )
-        if ord_resp.status_code != 200:
-            raise CopyWatcherError(f"Binance order-history HTTP {ord_resp.status_code} for {pid}")
-        ord_json = ord_resp.json()
-        if not isinstance(ord_json, Mapping) or str(ord_json.get("code") or "") != "000000":
-            raise CopyWatcherError(f"Binance order-history unavailable for {pid}")
-        raw_orders = ((ord_json.get("data") or {}) if isinstance(ord_json.get("data"), Mapping) else {}).get("list") or []
 
         parsed_orders: list[LeadOrderRecord] = []
         for o in raw_orders:
@@ -343,7 +384,7 @@ class PublicCopyWatcherClient:
             pside = str(o.get("positionSide") or "BOTH").strip().upper()
             otype = str(o.get("type") or "MARKET").strip().upper()
             pnl = float(o.get("totalPnl") or 0.0)
-            act_zh, act_en = _classify_order_action(side, pside, pnl)
+            act_zh, act_en = _classify_order_action(side, pside)
             parsed_orders.append(
                 LeadOrderRecord(
                     order_time_ms=ts_ms,
@@ -357,6 +398,7 @@ class PublicCopyWatcherClient:
                     executed_qty=qty,
                     avg_price=price,
                     realized_pnl=pnl,
+                    order_id=str(o.get("orderId") or o.get("id") or ""),
                 )
             )
 
@@ -421,6 +463,8 @@ class PublicCopyWatcherClient:
         return LeadTradeActivity(
             inferred_positions=tuple(inferred),
             recent_orders=tuple(parsed_orders[: max(1, recent_limit)]),
+            orders=tuple(parsed_orders),
+            uncertain_symbols=tuple(sorted({o.symbol for o in parsed_orders if o.position_side not in ("LONG", "SHORT")})),
         )
 
 
@@ -604,7 +648,6 @@ class CopyWatcherService:
         self._bg_task: asyncio.Task[None] | None = None
         self._cycles = 0
         self._consecutive_failures = 0
-        self._last_slot_alert_mono: dict[str, float] = {}
         self._last_trade_poll_mono: dict[str, float] = {}
         self._last_error: str = ""
         self._last_error_zh: str = ""
@@ -721,7 +764,8 @@ class CopyWatcherService:
 
     def get_status(self, *, demo_mode: bool = False) -> dict[str, Any]:
         slot_s, trade_s, cool_s = self._effective_timings()
-        has_bark = bark_configured(self.store.get_preferences().notifications)
+        destination = _bark_destination(self.store.get_preferences().notifications)
+        has_bark = bool(destination)
         if demo_mode:
             return build_demo_copy_watcher_status(
                 has_bark=has_bark,
@@ -742,7 +786,7 @@ class CopyWatcherService:
                 continue
             cached = snapshots.get(pid) if isinstance(snapshots.get(pid), dict) else {}
             enabled = bool(t.get("enabled", True))
-            has_open = bool(cached.get("has_open_slot", False)) and enabled
+            has_open = bool(cached.get("has_open_slot", False)) and enabled and not cached.get("probe_error")
             avail = int(cached.get("available_slots") or 0) if enabled else 0
             if has_open:
                 open_slot_total += avail
@@ -760,12 +804,18 @@ class CopyWatcherService:
                     "current_copy_count": int(cached.get("current_copy_count") or 0),
                     "max_copy_count": int(cached.get("max_copy_count") or 0),
                     "available_slots": int(cached.get("available_slots") or 0),
-                    "has_open_slot": bool(cached.get("has_open_slot", False)),
+                    "has_open_slot": bool(has_open),
                     "min_copy_usd": float(cached.get("min_copy_usd") or 0.0),
                     "profit_sharing_rate": str(cached.get("profit_sharing_rate") or ""),
                     "lead_url": lead_url,
                     "app_deeplink": str(cached.get("app_deeplink") or ""),
                     "last_alert_ms": int(cached.get("last_alert_ms") or 0),
+                    "slot_updated_at_ms": int(cached.get("slot_updated_at_ms") or 0),
+                    "trade_updated_at_ms": int(cached.get("trade_updated_at_ms") or 0),
+                    "trade_stale": bool(cached.get("trade_stale", not cached.get("trade_updated_at_ms"))),
+                    "uncertain_symbols": cached.get("uncertain_symbols", []),
+                    "pending_alert_count": (int(bool(cached.get("slot_pending"))) + len(cached.get("pending_trades", [])))
+                                           if destination and destination == cached.get("pending_destination") else 0,
                     "inferred_positions": list(cached.get("inferred_positions") or []),
                     "recent_orders": list(cached.get("recent_orders") or []),
                     "probe_error": str(cached.get("probe_error") or ""),
@@ -801,6 +851,15 @@ class CopyWatcherService:
                 "未识别到有效的带单员 ID。请粘贴币安带单员分享链接（含 lead-details/数字）或 15～22 位数字组合 ID。"
             )
 
+        # Probes happen outside the polling lock. A later refresh or removal must win.
+        initial = self._load_state()
+        revisions = {
+            row["portfolio_id"]: (
+                row.get("added_at_ms"),
+                initial["snapshots"].get(row["portfolio_id"], {}).get("revision", 0),
+            )
+            for row in initial["targets"]
+        }
         watcher_client = self._make_client()
         try:
             probed: list[tuple[PortfolioSlotSnapshot, LeadTradeActivity | None]] = []
@@ -827,11 +886,18 @@ class CopyWatcherService:
             added_rows: list[dict[str, Any]] = []
             for snap, act in probed:
                 pid = snap.portfolio_id
-                orders = act.recent_orders if act else ()
-                max_ord_ms = max((o.order_time_ms for o in orders), default=0)
-                # Anchor watermark silently on first add so historical orders never spam Bark
-                if pid not in watermarks or int(watermarks.get(pid) or 0) <= 0:
-                    watermarks[pid] = max_ord_ms if max_ord_ms > 0 else now_ms
+                previous = snapshots.get(pid, {})
+                existing = existing_by_id.get(pid)
+                observed = (existing.get('added_at_ms'), previous.get('revision', 0)) if existing else None
+                if observed != revisions.get(pid):
+                    if existing:
+                        added_rows.append(previous)
+                    continue
+                if pid not in watermarks:
+                    if act is None:
+                        watermarks[pid] = {"floor_ms": now_ms, "seen": {}}
+                    else:
+                        watermarks[pid], _ = _advance_cursor(None, act.orders, now_ms)
 
                 if pid in existing_by_id:
                     existing_by_id[pid]["nickname"] = snap.nickname
@@ -851,7 +917,7 @@ class CopyWatcherService:
                     targets.append(row)
                     existing_by_id[pid] = row
 
-                snap_dict = self._serialize_snapshot(snap, act, last_alert_ms=0)
+                snap_dict = self._snapshot(snap, act, snapshots.get(pid, {}), now_ms, history_failed=act is None)
                 snapshots[pid] = snap_dict
                 added_rows.append(snap_dict)
 
@@ -891,6 +957,7 @@ class CopyWatcherService:
         # Prune removed snapshots
         keep_set = set(pids)
         state["snapshots"] = {k: v for k, v in state["snapshots"].items() if k in keep_set}
+        state["watermarks"] = {k: v for k, v in state["watermarks"].items() if k in keep_set}
         self._save_state(state)
         self._sync_prefs_target_ids(new_targets)
         return list(pids)
@@ -910,6 +977,13 @@ class CopyWatcherService:
             if str(t.get("portfolio_id")) == pid:
                 if (slot_alert or trade_alert) and not bark_configured(self.store.get_preferences().notifications):
                     raise ValueError("请先配置 Bark，再开启手机提醒 / Configure Bark to enable mobile alerts")
+                previous = state["snapshots"].get(pid, {})
+                if enabled is False or trade_alert is False:
+                    previous.pop("pending_trades", None)
+                if enabled is False or slot_alert is False:
+                    previous.pop("slot_pending", None)
+                if (enabled is True and not t.get("enabled", True)) or (trade_alert is True and not t.get("trade_alert", True)):
+                    state["watermarks"][pid] = {"floor_ms": int(time.time() * 1000), "seen": {}}
                 if enabled is not None:
                     t["enabled"] = bool(enabled)
                 if slot_alert is not None:
@@ -932,198 +1006,260 @@ class CopyWatcherService:
             return False
         state["snapshots"].pop(pid, None)
         state["watermarks"].pop(pid, None)
-        self._last_slot_alert_mono.pop(pid, None)
+        self._last_trade_poll_mono.pop(pid, None)
         self._save_state(state)
         self._sync_prefs_target_ids(state["targets"])
         return True
 
     @staticmethod
-    def _serialize_snapshot(
+    def _snapshot(
         snap: PortfolioSlotSnapshot,
         act: LeadTradeActivity | None,
+        previous: dict,
+        wall_ms: int,
         *,
-        last_alert_ms: int = 0,
-    ) -> dict[str, Any]:
-        row = asdict(snap)
-        row["available_slots"] = snap.available_slots
-        row["has_open_slot"] = snap.has_open_slot
-        row["lead_url"] = snap.lead_url
-        row["app_deeplink"] = snap.app_deeplink
-        row["last_alert_ms"] = int(last_alert_ms)
-        row["inferred_positions"] = [asdict(p) for p in (act.inferred_positions if act else ())]
-        row["recent_orders"] = [asdict(o) for o in (act.recent_orders if act else ())]
-        row["probe_error"] = ""
-        row["probe_error_zh"] = ""
+        history_failed: bool = False,
+    ) -> dict:
+        row = {
+            **previous,
+            **asdict(snap),
+            "available_slots": snap.available_slots,
+            "has_open_slot": snap.has_open_slot,
+            "lead_url": snap.lead_url,
+            "app_deeplink": snap.app_deeplink,
+            "slot_updated_at_ms": wall_ms,
+            "probe_error": "",
+            "probe_error_zh": "",
+            "revision": previous.get("revision", 0) + 1,
+        }
+        row.setdefault("last_alert_ms", 0)
+        row.setdefault("inferred_positions", [])
+        row.setdefault("recent_orders", [])
+        row.setdefault("trade_updated_at_ms", 0)
+        if not snap.has_open_slot:
+            row.update(slot_reset=True, slot_pending=False, slot_blocked_until_ms=0)
+        if act is not None:
+            row.update(
+                inferred_positions=[asdict(p) for p in act.inferred_positions],
+                recent_orders=[asdict(o) for o in act.recent_orders],
+                uncertain_symbols=list(act.uncertain_symbols),
+                trade_updated_at_ms=wall_ms,
+                trade_stale=False,
+            )
+        elif history_failed:
+            row["trade_stale"] = True
         return row
 
-    def _alert_enabled(self, portfolio_id: str, setting: str) -> bool:
-        # A user can pause or remove a target while a public market request is in flight.
-        return any(
-            t.get("portfolio_id") == portfolio_id and t.get("enabled", True) and t.get(setting, True)
-            for t in self._load_state()["targets"]
+    @staticmethod
+    def _trade_messages(
+        snap: PortfolioSlotSnapshot, act: LeadTradeActivity, fresh: Sequence[LeadOrderRecord]
+    ) -> list[dict]:
+        groups: dict[tuple[str, str, str], list[LeadOrderRecord]] = {}
+        for order in fresh:
+            groups.setdefault((order.symbol, order.position_side, order.action_zh), []).append(order)
+        positions = {(p.symbol, p.position_side): p for p in act.inferred_positions}
+        messages = []
+        for (symbol, side, action), legs in groups.items():
+            qty = sum(o.executed_qty for o in legs)
+            avg = sum(o.executed_qty * o.avg_price for o in legs) / qty
+            pnl = sum(o.realized_pnl for o in legs)
+            parts = [
+                f"({len(legs)}笔合并) " if len(legs) > 1 else "",
+                f"数量 {qty:g} 均价 {_fmt_smart_price(avg)}",
+            ]
+            if abs(pnl) >= 0.5:
+                parts.append(f"｜已实现 {pnl:+.0f}U")
+            position = positions.get((symbol, side))
+            if position:
+                parts.append(
+                    f"｜在途{position.side_zh} {position.qty:g} @ {_fmt_smart_price(position.avg_entry_price)}"
+                )
+            elif side in ("LONG", "SHORT"):
+                parts.append(f"｜未推算到在途{'多' if side == 'LONG' else '空'}仓")
+            parts.append(f" ({legs[-1].time_bj})")
+            messages.append(
+                {
+                    "title": f"📊 {snap.nickname} {symbol} {action}",
+                    "body": "".join(parts),
+                    "url": snap.app_deeplink,
+                    "bark_params": {"sound": "bell", "level": "timeSensitive", "group": "binance-copy-trade"},
+                }
+            )
+        return messages
+
+    @staticmethod
+    def _target(state: dict, original: dict) -> dict | None:
+        return next(
+            (
+                row
+                for row in state["targets"]
+                if row["portfolio_id"] == original["portfolio_id"]
+                and row.get("added_at_ms") == original.get("added_at_ms")
+            ),
+            None,
         )
+
+    async def _send_pending(self, original: dict, message: dict, *, slot: bool = False) -> None:
+        pid = original["portfolio_id"]
+        state = self._load_state()
+        target = self._target(state, original)
+        setting = "slot_alert" if slot else "trade_alert"
+        if not target or not target.get("enabled", True) or not target.get(setting, True):
+            return
+        row = state["snapshots"][pid]
+        if not (row.get("slot_pending") if slot else message in row.get("pending_trades", [])):
+            return
+        notifications = self.store.get_preferences().notifications
+        if row.get("pending_destination") != _bark_destination(notifications):
+            return
+        result = await dispatch_notification(notifications, **message, client=self._injected_client)
+        if not result["ok"]:
+            return
+        # A UI action may have removed or replaced the target during the HTTP request.
+        state = self._load_state()
+        if self._target(state, original) is None:
+            return
+        row = state["snapshots"][pid]
+        if slot:
+            row.update(slot_pending=False, slot_reset=False, last_alert_ms=int(time.time() * 1000))
+        elif message in row.get("pending_trades", []):
+            row["pending_trades"].remove(message)
+        self._save_state(state)
+
+    @staticmethod
+    def _bind_pending(row: dict, destination: str, wall_ms: int, cooldown_sec: float) -> None:
+        if row.get("pending_destination") == destination:
+            return
+        # A pending notification belongs to the device selected when the event was observed.
+        if row.get("slot_pending"):
+            row["slot_blocked_until_ms"] = wall_ms + int(cooldown_sec * 1000)
+        row.update(pending_destination=destination, slot_pending=False, pending_trades=[])
+
+    async def _poll_target(
+        self,
+        target: dict,
+        client: PublicCopyWatcherClient,
+        force_trades: bool,
+        trade_sec: float,
+        cooldown_sec: float,
+    ) -> tuple[str, str] | None:
+        pid = target["portfolio_id"]
+        now = self._clock_fn()
+        wall_ms = int(time.time() * 1000)
+        try:
+            snap = await client.fetch_slot_snapshot(pid)
+        except Exception as exc:
+            error = humanize_watcher_error(exc)
+            state = self._load_state()
+            if self._target(state, target) is not None:
+                row = state["snapshots"].setdefault(pid, {})
+                row.update(
+                    probe_error=error[0],
+                    probe_error_zh=error[1],
+                    trade_stale=True,
+                    revision=row.get("revision", 0) + 1,
+                )
+                self._bind_pending(
+                    row, _bark_destination(self.store.get_preferences().notifications), wall_ms, cooldown_sec
+                )
+                self._save_state(state)
+                for msg in list(row.get("pending_trades", [])):
+                    await self._send_pending(target, msg)
+            return error
+
+        current = self._target(self._load_state(), target)
+        if current is None or not current.get("enabled", True):
+            return None
+        last_trade = self._last_trade_poll_mono.get(pid)
+        due = force_trades or last_trade is None or now - last_trade >= trade_sec
+        act = None
+        if due:
+            self._last_trade_poll_mono[pid] = now
+            try:
+                act = await client.fetch_trade_activity(pid, now_ms=wall_ms)
+            except Exception as exc:
+                logger.debug("Trade activity fetch failed for %s: %s", pid, exc)
+
+        state = self._load_state()
+        current = self._target(state, target)
+        if current is None:
+            return None
+        enabled = current.get("enabled", True)
+        destination = _bark_destination(self.store.get_preferences().notifications)
+        has_bark = bool(destination)
+        row = self._snapshot(
+            snap, act, state["snapshots"].get(pid, {}), wall_ms, history_failed=due and act is None
+        )
+        self._bind_pending(row, destination, wall_ms, cooldown_sec)
+        if act is not None:
+            cursor, fresh = _advance_cursor(state["watermarks"].get(pid), act.orders, wall_ms)
+            state["watermarks"][pid] = cursor
+            if enabled and has_bark and current.get("trade_alert", True):
+                row.setdefault("pending_trades", []).extend(self._trade_messages(snap, act, fresh))
+        if not (enabled and has_bark and current.get("trade_alert", True)):
+            row.pop("pending_trades", None)
+        slot_due = (
+            row.get("slot_reset")
+            or not row["last_alert_ms"]
+            or wall_ms - row["last_alert_ms"] >= cooldown_sec * 1000
+        )
+        row["slot_pending"] = bool(
+            enabled
+            and has_bark
+            and current.get("slot_alert", True)
+            and snap.has_open_slot
+            and slot_due
+            and wall_ms >= row.get("slot_blocked_until_ms", 0)
+        )
+        state["snapshots"][pid] = row
+        # Save the observation, cursor and pending notifications together before contacting Bark.
+        self._save_state(state)
+        if row["slot_pending"]:
+            await self._send_pending(
+                target,
+                {
+                    "title": f"🚨 {snap.nickname} 空出 {snap.available_slots} 个跟单名额！",
+                    "body": f"当前 {snap.current_copy_count}/{snap.max_copy_count} (起跟 {snap.min_copy_usd:.0f} USDT)，点此通知直跳币安App秒抢",
+                    "url": snap.app_deeplink,
+                    "bark_params": {
+                        "call": "1",
+                        "sound": "alarm",
+                        "level": "timeSensitive",
+                        "group": "binance-copy-slot",
+                    },
+                },
+                slot=True,
+            )
+        for message in list(row.get("pending_trades", [])):
+            await self._send_pending(target, message)
+        return None
 
     async def poll_once(self, *, force_trades: bool = False) -> dict[str, Any]:
         async with self._lock:
-            state = self._load_state()
-            targets: list[dict[str, Any]] = list(state["targets"])
-            enabled_targets = [t for t in targets if bool(t.get("enabled", True))]
-            if not enabled_targets:
+            targets = [t for t in self._load_state()["targets"] if t.get("enabled", True)]
+            if not targets:
                 return self.get_status(demo_mode=False)
-
             self._cycles += 1
-            _slot_s, eff_trade_s, eff_cool_s = self._effective_timings()
-            now_mono = self._clock_fn()
-            wall_ms = int(time.time() * 1000)
-            prefs = self.store.get_preferences()
-            notifs = prefs.notifications
-            has_bark = bark_configured(notifs)
+            _, trade_sec, cooldown_sec = self._effective_timings()
+            client = self._make_client()
+            # Slow public endpoints or a Bark timeout for one trader must leave other probes running.
+            limit = asyncio.Semaphore(4)
 
-            snapshots: dict[str, Any] = dict(state["snapshots"])
-            watermarks: dict[str, Any] = dict(state["watermarks"])
-            cycle_had_error = False
+            async def check(target: dict) -> tuple[str, str] | None:
+                async with limit:
+                    current = self._target(self._load_state(), target)
+                    if current is None or not current.get("enabled", True):
+                        return None
+                    return await self._poll_target(target, client, force_trades, trade_sec, cooldown_sec)
 
-            watcher_client = self._make_client()
             try:
-                for t in enabled_targets:
-                    pid = str(t.get("portfolio_id") or "").strip()
-                    if not pid:
-                        continue
-                    prev_cached = snapshots.get(pid) if isinstance(snapshots.get(pid), dict) else {}
-                    try:
-                        snap = await watcher_client.fetch_slot_snapshot(pid)
-                    except Exception as exc:
-                        cycle_had_error = True
-                        en_err, zh_err = humanize_watcher_error(exc)
-                        self._last_error = en_err
-                        self._last_error_zh = zh_err
-                        snapshots[pid] = {
-                            **prev_cached,
-                            "portfolio_id": pid,
-                            "nickname": prev_cached.get("nickname") or t.get("nickname") or pid,
-                            "probe_error": en_err,
-                            "probe_error_zh": zh_err,
-                        }
-                        continue
-
-                    last_alert_ms = int(prev_cached.get("last_alert_ms") or 0)
-
-                    # 1. Slot availability alarm check
-                    if not snap.has_open_slot:
-                        self._last_slot_alert_mono.pop(pid, None)
-                    elif has_bark:
-                        prev_mono = self._last_slot_alert_mono.get(pid)
-                        alarm_due = prev_mono is None or (now_mono - prev_mono) >= eff_cool_s
-                        if alarm_due and self._alert_enabled(pid, "slot_alert"):
-                            title = f"🚨 {snap.nickname} 空出 {snap.available_slots} 个跟单名额！"
-                            body = (
-                                f"当前 {snap.current_copy_count}/{snap.max_copy_count} "
-                                f"(起跟 {snap.min_copy_usd:.0f} USDT)，点此通知直跳币安App秒抢"
-                            )
-                            await dispatch_notification(
-                                notifs,
-                                title=title,
-                                body=body,
-                                url=snap.app_deeplink or snap.lead_url,
-                                bark_params={
-                                    "call": "1",
-                                    "sound": "alarm",
-                                    "level": "timeSensitive",
-                                    "group": "binance-copy-slot",
-                                    "url": snap.app_deeplink,
-                                },
-                                client=self._injected_client,
-                            )
-                            self._last_slot_alert_mono[pid] = now_mono
-                            last_alert_ms = wall_ms
-
-                    # 2. Public trade activity & inferred positions check
-                    act: LeadTradeActivity | None = None
-                    prev_trade_mono = self._last_trade_poll_mono.get(pid)
-                    due_for_trade = (
-                        force_trades
-                        or (not prev_cached)
-                        or (prev_trade_mono is None)
-                        or ((now_mono - prev_trade_mono) >= eff_trade_s)
-                    )
-                    if due_for_trade:
-                        try:
-                            act = await watcher_client.fetch_trade_activity(pid, now_ms=wall_ms)
-                            self._last_trade_poll_mono[pid] = now_mono
-                        except Exception as exc:
-                            logger.debug("Trade activity fetch skipped for %s: %s", pid, exc)
-
-                    if act is not None:
-                        cur_wm = int(watermarks.get(pid) or 0)
-                        max_ts = max((o.order_time_ms for o in act.recent_orders), default=0)
-                        if cur_wm <= 0:
-                            watermarks[pid] = max_ts if max_ts > 0 else wall_ms
-                        else:
-                            fresh = [o for o in act.recent_orders if o.order_time_ms > cur_wm]
-                            if fresh:
-                                fresh.sort(key=lambda o: o.order_time_ms)
-                                if has_bark and self._alert_enabled(pid, "trade_alert"):
-                                    grouped: dict[tuple[str, str, str], list[LeadOrderRecord]] = {}
-                                    for o in fresh:
-                                        grouped.setdefault((o.symbol, o.action_zh, o.action_en), []).append(o)
-                                    for (sym, act_zh, _act_en), legs in grouped.items():
-                                        tot_qty = sum(x.executed_qty for x in legs)
-                                        tot_notional = sum(x.executed_qty * x.avg_price for x in legs)
-                                        w_avg = (tot_notional / tot_qty) if tot_qty > 0 else 0.0
-                                        tot_pnl = sum(x.realized_pnl for x in legs)
-                                        leg_note = f"({len(legs)}笔合并) " if len(legs) > 1 else ""
-                                        pnl_note = f"｜已实现 {tot_pnl:+.0f}U" if abs(tot_pnl) >= 0.5 else ""
-                                        pos_match = next(
-                                            (p for p in act.inferred_positions if p.symbol == sym),
-                                            None,
-                                        )
-                                        pos_note = (
-                                            f"｜在途{pos_match.side_zh} {pos_match.qty:g} @ {_fmt_smart_price(pos_match.avg_entry_price)}"
-                                            if pos_match is not None
-                                            else "｜该币种已平清"
-                                        )
-                                        await dispatch_notification(
-                                            notifs,
-                                            title=f"📊 {snap.nickname} {sym} {act_zh}",
-                                            body=(
-                                                f"{leg_note}数量 {tot_qty:g} 均价 {_fmt_smart_price(w_avg)}"
-                                                f"{pnl_note}{pos_note} ({legs[-1].time_bj})"
-                                            ),
-                                            url=snap.app_deeplink or snap.lead_url,
-                                            bark_params={
-                                                "sound": "bell",
-                                                "level": "timeSensitive",
-                                                "group": "binance-copy-trade",
-                                                "url": snap.app_deeplink,
-                                            },
-                                            client=self._injected_client,
-                                        )
-                                watermarks[pid] = max(cur_wm, max_ts)
-
-                        snapshots[pid] = self._serialize_snapshot(snap, act, last_alert_ms=last_alert_ms)
-                    else:
-                        snapshots[pid] = {
-                            **self._serialize_snapshot(snap, None, last_alert_ms=last_alert_ms),
-                            "inferred_positions": list(prev_cached.get("inferred_positions") or []),
-                            "recent_orders": list(prev_cached.get("recent_orders") or []),
-                        }
+                results = await asyncio.gather(*(check(t) for t in targets))
+                errors = [error for error in results if error]
             finally:
-                await watcher_client.aclose()
-
-            if cycle_had_error:
-                self._consecutive_failures += 1
-            else:
-                self._consecutive_failures = 0
-                self._last_error = ""
-                self._last_error_zh = ""
-
-            self._updated_at_ms = wall_ms
-            # Polling owns observations, while user actions own the list of targets and their switches.
-            current = self._load_state()
-            current_ids = {t["portfolio_id"] for t in current["targets"]}
-            current["snapshots"] = {pid: snap for pid, snap in snapshots.items() if pid in current_ids}
-            current["watermarks"] = {pid: wm for pid, wm in watermarks.items() if pid in current_ids}
-            self._save_state(current)
+                await client.aclose()
+            self._consecutive_failures = self._consecutive_failures + 1 if len(errors) == len(targets) else 0
+            self._last_error, self._last_error_zh = errors[-1] if errors else ("", "")
+            self._updated_at_ms = int(time.time() * 1000)
             return self.get_status(demo_mode=False)
 
     async def send_test_ring(self, portfolio_id: str = "") -> dict[str, Any]:

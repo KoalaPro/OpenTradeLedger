@@ -107,7 +107,10 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
       if (!userToggledGuide) setGuideOpen(false)
       const slotSec = res.interval_sec ?? status?.interval_sec ?? 10
       const tradeSec = res.trade_poll_sec ?? status?.trade_poll_sec ?? 30
-      if (allAlreadyExisted) {
+      const historyUnavailable = res.items.some(item => inputIds.includes(item.portfolio_id) && item.trade_stale)
+      if (historyUnavailable) {
+        flash('err', isZh ? '目标已保存。公开成交数据暂不可用，稍后将自动重试。' : 'Target saved. Public trade history is unavailable and will be retried.')
+      } else if (allAlreadyExisted) {
         flash(
           'ok',
           isZh
@@ -263,7 +266,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
             <Bell size={15} className="text-[var(--warn)] shrink-0" />
             <span>
               {isZh
-                ? '尚未配置 Bark。盯盘可正常使用，仅在页面更新，手机不会收到空位或调仓提醒。'
+                ? '尚未配置 Bark。后台会继续扫描，结果可在本页查看。绑定 Bark 后可开启手机提醒。'
                 : 'Bark is not configured. You can monitor traders on this page. Configure Bark to receive slot and trade alerts on your phone.'}
             </span>
           </div>
@@ -645,7 +648,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                 data-testid={`watcher-card-${item.portfolio_id}`}
                 className="otl-card p-5 space-y-3.5"
                 style={
-                  item.has_open_slot && item.enabled
+                  item.has_open_slot && item.enabled && !item.probe_error
                     ? { borderColor: 'var(--pos-bd)' }
                     : undefined
                 }
@@ -664,6 +667,8 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                       <span className="px-2.5 py-0.5 rounded-full text-[11.5px] font-medium border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-3)]">
                         {isZh ? '已暂停盯盘' : 'Paused'}
                       </span>
+                    ) : item.probe_error ? (
+                      <span className="text-[12px] text-[var(--warn)]">{isZh ? '名额数据待更新' : 'Slot data unavailable'}</span>
                     ) : item.has_open_slot ? (
                       <span
                         data-testid={`slot-open-badge-${item.portfolio_id}`}
@@ -816,6 +821,21 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                 {(item.probe_error || item.probe_error_zh) && (
                   <div className="otl-status-err px-3 py-2 rounded-lg text-[12px]">
                     {isZh ? item.probe_error_zh || item.probe_error : item.probe_error}
+                    {item.slot_updated_at_ms ? (isZh ? ' · 上次名额数据 ' : ' · Last slot data ') + new Date(item.slot_updated_at_ms).toLocaleString(locale) : ''}
+                  </div>
+                )}
+
+                {item.trade_stale && (
+                  <div className="otl-status-err px-3 py-2 rounded-lg text-[12px]">
+                    {isZh ? '公开成交数据暂不可用。' : 'Public trade data unavailable. '}
+                    {item.trade_updated_at_ms
+                      ? (isZh ? '上次成功读取于 ' : 'Last updated ') + new Date(item.trade_updated_at_ms).toLocaleString(locale)
+                      : (isZh ? '尚无可核实的更新时间。' : 'Last update time is unknown.')}
+                  </div>
+                )}
+                {Boolean(item.pending_alert_count) && (
+                  <div className="text-[12px] text-[var(--warn)]">
+                    {isZh ? `${item.pending_alert_count} 条手机提醒待重试` : `${item.pending_alert_count} mobile alerts awaiting retry`}
                   </div>
                 )}
 
@@ -848,7 +868,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                       ))
                     ) : (
                       <span className="text-[var(--fg-3)]">
-                        {isZh ? '当前空仓观望中' : 'Flat / No inferred open positions'}
+                        {isZh ? '暂无可展示的推算持仓' : 'No inferred positions to display'}
                         {item.recent_orders[0]
                           ? isZh
                             ? ` · 最近动作：${item.recent_orders[0].time_bj} ${item.recent_orders[0].symbol} ${item.recent_orders[0].action_zh} ${item.recent_orders[0].executed_qty} @ ${fmtPrice(item.recent_orders[0].avg_price)}`
@@ -857,6 +877,13 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                       </span>
                     )}
                   </div>
+
+                  {Boolean(item.uncertain_symbols?.length) && (
+                    <span className="text-[12px] text-[var(--fg-2)]">
+                      {item.uncertain_symbols?.join('、')}
+                      {isZh ? ' 的单向成交缺少持仓基线，无法确认净持仓。' : ' one-way fills lack a position baseline. Net exposure is unknown.'}
+                    </span>
+                  )}
 
                   {item.recent_orders.length > 0 && (
                     <button

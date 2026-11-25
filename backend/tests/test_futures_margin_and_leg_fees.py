@@ -175,12 +175,12 @@ def test_bug2_gate_unsplit_total_fee_marks_leg_fee_unknown(tmp_path: Path) -> No
 async def test_bug3_hiding_copy_watcher_tab_keeps_background_radar_scanning(tmp_path: Path) -> None:
     """Toggling modules.copy_watcher=False only hides the sidebar tab; background radar must keep scanning."""
     pid = "5075281354358777856"
-    scan_calls: list[float] = []
+    scans: asyncio.Queue[str] = asyncio.Queue()
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         if "lead-portfolio/detail" in url:
-            scan_calls.append(time.monotonic())
+            scans.put_nowait(request.url.params["portfolioId"])
             return httpx.Response(
                 200,
                 json={
@@ -214,10 +214,9 @@ async def test_bug3_hiding_copy_watcher_tab_keeps_background_radar_scanning(tmp_
     watcher.set_target_ids_bulk([pid])
     await watcher.start()
     try:
-        await asyncio.sleep(0.05)
+        assert await asyncio.wait_for(scans.get(), timeout=5) == pid
         watcher.notify_config_changed()
-        await asyncio.sleep(0.05)
-        assert len(scan_calls) >= 2, f"Expected background scans while sidebar tab is hidden, got {len(scan_calls)}"
+        assert await asyncio.wait_for(scans.get(), timeout=5) == pid
     finally:
         await watcher.stop()
         await mock_client.aclose()

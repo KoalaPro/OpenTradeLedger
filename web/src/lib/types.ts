@@ -475,6 +475,11 @@ export interface CopyWatcherTargetItem {
   last_alert_ms: number
   inferred_positions: CopyWatcherInferredPosition[]
   recent_orders: CopyWatcherOrderItem[]
+  slot_updated_at_ms?: number
+  trade_updated_at_ms?: number
+  trade_stale?: boolean
+  uncertain_symbols?: string[]
+  pending_alert_count?: number
   probe_error?: string
   probe_error_zh?: string
 }
