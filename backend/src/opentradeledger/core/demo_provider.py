@@ -264,8 +264,9 @@ def build_demo_dashboard(
     ]
 
     exchanges = [dict(ex) for ex in _DEMO_EXCHANGES]
+    period_trades = [tr for tr in all_trades if _in_range(tr)]
     counts_by_venue: dict[str, int] = defaultdict(int)
-    for tr in all_trades:
+    for tr in period_trades:
         counts_by_venue[tr["venue_id"]] += 1
     for ex in exchanges:
         ex["trade_count"] = counts_by_venue.get(ex["venue_id"], 0)
@@ -287,33 +288,32 @@ def build_demo_dashboard(
 
     # Equity curve & calendar days
     day_deltas: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for tr in sorted(filtered, key=lambda x: x["close_time_ms"]):
+    for tr in all_trades:
         day_deltas[tr["close_date"]].append(tr)
+    calendar_days = [
+        {"date": day, "net_pnl_usd": round(sum(t["net_pnl_usd"] for t in items), 2), "trade_count": len(items)}
+        for day, items in sorted(day_deltas.items())
+    ]
+    period_days: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for tr in filtered:
+        period_days[tr["close_date"]].append(tr)
     equity_curve = []
-    calendar_days = []
-    cum_net = 0.0
-    cum_book = 0.0
-    for seq, (d, items) in enumerate(sorted(day_deltas.items()), start=1):
-        d_net = round(sum(x["net_pnl_usd"] for x in items), 2)
-        d_book = round(sum(x["book_pnl_usd"] for x in items), 2)
-        cum_net = round(cum_net + d_net, 2)
-        cum_book = round(cum_book + d_book, 2)
-        equity_curve.append(
-            {
-                "seq": seq,
-                "date": d,
-                "label": d[5:],
-                "delta_usd": d_net,
-                "cum_net_usd": cum_net,
-                "cum_book_usd": cum_book,
-            }
-        )
-        calendar_days.append({"date": d, "net_pnl_usd": d_net, "trade_count": len(items)})
+    cum_net = cum_book = peak = max_drawdown = 0.0
+    for seq, (d, items) in enumerate(sorted(period_days.items()), start=1):
+        d_net = sum(x["net_pnl_usd"] for x in items)
+        cum_net += d_net
+        cum_book += sum(x["book_pnl_usd"] for x in items)
+        peak = max(peak, cum_net)
+        max_drawdown = max(max_drawdown, peak - cum_net)
+        equity_curve.append({
+            "seq": seq, "date": d, "label": d[5:], "delta_usd": round(d_net, 2),
+            "cum_net_usd": round(cum_net, 2), "cum_book_usd": round(cum_book, 2),
+        })
 
     # Fee matrix by venue
     fee_matrix: list[dict[str, Any]] = []
     for ex in exchanges:
-        v_trades = [t for t in all_trades if t["venue_id"] == ex["venue_id"]]
+        v_trades = [t for t in filtered if t["venue_id"] == ex["venue_id"]]
         if not v_trades:
             continue
         maker_bps = [
@@ -344,6 +344,8 @@ def build_demo_dashboard(
                 "display_name": ex["display_name"],
                 "color_token": ex["color_token"],
                 "trade_count": len(v_trades),
+                "maker_bps_known": bool(maker_bps),
+                "taker_bps_known": bool(taker_bps),
                 "maker_gross_bps": avg_m,
                 "maker_net_bps": m_net,
                 "taker_gross_bps": avg_t,
@@ -394,6 +396,17 @@ def build_demo_dashboard(
         {"key": "stocks", "label": "Equities & Tokenized Stocks", "label_zh": "正股与 1:1 股票代币收益", "detail": "Spot equity & tokenized holdings unrealized + realized", "detail_zh": "跨平台正股与代币持仓浮盈及交割", "amount_usd": stock_net},
         {"key": "earn_adj", "label": "Earn Yield & Open Unrealized", "label_zh": "理财生息与在途持仓浮盈", "detail": "Flexible earn rewards + live open position MtM", "detail_zh": "持币生息奖励与当前在途仓位浮盈", "amount_usd": earn_and_adj},
     ]
+
+    range_net = round(sum(t["net_pnl_usd"] for t in period_trades), 2)
+    range_items = [{
+        **reconcile_items[0],
+        "detail": f"{len(period_trades)} closed trades in this period",
+        "detail_zh": f"本期 {len(period_trades)} 笔平仓",
+        "amount_usd": range_net,
+    }] if period_trades else []
+    if range_key == "all":
+        range_net = whole_net_pnl
+        range_items = reconcile_items
 
     # Optional custom goal tracker
     goal_info = None
@@ -499,6 +512,8 @@ def build_demo_dashboard(
             "total_equity_usd": total_equity,
             "net_principal_usd": total_principal,
             "whole_net_pnl_usd": whole_net_pnl,
+            "range_whole_net_pnl_usd": range_net,
+            "range_whole_roi_pct": round(range_net / total_principal * 100, 2) if total_principal > 0 else 0.0,
             "whole_roi_pct": round((whole_net_pnl / total_principal) * 100.0, 2) if total_principal > 0 else 0.0,
             "futures_net_pnl_usd": futures_net,
             "futures_book_pnl_usd": futures_book,
@@ -511,7 +526,7 @@ def build_demo_dashboard(
             "net_fee_usd": net_fee,
             "combined_relief_pct": relief_pct,
             "potential_maker_savings_usd": round(sum(r["potential_maker_savings_usd"] for r in fee_matrix), 2),
-            "max_drawdown_usd": 148.60,
+            "max_drawdown_usd": round(max_drawdown, 2),
         },
         "equity_breakdown": {
             "futures_margin_usd": round(total_equity - 1642.80 - 1240.00 - 4480.00, 2),
@@ -563,6 +578,7 @@ def build_demo_dashboard(
             "net_pnl_usd": whole_net_pnl,
             "residual_usd": 0.0,
             "items": reconcile_items,
+            "range_items": range_items,
         },
         "equity_curve": equity_curve,
         "calendar_days": calendar_days,

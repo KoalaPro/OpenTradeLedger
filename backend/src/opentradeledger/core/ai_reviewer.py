@@ -156,6 +156,10 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
         {
             "venue": r.get("display_name") or r.get("venue_id"),
             "trades": r.get("trade_count"),
+            "maker_rate_source": r.get("maker_rate_source", "observed" if r.get("maker_bps_known", True) else "unknown"),
+            "taker_rate_source": r.get("taker_rate_source", "observed" if r.get("taker_bps_known", True) else "unknown"),
+            "maker_configured_gross_bps": r.get("maker_gross_bps") if r.get("maker_rate_source") == "configured" else None,
+            "taker_configured_gross_bps": r.get("taker_gross_bps") if r.get("taker_rate_source") == "configured" else None,
             "maker_gross_net_bps": (
                 f"{r.get('maker_gross_bps', 0)}/{r.get('maker_net_bps', 0)}"
                 if r.get("maker_bps_known", True)
@@ -172,7 +176,7 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "discount_saved_usd": r.get("discount_saved_usd"),
             "rebate_usd": r.get("rebate_usd"),
             "net_fee_usd": r.get("net_fee_usd"),
-            "combined_relief_pct": r.get("combined_relief_pct"),
+            "combined_relief_pct": r.get("combined_relief_pct") if r.get("gross_fee_usd") or r.get("discount_saved_usd") else None,
         }
         for r in (dashboard.get("fee_matrix") or [])
     ]
@@ -269,6 +273,8 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "net_principal_usd": s.get("net_principal_usd"),
             "whole_net_pnl_usd": s.get("whole_net_pnl_usd"),
             "whole_roi_pct": s.get("whole_roi_pct"),
+            "range_whole_net_pnl_usd": s.get("range_whole_net_pnl_usd"),
+            "range_whole_roi_pct": s.get("range_whole_roi_pct"),
             "futures_net_pnl_usd": s.get("futures_net_pnl_usd"),
             "trade_count": s.get("trade_count"),
             "win_rate_pct": s.get("win_rate_pct"),
@@ -510,6 +516,8 @@ async def generate_ai_review(
             "2) Per-leg Maker vs Taker fee drag & cross-venue fee/rebate routing optimization.\n"
             "3) Top winning/losing symbols concentration & stop-loss posture on open positions.\n"
             "4) Capital allocation across futures, copy trading, equities/spot, and goal pacing (if enabled). "
+            "For the selected period use range_whole_net_pnl_usd and range_whole_roi_pct. whole_net_pnl_usd and whole_roi_pct are lifetime totals. "
+            "Configured gross rates are fee schedules and have no observed net rate for that side. "
             "Use current holdings and equity for stock allocation. stock_commodity_perp_history_count counts "
             "historical derivatives records grouped by venue and symbol.\n\n"
             "Ledger JSON:\n"

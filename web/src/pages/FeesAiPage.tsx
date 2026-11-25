@@ -6,7 +6,28 @@ import { SimpleMarkdown } from '../components/SimpleMarkdown'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
-import type { DashboardData, UserSettings } from '../lib/types'
+import type { DashboardData, UserSettings, VenueFeeRow } from '../lib/types'
+
+function FeeRateCell({ row, side }: { row: VenueFeeRow; side: 'maker' | 'taker' }) {
+  const { locale } = useI18n()
+  const isZh = locale !== 'en'
+  const gross = row[`${side}_gross_bps`].toFixed(2)
+  const source = row[`${side}_rate_source`]
+  if (source === 'configured') {
+    const unknown = row.trade_count > 0 && row.maker_bps_known === false && row.taker_bps_known === false
+    return <span>{gross} <small>{isZh ? '配置毛费率' : 'quoted gross'}</small> / {
+      unknown ? (isZh ? '分腿未知' : 'Split unknown') : '—'
+    }</span>
+  }
+  if (source === 'unknown' || row[`${side}_bps_known`] === false || row.trade_count === 0) {
+    const blended = side === 'taker' && (row.blended_net_bps ?? 0) > 0
+    return <span className="text-[var(--fg-3)] text-[11.5px]">
+      {row.trade_count === 0 ? (isZh ? '无成交样本' : 'No fills') : (isZh ? '分腿未知' : 'Split unknown')}
+      {blended && ` · ${isZh ? '综合' : 'Avg'} ${row.blended_net_bps!.toFixed(2)} bps`}
+    </span>
+  }
+  return <>{gross} / <b>{row[`${side}_net_bps`]?.toFixed(2) ?? '—'}</b></>
+}
 
 export function FeesAiPage({
   data,
@@ -157,31 +178,10 @@ export function FeesAiPage({
                   </td>
                   <td className="text-right whitespace-nowrap">{row.trade_count}</td>
                   <td className="text-right whitespace-nowrap">
-                    {row.maker_bps_known === false ? (
-                      <span className="text-[var(--fg-3)] text-[11.5px]">
-                        {isZh ? '分腿未知' : 'Split unknown'}
-                      </span>
-                    ) : (
-                      <>
-                        {row.maker_gross_bps.toFixed(2)} / <b>{row.maker_net_bps.toFixed(2)}</b>
-                      </>
-                    )}
+                    <FeeRateCell row={row} side="maker" />
                   </td>
                   <td className="text-right whitespace-nowrap">
-                    {row.taker_bps_known === false ? (
-                      <span className="text-[var(--fg-2)] text-[11.5px]">
-                        {isZh ? '分腿未知' : 'Split unknown'}
-                        {(row.blended_net_bps ?? 0) > 0
-                          ? isZh
-                            ? ` · 综合 ${(row.blended_net_bps ?? 0).toFixed(2)} bps`
-                            : ` · Avg ${(row.blended_net_bps ?? 0).toFixed(2)} bps`
-                          : ''}
-                      </span>
-                    ) : (
-                      <>
-                        {row.taker_gross_bps.toFixed(2)} / <b>{row.taker_net_bps.toFixed(2)}</b>
-                      </>
-                    )}
+                    <FeeRateCell row={row} side="taker" />
                   </td>
                   <td className="text-right whitespace-nowrap sensitive">
                     {row.discount_saved_usd > 0 ? (
@@ -202,7 +202,7 @@ export function FeesAiPage({
                     )}
                   </td>
                   <td className="text-right font-semibold whitespace-nowrap">
-                    {row.combined_relief_pct.toFixed(1)}%
+                    {row.trade_count > 0 && row.gross_fee_usd + row.discount_saved_usd > 0 ? `${row.combined_relief_pct.toFixed(1)}%` : '—'}
                   </td>
                 </tr>
               ))}

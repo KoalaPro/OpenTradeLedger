@@ -354,8 +354,8 @@ export function TradeDrilldownDrawer({
                           </span>
                         </div>
                         <div className="text-[11px] text-[var(--fg-3)] mt-1 sensitive">
-                          {t('fee_entry_short')} -{cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)} ·{' '}
-                          {t('fee_exit_short')} -{cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)} ·{' '}
+                          {t('fee_entry_short')} {tr.entry_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)}`} ·{' '}
+                          {t('fee_exit_short')} {tr.exit_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}`} ·{' '}
                           {t('fee_net_short')} -{cur.money(tr.net_fee_usd, 2)}
                         </div>
                       </div>

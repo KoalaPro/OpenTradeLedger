@@ -43,6 +43,7 @@ _EN_RECONCILE_TITLE_BY_KEY: dict[str, str] = {
     "mexc_other_net": "MEXC Contract Hold Earn & Bonus Offset",
     "okx_futures": "OKX Manual Futures Net PnL",
     "okx_copy_trading": "OKX Copy Trading Net PnL",
+    "okx_fee_rebates": "OKX Funding Account Fee Rebates",
     "okx_earn_spot": "OKX Earn, Tokenized Equities & Spot Valuation",
     "bybit_futures": "Bybit Manual Futures Net PnL",
     "bybit_earn_spot": "Bybit Earn, Tokenized Equities & Spot Valuation",
@@ -503,8 +504,6 @@ class LedgerService:
         range_all_venues_cum = Decimal("0")
         for _, b in active_entries:
             for d_k, v_dec in b.daily_pnl.items():
-                if abs(v_dec) < Decimal("0.0005") and d_k != today_bj_str:
-                    continue
                 if _date_matches_range(d_k, rk_norm, cutoff_day_bj):
                     range_all_venues_cum += v_dec
                     for ck, cv in (b.daily_components.get(d_k) or {}).items():

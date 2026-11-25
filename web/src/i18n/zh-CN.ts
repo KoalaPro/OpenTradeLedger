@@ -91,7 +91,7 @@ export const zhCN = {
   mode_STOP_MARKET: '止损市价',
   mode_TP_MARKET: '止盈市价',
   mode_REVERSE_MARKET: '反手市价',
-  mode_UNKNOWN: '分腿费用未知',
+  mode_UNKNOWN: '成交方式未知',
 
   wf_gross_pnl: '平仓价差毛利',
   wf_funding: '持仓资金费结算',
@@ -124,8 +124,8 @@ export const zhCN = {
   an_attr_business: '按业务归因',
   an_attr_symbol: '按标的归因',
 
-  fee_matrix_title: '跨平台实测费率、抵扣与返佣对比',
-  fee_matrix_sub: '100% 依据实时成交与返佣流水动态反算，零固定比例常数',
+  fee_matrix_title: '跨平台费率、抵扣与返佣对比',
+  fee_matrix_sub: '毛费率和净费率按本期成交计算。缺少分腿成交时，单独标注交易所配置的毛费率。',
   maker_savings_badge: '吃单改挂单预计可多留存',
   ai_title: 'AI 交易行为与成本复盘',
   ai_generate: '生成最新复盘',

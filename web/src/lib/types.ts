@@ -148,9 +148,11 @@ export interface VenueFeeRow {
   color_token: string
   trade_count: number
   maker_gross_bps: number
-  maker_net_bps: number
+  maker_net_bps: number | null
   taker_gross_bps: number
-  taker_net_bps: number
+  taker_net_bps: number | null
+  maker_rate_source?: 'observed' | 'configured' | 'unknown'
+  taker_rate_source?: 'observed' | 'configured' | 'unknown'
   maker_bps_known?: boolean
   taker_bps_known?: boolean
   blended_gross_bps?: number

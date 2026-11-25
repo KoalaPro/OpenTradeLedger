@@ -12,7 +12,7 @@ from opentradeledger.adapters.base import (
     VenueLedgerBundle,
     VenueStockBundle,
 )
-from opentradeledger.adapters.okx.client import normalize_okx_closed_trades
+from opentradeledger.adapters.okx.client import is_okx_trading_rebate, normalize_okx_closed_trades
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -21,6 +21,7 @@ from opentradeledger.core.venue_primitives import (
     clamp_reconcile_streams_to_target,
     dec,
     fmt_ms,
+    norm_ms,
     is_tokenized_stock_symbol,
 )
 
@@ -128,12 +129,36 @@ def build_okx_venue_ledger(
             ext_asset_flow += _coin_usd(str(ab.get("ccy") or ""), float(ab.get("balChg") or 0.0))
     principal_usd = round(dep - wd + ext_asset_flow, 2)
 
-    earn_interest_usd = 0.0
-    for b in snap.get("bills") or []:
-        bt = str(b.get("type") or "").strip()
-        st = str(b.get("subType") or "").strip().lower()
-        if bt == "13" or "earn" in st or "interest" in st or "saving" in st:
-            earn_interest_usd += _coin_usd(str(b.get("ccy") or "USDT"), float(b.get("balChg") or 0.0))
+    # Trading-account and funding-account bill types use different code tables.
+    daily_comp: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    bill_totals: dict[str, Decimal] = defaultdict(Decimal)
+    seen_cash_bills: set[str] = set()
+    for stream in ("bills", "asset_bills"):
+        for bill in snap.get(stream) or []:
+            bill_id = str(bill.get("billId") or "")
+            if bill_id and bill_id in seen_cash_bills:
+                continue
+            bill_type = str(bill.get("type") or "")
+            subtype = str(bill.get("subType") or "").lower()
+            if stream == "bills":
+                is_rebate = is_okx_trading_rebate(bill)
+                is_interest = subtype in {"interest", "earn_interest", "saving_interest"} or bool(dec(bill.get("earnAmt")))
+            else:
+                is_rebate = bill_type in {"68", "173", "300"}
+                is_interest = bill_type in {"83", "89", "139", "307", "308", "309", "343", "344", "350", "400", "408", "516", "523"}
+            if not (is_rebate or is_interest):
+                continue
+            if bill_id:
+                seen_cash_bills.add(bill_id)
+            raw_amount = bill.get("earnAmt") if is_interest and dec(bill.get("earnAmt")) else bill.get("balChg")
+            amount = _coin_usd(str(bill.get("ccy") or "USDT"), float(dec(raw_amount)))
+            key = "okx_earn_spot"
+            if is_rebate:
+                key = "okx_fee_rebates" if stream == "asset_bills" else "okx_futures"
+            bill_totals[key] += dec(amount)
+            day = fmt_ms(norm_ms(bill.get("ts")), "%Y-%m-%d")
+            if day and amount:
+                daily_comp[day][key] += dec(amount)
 
     copy_pos_rows = snap.get("copy_positions") or []
     copy_hist_rows = snap.get("copy_history") or []
@@ -162,12 +187,11 @@ def build_okx_venue_ledger(
             "rebate_count": 0,
         }
 
-    maker_bps = 0.0
-    taker_bps = 0.0
-    for frow in snap.get("trade_fee") or []:
-        maker_bps = abs(float(frow.get("makerU") or frow.get("maker") or 0.0)) * 10_000
-        taker_bps = abs(float(frow.get("takerU") or frow.get("taker") or 0.0)) * 10_000
-        break
+    quote = (snap.get("trade_fee") or [{}])[0]
+    maker_quote = quote.get("makerU") if quote.get("makerU") not in (None, "") else quote.get("maker")
+    taker_quote = quote.get("takerU") if quote.get("takerU") not in (None, "") else quote.get("taker")
+    maker_bps = abs(float(maker_quote or 0.0)) * 10_000
+    taker_bps = abs(float(taker_quote or 0.0)) * 10_000
 
     open_positions: list[dict[str, Any]] = []
     for pos in snap.get("positions") or []:
@@ -204,8 +228,6 @@ def build_okx_venue_ledger(
         okb_usd_price=float(px_map.get("OKB", 50.0)),
     )
     trades: list[dict[str, Any]] = []
-    daily_pnl: dict[str, Decimal] = defaultdict(Decimal)
-    daily_comp: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
 
     for rt in raw_trades:
         rt["color_token"] = meta.color_token
@@ -228,19 +250,21 @@ def build_okx_venue_ledger(
         rt["note"] = str(j.get("note") or "")
         trades.append(rt)
         if rt["close_date"]:
-            v_dec = dec(rt["net_pnl_usd"])
-            daily_pnl[rt["close_date"]] += v_dec
-            daily_comp[rt["close_date"]]["okx_futures"] += v_dec
+            # Cash rebates post on the bill settlement day; book PnL excludes rebates.
+            daily_comp[rt["close_date"]]["okx_futures"] += dec(rt["book_pnl_usd"])
 
     equity_2dp = round(equity_usd, 2)
-    net_pnl = round(equity_2dp - principal_usd, 2) if principal_usd != 0 else round(sum(t["net_pnl_usd"] for t in trades), 2)
 
     open_upl_sum = sum(float(p["unrealized_pnl_usd"]) for p in open_positions)
-    closed_net_sum = sum(float(t["net_pnl_usd"]) for t in trades)
     closed_book_sum = sum(float(t["book_pnl_usd"]) for t in trades)
-    closed_reb_sum = sum(float(t["total_rebate_usd"]) for t in trades)
+    closed_reb_sum = float(bill_totals["okx_futures"])
+    wallet_rebates_usd = float(bill_totals["okx_fee_rebates"])
+    earn_interest_usd = float(bill_totals["okx_earn_spot"])
     closed_disc_sum = sum(float(t["total_discount_saved_usd"]) for t in trades)
-    futures_stream_usd = round(closed_net_sum + open_upl_sum, 2)
+    futures_stream_usd = round(closed_book_sum + closed_reb_sum + open_upl_sum, 2)
+    net_pnl = round(equity_2dp - principal_usd, 2) if principal_usd != 0 else round(
+        closed_book_sum + closed_reb_sum + wallet_rebates_usd + earn_interest_usd, 2
+    )
 
     reconcile_streams: list[dict[str, Any]] = []
     if trades or open_positions or abs(futures_stream_usd) > 0.001:
@@ -270,8 +294,17 @@ def build_okx_venue_ledger(
             }
         )
 
-    rem_stream_usd = round(net_pnl - futures_stream_usd - copy_stream_usd, 2)
-    if abs(rem_stream_usd) >= 0.01 or (not reconcile_streams and abs(net_pnl) > 0.001):
+    if wallet_rebates_usd or any("okx_fee_rebates" in parts for parts in daily_comp.values()):
+        reconcile_streams.append({
+            "key": "okx_fee_rebates",
+            "label": "OKX Funding Account Fee Rebates",
+            "label_zh": "OKX 资金账户手续费返佣",
+            "detail": "Fee rebates credited to the funding wallet",
+            "detail_zh": "资金账户已入账的手续费返佣",
+            "amount_usd": round(wallet_rebates_usd, 2),
+        })
+    rem_stream_usd = round(net_pnl - futures_stream_usd - copy_stream_usd - wallet_rebates_usd, 2)
+    if abs(rem_stream_usd) >= 0.01 or earn_interest_usd or (not reconcile_streams and abs(net_pnl) > 0.001):
         earn_part_en = f"Earn interest +{earn_interest_usd:.2f} U · " if earn_interest_usd > 0.005 else ""
         earn_part_zh = f"理财生息 +{earn_interest_usd:.2f} U · " if earn_interest_usd > 0.005 else ""
         reconcile_streams.append(
@@ -356,7 +389,7 @@ def build_okx_venue_ledger(
         spot_holdings=spot_holdings_from_wallets(wallet_balances),
         spot_wallet_balances=wallet_balances,
         reconcile_streams=reconcile_streams,
-        daily_pnl=dict(daily_pnl),
+        daily_pnl={day: sum(parts.values(), Decimal("0")) for day, parts in daily_comp.items()},
         daily_components={d: dict(c) for d, c in daily_comp.items()},
         copy_trading=VenueCopyBundle(
             has_copy_trading=copy_platform is not None,
@@ -376,7 +409,12 @@ def build_okx_venue_ledger(
             holdings=tokenized_stocks,
             perpetuals=stock_perps,
         ),
-        fee_context={"maker_bps": round(maker_bps, 2), "taker_bps": round(taker_bps, 2)},
+        fee_context={
+            "maker_bps": round(maker_bps, 2),
+            "taker_bps": round(taker_bps, 2),
+            "maker_bps_configured": maker_quote not in (None, ""),
+            "taker_bps_configured": taker_quote not in (None, ""),
+        },
     )
 
 
@@ -386,7 +424,7 @@ def build_okx_fee_matrix_row(
 ) -> dict[str, Any] | None:
     m_bps_cfg = float(bundle.fee_context.get("maker_bps") or 0.0)
     t_bps_cfg = float(bundle.fee_context.get("taker_bps") or 0.0)
-    if not range_trades and m_bps_cfg <= 0 and t_bps_cfg <= 0:
+    if not range_trades and not (bundle.fee_context.get("maker_bps_configured") or bundle.fee_context.get("taker_bps_configured")):
         return None
     ex = bundle.exchange_card
     v_gross = round(sum(float(t["total_fee_usd"]) for t in range_trades), 2)
@@ -395,7 +433,7 @@ def build_okx_fee_matrix_row(
     v_net = round(sum(float(t["net_fee_usd"]) for t in range_trades), 2)
     v_reb_pct = round((v_reb / v_gross) * 100.0, 1) if v_gross > 0 else float(ex["rebate_rate_pct"])
     v_base_fee = v_gross + v_disc
-    v_relief_pct = round(((v_reb + v_disc) / v_base_fee) * 100.0, 1) if v_base_fee > 0 else v_reb_pct
+    v_relief_pct = round(((v_reb + v_disc) / v_base_fee) * 100.0, 1) if v_base_fee > 0 else 0.0
 
     m_legs = [t[lk] for t in range_trades for lk in ("entry_leg", "exit_leg") if t[lk].get("fee_known", True) and t[lk]["role"] == "MAKER"]
     t_legs = [t[lk] for t in range_trades for lk in ("entry_leg", "exit_leg") if t[lk].get("fee_known", True) and t[lk]["role"] == "TAKER"]
@@ -403,11 +441,11 @@ def build_okx_fee_matrix_row(
     m_not = sum(float(l["notional_usd"]) for l in m_legs)
     t_not = sum(float(l["notional_usd"]) for l in t_legs)
     m_gross_bps = round((sum(float(l["gross_fee_usd"]) for l in m_legs) / m_not) * 10_000, 2) if m_not > 0 else m_bps_cfg
-    m_net_bps = round((sum(float(l["net_fee_usd"]) for l in m_legs) / m_not) * 10_000, 2) if m_not > 0 else round(m_bps_cfg * (1.0 - v_reb_pct / 100.0), 2)
+    m_net_bps = round((sum(float(l["net_fee_usd"]) for l in m_legs) / m_not) * 10_000, 2) if m_not > 0 else None
     t_gross_bps = round((sum(float(l["gross_fee_usd"]) for l in t_legs) / t_not) * 10_000, 2) if t_not > 0 else t_bps_cfg
-    t_net_bps = round((sum(float(l["net_fee_usd"]) for l in t_legs) / t_not) * 10_000, 2) if t_not > 0 else round(t_bps_cfg * (1.0 - v_reb_pct / 100.0), 2)
+    t_net_bps = round((sum(float(l["net_fee_usd"]) for l in t_legs) / t_not) * 10_000, 2) if t_not > 0 else None
     t_net_sum = sum(float(l["net_fee_usd"]) for l in t_legs)
-    maker_sav = round(max(0.0, t_net_sum - t_not * (m_net_bps / 10_000.0)), 2) if t_not > 0 else 0.0
+    maker_sav = round(max(0.0, t_net_sum - t_not * (m_net_bps / 10_000.0)), 2) if t_not > 0 and m_net_bps is not None else 0.0
 
     return {
         "venue_id": "okx",
@@ -419,8 +457,10 @@ def build_okx_fee_matrix_row(
         "maker_net_bps": m_net_bps,
         "taker_gross_bps": t_gross_bps,
         "taker_net_bps": t_net_bps,
-        "maker_bps_known": bool(m_not > 0 or m_bps_cfg > 0 or len(range_trades) == 0),
-        "taker_bps_known": bool(t_not > 0 or t_bps_cfg > 0 or len(range_trades) == 0),
+        "maker_bps_known": m_not > 0,
+        "maker_rate_source": "observed" if m_not > 0 else ("configured" if bundle.fee_context.get("maker_bps_configured") else "unknown"),
+        "taker_bps_known": t_not > 0,
+        "taker_rate_source": "observed" if t_not > 0 else ("configured" if bundle.fee_context.get("taker_bps_configured") else "unknown"),
         "blended_gross_bps": round((v_gross / tot_not) * 10_000, 2) if tot_not > 0 else 0.0,
         "blended_net_bps": round((v_net / tot_not) * 10_000, 2) if tot_not > 0 else 0.0,
         "gross_fee_usd": v_gross,

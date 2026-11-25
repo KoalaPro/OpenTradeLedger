@@ -258,7 +258,7 @@ class OkxReadOnlyClient:
         return await self._paginate_after(
             "/api/v5/asset/bills",
             {},
-            cursor_fields=("billId",),
+            cursor_fields=("ts",),
             id_fn=lambda r: str(r.get("billId") or f"{r.get('ts')}_{r.get('type')}_{r.get('balChg')}"),
             ts_field="ts",
             since_ms=since_ms,
@@ -346,7 +346,7 @@ class OkxReadOnlyClient:
         rebate_sum = sum(
             max(0.0, float(b.get("balChg") or b.get("pnl") or 0.0))
             for b in bills
-            if _is_okx_rebate_bill(b)
+            if is_okx_trading_rebate(b)
         )
         observed_rebate_ratio = (
             min(0.95, rebate_sum / gross_fee_sum) if gross_fee_sum > 0 and rebate_sum > 0 else 0.0
@@ -372,12 +372,13 @@ class OkxReadOnlyClient:
         }
 
 
-def _is_okx_rebate_bill(b: dict[str, Any]) -> bool:
+def is_okx_trading_rebate(b: dict[str, Any]) -> bool:
     b_type = str(b.get("type") or "").strip()
     sub_type = str(b.get("subType") or "").strip().lower()
     return (
-        b_type in {"15", "22"}
-        or sub_type in {"173", "174", "212"}
+        # Older plugin snapshots explicitly represented a commission with this
+        # pair. In the trading account, subtypes 173/174 alone are funding.
+        (b_type == "15" and sub_type == "173")
         or "rebate" in sub_type
         or "commission" in sub_type
     )
@@ -401,7 +402,7 @@ def normalize_okx_closed_trades(
     rebate_bills_by_inst: dict[str, list[dict[str, Any]]] = {}
     consumed_bill_ids: set[str] = set()
     for idx, b in enumerate(bills or []):
-        if not _is_okx_rebate_bill(b):
+        if not is_okx_trading_rebate(b):
             continue
         amt = max(0.0, float(b.get("balChg") or b.get("pnl") or 0.0))
         if amt <= 0:
@@ -457,19 +458,20 @@ def normalize_okx_closed_trades(
         exit_disc_asset = next((x[2] for x in exit_fee_tuples if x[2]), "")
 
         total_fee_pos = abs(float(pos.get("fee") or 0.0))
-        if entry_gross_fee == 0.0 and exit_gross_fee == 0.0 and total_fee_pos > 0:
-            entry_gross_fee = round(total_fee_pos * 0.5, 6)
-            exit_gross_fee = round(total_fee_pos - entry_gross_fee, 6)
+        def fill_role(rows: list[dict[str, Any]]) -> str:
+            roles = {str(f.get("execType") or "").upper() for f in rows}
+            return "MAKER" if roles == {"M"} else ("TAKER" if roles == {"T"} else "UNKNOWN")
 
-        entry_is_maker = any(str(f.get("execType") or "").upper() == "M" for f in entry_fills)
-        exit_is_maker = any(str(f.get("execType") or "").upper() == "M" for f in exit_fills)
-
+        entry_role = fill_role(entry_fills)
+        exit_role = fill_role(exit_fills)
+        entry_fee_known = bool(entry_fills) and all(f.get("fee") not in (None, "") for f in entry_fills)
+        exit_fee_known = bool(exit_fills) and all(f.get("fee") not in (None, "") for f in exit_fills)
         entry_notional = open_px * qty
         exit_notional = close_px * qty
         entry_bps = (entry_gross_fee / entry_notional * 10_000) if entry_notional > 0 else 0.0
         exit_bps = (exit_gross_fee / exit_notional * 10_000) if exit_notional > 0 else 0.0
 
-        total_fee = round(entry_gross_fee + exit_gross_fee, 6)
+        total_fee = round(max(entry_gross_fee + exit_gross_fee, total_fee_pos), 6)
 
         # Match explicit rebate bills on this instrument first; fall back to observed_rebate_ratio
         matched_reb_amt = 0.0
@@ -486,7 +488,7 @@ def normalize_okx_closed_trades(
         if matched_reb_amt > 0 and total_fee > 0:
             eff_ratio = min(0.95, matched_reb_amt / total_fee)
             entry_rebate = round(matched_reb_amt * (entry_gross_fee / total_fee), 6)
-            exit_rebate = round(matched_reb_amt - entry_rebate, 6)
+            exit_rebate = round(matched_reb_amt * (exit_gross_fee / total_fee), 6)
             settled_str = _fmt_bj_ms(settled_ts)
         else:
             eff_ratio = max(0.0, min(1.0, rebate_ratio))
@@ -499,9 +501,10 @@ def normalize_okx_closed_trades(
 
         gross_pnl = float(pos.get("pnl") or 0.0)
         funding_pnl = float(pos.get("fundingFee") or 0.0)
-        total_rebate = round(entry_rebate + exit_rebate, 6)
+        total_rebate = round(matched_reb_amt if matched_reb_amt > 0 else total_fee * eff_ratio, 6)
         book_pnl = float(pos.get("realizedPnl") or (gross_pnl - total_fee + funding_pnl))
         net_pnl = round(book_pnl + total_rebate, 6)
+        rebate_status = "SETTLED" if matched_reb_amt > 0 else ("PENDING" if total_rebate > 0 else "NONE")
 
         sym = inst.replace("-SWAP", "").replace("-", "_")
         records.append(
@@ -521,13 +524,14 @@ def normalize_okx_closed_trades(
                 "total_fee_usd": round(total_fee, 4),
                 "total_rebate_usd": round(total_rebate, 4),
                 "total_discount_saved_usd": round(entry_disc + exit_disc, 4),
-                "net_fee_usd": round(entry_net_fee + exit_net_fee, 4),
+                "net_fee_usd": round(max(0.0, total_fee - total_rebate), 4),
                 "net_pnl_usd": round(net_pnl, 4),
-                "rebate_status": "SETTLED",
+                "rebate_status": rebate_status,
                 "is_partial_close": is_partial,
                 "entry_leg": {
-                    "role": "MAKER" if entry_is_maker else "TAKER",
-                    "mode_code": "LIMIT_MAKER" if entry_is_maker else "MARKET_TAKER",
+                    "role": entry_role,
+                    "fee_known": entry_fee_known,
+                    "mode_code": {"MAKER": "LIMIT_MAKER", "TAKER": "MARKET_TAKER"}.get(entry_role, "UNKNOWN"),
                     "fee_bps": round(entry_bps, 2),
                     "time_ms": open_ms,
                     "avg_price": open_px,
@@ -538,12 +542,13 @@ def normalize_okx_closed_trades(
                     "rebate_usd": round(entry_rebate, 4),
                     "rebate_pct": round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else round(eff_ratio * 100.0, 2),
                     "net_fee_usd": round(entry_net_fee, 4),
-                    "rebate_status": "SETTLED",
+                    "rebate_status": rebate_status,
                     "settled_at": settled_str,
                 },
                 "exit_leg": {
-                    "role": "MAKER" if exit_is_maker else "TAKER",
-                    "mode_code": "LIMIT_MAKER" if exit_is_maker else "MARKET_TAKER",
+                    "role": exit_role,
+                    "fee_known": exit_fee_known,
+                    "mode_code": {"MAKER": "LIMIT_MAKER", "TAKER": "MARKET_TAKER"}.get(exit_role, "UNKNOWN"),
                     "fee_bps": round(exit_bps, 2),
                     "time_ms": close_ms,
                     "avg_price": close_px,
@@ -554,7 +559,7 @@ def normalize_okx_closed_trades(
                     "rebate_usd": round(exit_rebate, 4),
                     "rebate_pct": round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else round(eff_ratio * 100.0, 2),
                     "net_fee_usd": round(exit_net_fee, 4),
-                    "rebate_status": "SETTLED",
+                    "rebate_status": rebate_status,
                     "settled_at": settled_str,
                 },
             }

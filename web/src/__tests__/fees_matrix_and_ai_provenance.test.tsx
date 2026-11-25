@@ -324,3 +324,16 @@ describe('v1.3.6 Follow-up 4 Audit Fixes', () => {
     })
   })
 })
+
+it('labels configured quotes and withholds measured relief when the period has no fills', () => {
+  const dash = makeDashboard()
+  Object.assign(dash.fee_matrix[0], {
+    trade_count: 0, maker_gross_bps: 2, maker_rate_source: 'configured',
+    taker_gross_bps: 5, taker_rate_source: 'configured', combined_relief_pct: 20,
+  })
+  render(<I18nProvider locale="zh-CN"><FeesAiPage data={dash} generating={false} onGenerate={vi.fn()} /></I18nProvider>)
+  const row = screen.getByTestId('fee-matrix-section').querySelector('tbody tr')!
+  expect(row.textContent).toContain('配置')
+  expect(row.textContent).toContain('2.00')
+  expect(row.textContent).not.toContain('20.0%')
+})

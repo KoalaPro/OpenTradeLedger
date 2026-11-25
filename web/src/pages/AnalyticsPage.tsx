@@ -23,7 +23,7 @@ export function AnalyticsPage({
   onRangeChange?: (rk: string) => void
   onInspectSymbol?: (venueId: string, symbol: string, venueName?: string) => void
   settings?: UserSettings
-  onUpdateSettings?: (patch: Record<string, unknown>) => Promise<void>
+  onUpdateSettings?: (patch: Record<string, unknown>) => Promise<void | string>
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
@@ -69,12 +69,12 @@ export function AnalyticsPage({
     if (!Number.isFinite(num) || num <= 0) return
     setSavingGoal(true)
     try {
-      await onUpdateSettings({
+      const failure = await onUpdateSettings({
         goal_enabled: true,
         goal_label: goalLabel.trim(),
         goal_target_usd: num,
       })
-      setEditingGoal(false)
+      if (!failure) setEditingGoal(false)
     } finally {
       setSavingGoal(false)
     }
@@ -84,8 +84,8 @@ export function AnalyticsPage({
     if (!onUpdateSettings) return
     setSavingGoal(true)
     try {
-      await onUpdateSettings({ goal_enabled: false })
-      setEditingGoal(false)
+      const failure = await onUpdateSettings({ goal_enabled: false })
+      if (!failure) setEditingGoal(false)
     } finally {
       setSavingGoal(false)
     }

@@ -93,7 +93,7 @@ export const en: Record<MessageKey, string> = {
   mode_STOP_MARKET: 'Stop Market',
   mode_TP_MARKET: 'TP Market',
   mode_REVERSE_MARKET: 'Reverse',
-  mode_UNKNOWN: 'Per-leg fee unknown',
+  mode_UNKNOWN: 'Execution mode unknown',
 
   wf_gross_pnl: 'Gross Spread PnL',
   wf_funding: 'Funding Settlement',
@@ -126,8 +126,8 @@ export const en: Record<MessageKey, string> = {
   an_attr_business: 'By Account Stream',
   an_attr_symbol: 'By Symbol',
 
-  fee_matrix_title: 'Observed Maker/Taker Fees & Rebates',
-  fee_matrix_sub: '100% derived from live executions & rebate ledgers — zero hardcoded rates',
+  fee_matrix_title: 'Maker/Taker Fees & Rebates',
+  fee_matrix_sub: 'Gross and net rates use fills within the selected period. Exchange fee schedules are marked separately.',
   maker_savings_badge: 'Potential Maker Savings',
   ai_title: 'AI Trade & Cost Review',
   ai_generate: 'Generate Review',

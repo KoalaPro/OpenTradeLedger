@@ -119,12 +119,11 @@ def build_bybit_venue_ledger(
     wd = sum(_coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0)) for x in (snap.get("withdrawals") or []))
     principal_usd = round(dep + int_dep - wd, 2)
 
-    maker_bps = 0.0
-    taker_bps = 0.0
-    for frow in snap.get("fee_rates") or []:
-        maker_bps = abs(float(frow.get("makerFeeRate") or 0.0)) * 10_000
-        taker_bps = abs(float(frow.get("takerFeeRate") or 0.0)) * 10_000
-        break
+    quote = (snap.get("fee_rates") or [{}])[0]
+    maker_quote = quote.get("makerFeeRate")
+    taker_quote = quote.get("takerFeeRate")
+    maker_bps = abs(float(maker_quote or 0.0)) * 10_000
+    taker_bps = abs(float(taker_quote or 0.0)) * 10_000
 
     open_positions: list[dict[str, Any]] = []
     for pos in snap.get("positions") or []:
@@ -310,7 +309,12 @@ def build_bybit_venue_ledger(
             holdings=tokenized_stocks,
             perpetuals=stock_perps,
         ),
-        fee_context={"maker_bps": round(maker_bps, 2), "taker_bps": round(taker_bps, 2)},
+        fee_context={
+            "maker_bps": round(maker_bps, 2),
+            "taker_bps": round(taker_bps, 2),
+            "maker_bps_configured": maker_quote not in (None, ""),
+            "taker_bps_configured": taker_quote not in (None, ""),
+        },
     )
 
 
@@ -320,7 +324,7 @@ def build_bybit_fee_matrix_row(
 ) -> dict[str, Any] | None:
     m_bps_cfg = float(bundle.fee_context.get("maker_bps") or 0.0)
     t_bps_cfg = float(bundle.fee_context.get("taker_bps") or 0.0)
-    if not range_trades and m_bps_cfg <= 0 and t_bps_cfg <= 0:
+    if not range_trades and not (bundle.fee_context.get("maker_bps_configured") or bundle.fee_context.get("taker_bps_configured")):
         return None
     ex = bundle.exchange_card
     v_gross = round(sum(float(t["total_fee_usd"]) for t in range_trades), 2)
@@ -329,7 +333,7 @@ def build_bybit_fee_matrix_row(
     v_net = round(sum(float(t["net_fee_usd"]) for t in range_trades), 2)
     v_reb_pct = round((v_reb / v_gross) * 100.0, 1) if v_gross > 0 else float(ex["rebate_rate_pct"])
     v_base_fee = v_gross + v_disc
-    v_relief_pct = round(((v_reb + v_disc) / v_base_fee) * 100.0, 1) if v_base_fee > 0 else v_reb_pct
+    v_relief_pct = round(((v_reb + v_disc) / v_base_fee) * 100.0, 1) if v_base_fee > 0 else 0.0
 
     m_legs = [t[lk] for t in range_trades for lk in ("entry_leg", "exit_leg") if t[lk].get("fee_known", True) and t[lk]["role"] == "MAKER"]
     t_legs = [t[lk] for t in range_trades for lk in ("entry_leg", "exit_leg") if t[lk].get("fee_known", True) and t[lk]["role"] == "TAKER"]
@@ -337,11 +341,11 @@ def build_bybit_fee_matrix_row(
     m_not = sum(float(l["notional_usd"]) for l in m_legs)
     t_not = sum(float(l["notional_usd"]) for l in t_legs)
     m_gross_bps = round((sum(float(l["gross_fee_usd"]) for l in m_legs) / m_not) * 10_000, 2) if m_not > 0 else m_bps_cfg
-    m_net_bps = round((sum(float(l["net_fee_usd"]) for l in m_legs) / m_not) * 10_000, 2) if m_not > 0 else round(m_bps_cfg * (1.0 - v_reb_pct / 100.0), 2)
+    m_net_bps = round((sum(float(l["net_fee_usd"]) for l in m_legs) / m_not) * 10_000, 2) if m_not > 0 else None
     t_gross_bps = round((sum(float(l["gross_fee_usd"]) for l in t_legs) / t_not) * 10_000, 2) if t_not > 0 else t_bps_cfg
-    t_net_bps = round((sum(float(l["net_fee_usd"]) for l in t_legs) / t_not) * 10_000, 2) if t_not > 0 else round(t_bps_cfg * (1.0 - v_reb_pct / 100.0), 2)
+    t_net_bps = round((sum(float(l["net_fee_usd"]) for l in t_legs) / t_not) * 10_000, 2) if t_not > 0 else None
     t_net_sum = sum(float(l["net_fee_usd"]) for l in t_legs)
-    maker_sav = round(max(0.0, t_net_sum - t_not * (m_net_bps / 10_000.0)), 2) if t_not > 0 else 0.0
+    maker_sav = round(max(0.0, t_net_sum - t_not * (m_net_bps / 10_000.0)), 2) if t_not > 0 and m_net_bps is not None else 0.0
 
     return {
         "venue_id": "bybit",
@@ -353,8 +357,10 @@ def build_bybit_fee_matrix_row(
         "maker_net_bps": m_net_bps,
         "taker_gross_bps": t_gross_bps,
         "taker_net_bps": t_net_bps,
-        "maker_bps_known": bool(m_not > 0 or m_bps_cfg > 0 or len(range_trades) == 0),
-        "taker_bps_known": bool(t_not > 0 or t_bps_cfg > 0 or len(range_trades) == 0),
+        "maker_bps_known": m_not > 0,
+        "maker_rate_source": "observed" if m_not > 0 else ("configured" if bundle.fee_context.get("maker_bps_configured") else "unknown"),
+        "taker_bps_known": t_not > 0,
+        "taker_rate_source": "observed" if t_not > 0 else ("configured" if bundle.fee_context.get("taker_bps_configured") else "unknown"),
         "blended_gross_bps": round((v_gross / tot_not) * 10_000, 2) if tot_not > 0 else 0.0,
         "blended_net_bps": round((v_net / tot_not) * 10_000, 2) if tot_not > 0 else 0.0,
         "gross_fee_usd": v_gross,
