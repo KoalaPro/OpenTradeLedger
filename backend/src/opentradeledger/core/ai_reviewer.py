@@ -289,15 +289,40 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_local_highlights(dashboard: dict[str, Any]) -> list[dict[str, str]]:
+def build_local_highlights(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
     s = dashboard.get("summary") or {}
     trade_count = int(s.get("trade_count") or 0)
+    all_time_cnt = int(s.get("all_time_trade_count") or 0)
+    trades = dashboard.get("trades") or []
+
+    if trade_count <= 0 or not trades:
+        sub_zh = (
+            f"本周期无成交，暂无可分析样本（全历史累计 {all_time_cnt} 笔交割，可切换至「30天」或「全部」查看历史费率与执行诊断）。"
+            if all_time_cnt > 0
+            else "本周期无成交，暂无可分析样本。待产生已平仓交割后再生成胜率、持仓时长与挂吃单成本复盘。"
+        )
+        sub_en = (
+            f"No closed trades in this period — insufficient sample for execution analysis ({all_time_cnt} all-time trades available under 30D / All-Time)."
+            if all_time_cnt > 0
+            else "No closed trades in this period — insufficient sample for execution & fee analysis."
+        )
+        return [
+            {
+                "kind": "no_trades",
+                "title": "No Closed Trades in Period",
+                "title_zh": "本周期无成交",
+                "metric": "0",
+                "trade_count": 0,
+                "body": sub_en,
+                "body_zh": sub_zh,
+            }
+        ]
+
     win_rate = float(s.get("win_rate_pct") or 0.0)
     net_fee = float(s.get("net_fee_usd") or 0.0)
     relief = float(s.get("combined_relief_pct") or 0.0)
     pot = float(s.get("potential_maker_savings_usd") or 0.0)
 
-    trades = dashboard.get("trades") or []
     win_holds = [int(t.get("holding_sec") or 0) for t in trades if float(t.get("net_pnl_usd") or 0) > 0]
     loss_holds = [int(t.get("holding_sec") or 0) for t in trades if float(t.get("net_pnl_usd") or 0) < 0]
     avg_win_m = int(sum(win_holds) / len(win_holds) // 60) if win_holds else 0
@@ -375,6 +400,57 @@ async def generate_ai_review(
     base = "" if force_local else _normalize_ai_base(prefs.ai_base_url or "")
     api_key = "" if force_local else (prefs.ai_api_key or "").strip()
     model = (prefs.ai_model or "").strip() or "gpt-4o-mini"
+
+    if trade_count <= 0 or not (dashboard.get("trades") or []):
+        all_time_cnt = int(s.get("all_time_trade_count") or 0)
+        commentary_zh = (
+            f"**本周期无成交，暂无可分析样本。** 当前统计区间（{range_label_zh}）内共有 0 笔已平仓合约记录，不生成胜率、持仓时长或挂吃单纪律建议。"
+            + (
+                f" 账户全历史累计已有 {all_time_cnt} 笔交割，可切换右上角时间区间至「30天」或「全部」生成复盘。"
+                if all_time_cnt > 0
+                else ""
+            )
+        )
+        commentary = (
+            f"**No closed trades in this period ({range_label_en}) — insufficient sample for analysis.** "
+            "Win-rate, hold-duration, and maker/taker execution coaching require at least one closed trade."
+            + (
+                f" Switch the period selector to 30D or All-Time to review your {all_time_cnt} historical trades."
+                if all_time_cnt > 0
+                else ""
+            )
+        )
+        input_summary = {
+            "exchanges_count": len(ctx["exchanges"]),
+            "fee_matrix_count": len(ctx["fee_matrix"]),
+            "top_symbols_count": len(ctx["top_symbols"]),
+            "recent_trades_count": 0,
+            "open_positions_count": len(ctx["open_positions"]),
+            "spot_holdings_count": len(ctx["spot_holdings"]),
+            "has_copy_trading": bool(ctx["copy_trading"].get("invested_usd")),
+            "has_stocks": bool(ctx["stocks"].get("equity_usd") or ctx["stocks"].get("perps_count")),
+            "excluded_secrets": ["API Key / Secret / Passphrase", "Exchange UID", "Wallet Addresses"],
+        }
+        return {
+            "generated_at": generated_at,
+            "generated_ms": now_ms,
+            "model": "local-actuarial",
+            "range_key": rk_norm,
+            "range_label": range_label_en,
+            "range_label_zh": range_label_zh,
+            "trade_count_snapshot": 0,
+            "equity_snapshot_usd": equity,
+            "stale": False,
+            "stale_reason": "",
+            "stale_reason_zh": "",
+            "highlights": highlights,
+            "markdown_commentary": commentary,
+            "markdown_commentary_zh": commentary_zh,
+            "ai_error": "",
+            "ai_error_zh": "",
+            "input_summary": input_summary,
+            "context_preview": ctx,
+        }
 
     if base and (api_key or "127.0.0.1" in base or "localhost" in base):
         lang_hint = "简体中文" if prefs.locale == "zh-CN" else "English"

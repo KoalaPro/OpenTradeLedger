@@ -84,6 +84,7 @@ export const en: Record<MessageKey, string> = {
   leg_entry_net: 'Entry Net',
   leg_exit_net: 'Exit Net',
   leg_zero_fee: '0 Fee',
+  leg_fee_unknown: 'Per-leg fee unknown',
   fee_entry_short: 'In',
   fee_exit_short: 'Out',
   fee_net_short: 'Net',
@@ -92,6 +93,7 @@ export const en: Record<MessageKey, string> = {
   mode_STOP_MARKET: 'Stop Market',
   mode_TP_MARKET: 'TP Market',
   mode_REVERSE_MARKET: 'Reverse',
+  mode_UNKNOWN: 'Per-leg fee unknown',
 
   wf_gross_pnl: 'Gross Spread PnL',
   wf_funding: 'Funding Settlement',

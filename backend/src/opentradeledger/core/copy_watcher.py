@@ -699,11 +699,10 @@ class CopyWatcherService:
             slot_s, _trade_s, _cool_s = self._effective_timings()
             delay = slot_s + random.uniform(-0.5, 0.5)
             try:
-                prefs = self.store.get_preferences()
                 state = self._load_state()
                 has_enabled = any(bool(t.get("enabled", True)) for t in state["targets"])
                 saved_demo = self.store.get_meta("demo_mode_override", None)
-                if prefs.modules.copy_watcher and has_enabled and saved_demo is not True:
+                if has_enabled and saved_demo is not True:
                     await self.poll_once(force_trades=False)
                     slot_s, _trade_s, _cool_s = self._effective_timings()
                     delay = slot_s + random.uniform(-0.5, 0.5)

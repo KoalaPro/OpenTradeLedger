@@ -1488,6 +1488,16 @@ def build_binance_venue_ledger(
         else None
     )
 
+    bn_wallet_fut_eq = sum(
+        (
+            dec(w.get("balance"))
+            for w in bn_wallet_rows
+            if any(k in str(w.get("walletName") or "").lower() for k in ("future", "portfolio margin"))
+        ),
+        Decimal("0"),
+    )
+    bn_eff_futures_eq = bn_futures_equity_usd if bn_futures_equity_usd > 0 else bn_wallet_fut_eq
+
     return VenueLedgerBundle(
         venue_id="binance",
         exchange_card={
@@ -1499,6 +1509,7 @@ def build_binance_venue_ledger(
             "equity_usd": eq_2dp,
             "net_principal_usd": prin_2dp,
             "net_pnl_usd": pnl_2dp,
+            "futures_equity_usd": f2(bn_eff_futures_eq, 2),
             "available_margin_usd": f2(bn_futures_available_usd, 2),
             "trade_count": len(public_trades),
             "rebate_rate_pct": f2(bn_meta["live_rebate_rate"] * Decimal("100"), 1),

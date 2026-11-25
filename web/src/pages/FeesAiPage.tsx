@@ -61,6 +61,9 @@ export function FeesAiPage({
   }
 
   const formatHighlightMetric = (h: NonNullable<DashboardData['ai_review']>['highlights'][number]) => {
+    if (h.kind === 'no_trades') {
+      return isZh ? '暂无可分析样本' : 'No Sample'
+    }
     if (!h.metric) return ''
     if (cur.code !== 'USDT') {
       if (h.kind === 'net_fee' && typeof h.amount_usd === 'number') {
@@ -245,7 +248,7 @@ export function FeesAiPage({
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className={`grid grid-cols-1 ${ai.highlights.length > 1 ? 'md:grid-cols-3' : ''} gap-3`}>
               {ai.highlights.map((h, i) => {
                 const formattedMetric = formatHighlightMetric(h)
                 const rawBody = locale === 'en' ? h.body : h.body_zh || h.body

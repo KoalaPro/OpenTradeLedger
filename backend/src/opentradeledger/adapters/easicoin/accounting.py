@@ -945,6 +945,7 @@ def build_easicoin_venue_ledger(
             "equity_usd": eq_2dp,
             "net_principal_usd": prin_2dp,
             "net_pnl_usd": pnl_2dp,
+            "futures_equity_usd": f2(ec_futures_equity_usd, 2),
             "available_margin_usd": f2(ec_futures_available_usd, 2),
             "trade_count": len(public_trades),
             "rebate_rate_pct": f2(ec_live_rebate_rate * Decimal("100"), 1),

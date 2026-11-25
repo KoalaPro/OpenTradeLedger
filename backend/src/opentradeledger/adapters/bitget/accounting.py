@@ -1182,6 +1182,14 @@ def build_bitget_venue_ledger(
         else None
     )
 
+    if isinstance(uta_assets, Mapping) and uta_assets:
+        bg_futures_equity_usd = max(Decimal("0"), bg_uta_equity_usd - bg_non_usdt_tokens_usd - bg_spot_stk_val)
+    else:
+        bg_futures_equity_usd = sum(
+            (dec(fa_bg.get("usdtEquity") or fa_bg.get("accountEquity")) for fa_bg in (bg_lb.get("futures_accounts") or [])),
+            Decimal("0"),
+        )
+
     return VenueLedgerBundle(
         venue_id="bitget",
         exchange_card={
@@ -1193,6 +1201,7 @@ def build_bitget_venue_ledger(
             "equity_usd": eq_2dp,
             "net_principal_usd": prin_2dp,
             "net_pnl_usd": pnl_2dp,
+            "futures_equity_usd": f2(bg_futures_equity_usd, 2),
             "available_margin_usd": f2(bg_futures_available_usd, 2),
             "trade_count": len(public_trades),
             "rebate_rate_pct": f2(bg_meta["live_rebate_rate"] * Decimal("100"), 1),

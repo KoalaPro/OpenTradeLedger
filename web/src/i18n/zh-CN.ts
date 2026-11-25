@@ -82,6 +82,7 @@ export const zhCN = {
   leg_entry_net: '进场净费',
   leg_exit_net: '出场净费',
   leg_zero_fee: '免佣',
+  leg_fee_unknown: '分腿费用未知',
   fee_entry_short: '进',
   fee_exit_short: '出',
   fee_net_short: '净',
@@ -90,6 +91,7 @@ export const zhCN = {
   mode_STOP_MARKET: '止损市价',
   mode_TP_MARKET: '止盈市价',
   mode_REVERSE_MARKET: '反手市价',
+  mode_UNKNOWN: '分腿费用未知',
 
   wf_gross_pnl: '平仓价差毛利',
   wf_funding: '持仓资金费结算',

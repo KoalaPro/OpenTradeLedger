@@ -1067,6 +1067,7 @@ def build_mexc_venue_ledger(
             "equity_usd": eq_2dp,
             "net_principal_usd": prin_2dp,
             "net_pnl_usd": pnl_2dp,
+            "futures_equity_usd": f2(mx_futures_equity_usd, 2),
             "available_margin_usd": f2(mx_futures_available_usd, 2),
             "trade_count": len(public_trades),
             "rebate_rate_pct": f2(mx_comb_relief, 1),

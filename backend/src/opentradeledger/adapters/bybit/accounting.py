@@ -266,6 +266,14 @@ def build_bybit_venue_ledger(
         else None
     )
 
+    uta_total_eq = sum(float(acct.get("totalEquity") or 0.0) for acct in (wallet.get("list") or []))
+    uta_non_stable_usd = sum(
+        (usd if usd > 0 else _coin_usd(ccy, q))
+        for ccy, q, usd, acct_tp in raw_spot_rows
+        if acct_tp == "UNIFIED" and ccy not in STABLECOINS and q > 0
+    )
+    bybit_futures_equity_usd = max(0.0, uta_total_eq - uta_non_stable_usd)
+
     return VenueLedgerBundle(
         venue_id="bybit",
         exchange_card={
@@ -277,6 +285,7 @@ def build_bybit_venue_ledger(
             "equity_usd": equity_2dp,
             "net_principal_usd": principal_usd,
             "net_pnl_usd": net_pnl,
+            "futures_equity_usd": round(bybit_futures_equity_usd, 2),
             "available_margin_usd": round(available_usd, 2),
             "trade_count": len(trades),
             "rebate_rate_pct": round(float(snap.get("observed_rebate_ratio") or 0.0) * 100.0, 1),

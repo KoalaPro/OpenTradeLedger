@@ -624,19 +624,24 @@ class LedgerService:
         )
         total_maker_savings = round(sum(float(r.get("potential_maker_savings_usd") or 0.0) for r in scoped_fee_rows), 2)
 
-        # 8. Closed-loop 4-bucket equity breakdown
-        avail_margin_sum = round(sum(max(0.0, float(ex["available_margin_usd"])) for ex in exchanges), 2)
-        locked_pos_margin = round(
-            sum(
-                max(0.0, float(p["notional_usd"]) / max(1.0, float(p["leverage"])) + float(p["unrealized_pnl_usd"]))
-                for p in all_open_positions
-            ),
-            2,
-        )
+        # 8. Closed-loop 4-bucket equity breakdown (using each venue's actual futures equity rather than available-only)
+        raw_futures_eq_sum = 0.0
+        for ex in exchanges:
+            if ex.get("futures_equity_usd") is not None:
+                raw_futures_eq_sum += max(0.0, float(ex["futures_equity_usd"]))
+            else:
+                ex_vid = str(ex.get("venue_id") or "").lower()
+                v_locked = sum(
+                    max(0.0, float(p["notional_usd"]) / max(1.0, float(p["leverage"])) + float(p["unrealized_pnl_usd"]))
+                    for p in all_open_positions
+                    if str(p.get("venue_id") or "").lower() == ex_vid
+                )
+                raw_futures_eq_sum += max(0.0, float(ex.get("available_margin_usd") or 0.0)) + v_locked
+
         copy_bucket_usd = round(max(0.0, float(total_copy_equity)), 2)
         stocks_bucket_usd = round(max(0.0, float(total_stocks_eq)), 2)
         futures_bucket_usd = round(
-            min(max(0.0, total_equity - copy_bucket_usd - stocks_bucket_usd), avail_margin_sum + locked_pos_margin),
+            min(max(0.0, total_equity - copy_bucket_usd - stocks_bucket_usd), round(raw_futures_eq_sum, 2)),
             2,
         )
         spot_and_dust_bucket_usd = round(

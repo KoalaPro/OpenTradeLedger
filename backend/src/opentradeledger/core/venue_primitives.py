@@ -237,9 +237,12 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
         rebate = round(settled_reb + pending_reb, 4)
     net_fee = round(max(0.0, gross_fee - rebate), 4)
     mode_zh = str(raw.get("mode_zh") or "")
-    is_maker = "挂单" in mode_zh or str(raw.get("role") or "").upper() == "MAKER" or str(raw.get("mode") or "") == "LIMIT_MAKER"
+    raw_mode = str(raw.get("mode_code") or raw.get("mode") or "").upper()
+    is_maker = "挂单" in mode_zh or str(raw.get("role") or "").upper() == "MAKER" or raw_mode == "LIMIT_MAKER"
     if raw.get("mode_code"):
         mode_code = str(raw["mode_code"])
+    elif raw_mode == "UNKNOWN":
+        mode_code = "UNKNOWN"
     elif "止损" in mode_zh:
         mode_code = "STOP_MARKET"
     elif "止盈" in mode_zh:
@@ -250,6 +253,7 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
         mode_code = "LIMIT_MAKER"
     else:
         mode_code = "MARKET_TAKER"
+    fee_known = bool(raw.get("fee_known", True))
     status = str(raw.get("rebate_status") or "SETTLED").upper()
     if status not in {"SETTLED", "PENDING", "NONE"}:
         status = "PENDING" if "PENDING" in status else ("SETTLED" if gross_fee > 0 else "NONE")
@@ -257,6 +261,7 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
     return {
         "role": "MAKER" if is_maker else "TAKER",
         "mode_code": mode_code,
+        "fee_known": fee_known,
         "fee_bps": round(float(raw.get("fee_bps") or 0.0), 2),
         "time_ms": t_ms,
         "time_str": str(raw.get("time_str") or raw.get("time_bj") or fmt_ms(t_ms, "%m-%d %H:%M")),
@@ -296,6 +301,11 @@ def normalize_internal_record_to_public_trade(
     total_reb = round(settled_reb + pending_reb, 4)
     total_disc = round(float(r.get("bnb_discount_saved_usd") or r.get("total_discount_saved_usd") or 0.0), 4)
     total_fee = round(float(r.get("total_fee_usd") or 0.0), 4)
+    if total_fee > 0 and entry_leg["gross_fee_usd"] <= 0 and exit_leg["gross_fee_usd"] <= 0:
+        entry_leg["fee_known"] = False
+        exit_leg["fee_known"] = False
+        entry_leg["mode_code"] = "UNKNOWN"
+        exit_leg["mode_code"] = "UNKNOWN"
     net_fee = round(float(r.get("net_fee_usd") if r.get("net_fee_usd") is not None else (entry_leg["net_fee_usd"] + exit_leg["net_fee_usd"])), 4)
     base_fee = total_fee + total_disc
     relief = round(((total_reb + total_disc) / base_fee) * 100.0, 1) if base_fee > 0 else 0.0

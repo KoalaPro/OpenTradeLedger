@@ -28,6 +28,7 @@ function modeText(code: string, t: (k: MessageKey) => string): string {
     STOP_MARKET: 'mode_STOP_MARKET',
     TP_MARKET: 'mode_TP_MARKET',
     REVERSE_MARKET: 'mode_REVERSE_MARKET',
+    UNKNOWN: 'mode_UNKNOWN',
   }
   return known[code] ? t(known[code]) : code
 }
@@ -35,6 +36,7 @@ function modeText(code: string, t: (k: MessageKey) => string): string {
 function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: string; leg: TradeLegFee }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
+  const feeUnknown = leg.fee_known === false
   return (
     <div className="otl-surface-2 rounded-lg p-3 space-y-2 text-[12px]">
       <div className="flex items-center justify-between gap-2">
@@ -43,7 +45,7 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
             {title}
           </span>
           <span className="text-[var(--fg)] font-medium truncate">
-            {modeText(leg.mode_code, t)} · {leg.fee_bps.toFixed(1)} bps
+            {feeUnknown ? t('leg_fee_unknown') : `${modeText(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
           </span>
         </div>
         <span className="text-[11px] text-[var(--fg-3)] whitespace-nowrap">
@@ -53,20 +55,22 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
       <div className="grid grid-cols-3 gap-2 pt-1.5 border-t border-[var(--border)]">
         <div>
           <div className="text-[10.5px] text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
-          <div className="font-semibold sensitive">
-            {leg.gross_fee_usd > 0 ? `-${cur.money(leg.gross_fee_usd, 3)}` : cur.money(0, 3)}
+          <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
+            {feeUnknown ? t('leg_fee_unknown') : leg.gross_fee_usd > 0 ? `-${cur.money(leg.gross_fee_usd, 3)}` : cur.money(0, 3)}
           </div>
         </div>
         <div>
           <div className="text-[10.5px] text-[var(--fg-3)]">{t('leg_rebate_disc')}</div>
-          <div className={`font-semibold sensitive ${leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
-            {leg.gross_fee_usd <= 0
-              ? t('leg_zero_fee')
-              : leg.rebate_usd > 0
-                ? `+${cur.money(leg.rebate_usd, 3)} (${leg.rebate_pct.toFixed(0)}%)`
-                : cur.money(0, 3)}
+          <div className={`font-semibold sensitive ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
+            {feeUnknown
+              ? '—'
+              : leg.gross_fee_usd <= 0
+                ? t('leg_zero_fee')
+                : leg.rebate_usd > 0
+                  ? `+${cur.money(leg.rebate_usd, 3)} (${leg.rebate_pct.toFixed(0)}%)`
+                  : cur.money(0, 3)}
           </div>
-          {leg.discount_saved_usd > 0.0001 && (
+          {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
             <div className="text-[10px] txt-pos mt-0.5 sensitive whitespace-nowrap">
               {locale === 'en'
                 ? `Pre-disc +${cur.money(leg.discount_saved_usd, 3)}`
@@ -76,8 +80,8 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
         </div>
         <div className="text-right">
           <div className="text-[10.5px] text-[var(--fg-3)]">{netLabel}</div>
-          <div className="font-semibold sensitive">
-            {leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
+          <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
+            {feeUnknown ? '—' : leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
           </div>
         </div>
       </div>

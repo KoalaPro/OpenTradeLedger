@@ -622,6 +622,13 @@ def build_gate_venue_ledger(
         )
         fills_fee_sum = dec(entry_leg["gross_fee_usd"]) + dec(exit_leg["gross_fee_usd"])
         total_fee = b_fee if b_fee > 0 else fills_fee_sum
+        if total_fee > fills_fee_sum + Decimal("0.0001"):
+            if int(entry_leg.get("fill_count") or 0) == 0:
+                entry_leg["fee_known"] = False
+                entry_leg["mode_code"] = "UNKNOWN"
+            if int(exit_leg.get("fill_count") or 0) == 0:
+                exit_leg["fee_known"] = False
+                exit_leg["mode_code"] = "UNKNOWN"
         settled_reb = dec(entry_leg["settled_rebate_usd"]) + dec(exit_leg["settled_rebate_usd"])
         pending_reb = dec(entry_leg["pending_rebate_usd"]) + dec(exit_leg["pending_rebate_usd"])
 
@@ -1390,6 +1397,27 @@ def build_gate_venue_ledger(
         excluded_symbols={h["symbol"] for h in stock_bundle.holdings},
     )
 
+    fa_total_raw = fa.get("total") if isinstance(fa, Mapping) else None
+    fa_pos_m = dec(fa.get("position_margin")) if isinstance(fa, Mapping) else Decimal("0")
+    fa_ord_m = dec(fa.get("order_margin")) if isinstance(fa, Mapping) else Decimal("0")
+    fa_upnl = dec(fa.get("unrealised_pnl")) if isinstance(fa, Mapping) else Decimal("0")
+    wt_fut_amt = dec((wt_details.get("futures") or {}).get("amount"))
+    if wt_fut_amt > 0:
+        raw_gate_fut_eq = wt_fut_amt
+    elif fa_total_raw is not None:
+        raw_gate_fut_eq = dec(fa_total_raw) + fa_upnl
+    elif gate_futures_available_usd > 0 or fa_pos_m > 0 or fa_ord_m > 0:
+        raw_gate_fut_eq = gate_futures_available_usd + fa_pos_m + fa_ord_m + fa_upnl
+    elif bool(fa) and isinstance(usdt_bal_obj, Mapping) and usdt_bal_obj.get("equity") is not None:
+        raw_gate_fut_eq = dec(usdt_bal_obj.get("equity"))
+    else:
+        raw_gate_fut_eq = Decimal("0")
+    gate_max_fut = max(
+        Decimal("0"),
+        gate_total_equity_usd - quant_equity_usd - stock_equity_usd - gate_spot_stk_val - finance_equity_usd - non_usdt_tokens_usd,
+    )
+    gate_futures_equity_usd = min(gate_max_fut, max(Decimal("0"), raw_gate_fut_eq))
+
     return VenueLedgerBundle(
         venue_id="gate",
         exchange_card={
@@ -1401,6 +1429,7 @@ def build_gate_venue_ledger(
             "equity_usd": eq_2dp,
             "net_principal_usd": prin_2dp,
             "net_pnl_usd": pnl_2dp,
+            "futures_equity_usd": f2(gate_futures_equity_usd, 2),
             "available_margin_usd": f2(gate_futures_available_usd, 2),
             "trade_count": len(public_trades),
             "rebate_rate_pct": f2(taker_reb_rate * Decimal("100"), 1),

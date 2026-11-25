@@ -57,6 +57,7 @@ export interface VersionCheckPayload {
 export interface TradeLegFee {
   role: 'MAKER' | 'TAKER'
   mode_code: string
+  fee_known?: boolean
   fee_bps: number
   time_ms: number
   time_str: string

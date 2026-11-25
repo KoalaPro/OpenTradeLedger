@@ -25,6 +25,7 @@ function modeLabel(code: string, t: (k: MessageKey) => string): string {
     STOP_MARKET: 'mode_STOP_MARKET',
     TP_MARKET: 'mode_TP_MARKET',
     REVERSE_MARKET: 'mode_REVERSE_MARKET',
+    UNKNOWN: 'mode_UNKNOWN',
   }
   return known[code] ? t(known[code]) : code
 }
@@ -42,6 +43,7 @@ function LegFeeCard({
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
+  const feeUnknown = leg.fee_known === false
   return (
     <div data-testid={testId} className="otl-surface-2 rounded-xl p-3.5 flex flex-col gap-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -50,7 +52,7 @@ function LegFeeCard({
             {title}
           </span>
           <span className="text-[12.5px] font-medium text-[var(--fg)] truncate">
-            {modeLabel(leg.mode_code, t)} · {leg.fee_bps.toFixed(1)} bps
+            {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${leg.fee_bps.toFixed(1)} bps`}
           </span>
         </div>
         <span className="text-[11.5px] text-[var(--fg-3)] whitespace-nowrap">
@@ -61,20 +63,22 @@ function LegFeeCard({
       <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[var(--border)] text-[12px]">
         <div>
           <div className="text-[11px] text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
-          <div className="font-semibold whitespace-nowrap sensitive mt-0.5">
-            {leg.gross_fee_usd > 0 ? `-${cur.money(leg.gross_fee_usd, 3)}` : cur.money(0, 3)}
+          <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
+            {feeUnknown ? t('leg_fee_unknown') : leg.gross_fee_usd > 0 ? `-${cur.money(leg.gross_fee_usd, 3)}` : cur.money(0, 3)}
           </div>
         </div>
         <div>
           <div className="text-[11px] text-[var(--fg-3)]">{t('leg_rebate_disc')}</div>
-          <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
-            {leg.gross_fee_usd <= 0
-              ? t('leg_zero_fee')
-              : leg.rebate_usd > 0
-                ? `+${cur.money(leg.rebate_usd, 3)} (${leg.rebate_pct.toFixed(0)}%)`
-                : cur.money(0, 3)}
+          <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
+            {feeUnknown
+              ? '—'
+              : leg.gross_fee_usd <= 0
+                ? t('leg_zero_fee')
+                : leg.rebate_usd > 0
+                  ? `+${cur.money(leg.rebate_usd, 3)} (${leg.rebate_pct.toFixed(0)}%)`
+                  : cur.money(0, 3)}
           </div>
-          {leg.discount_saved_usd > 0.0001 && (
+          {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
             <div className="text-[10.5px] txt-pos mt-0.5 sensitive whitespace-nowrap">
               {locale === 'en'
                 ? `Pre-disc +${cur.money(leg.discount_saved_usd, 3)}`
@@ -84,8 +88,8 @@ function LegFeeCard({
         </div>
         <div className="text-right">
           <div className="text-[11px] text-[var(--fg-3)]">{netLabel}</div>
-          <div className="font-semibold whitespace-nowrap sensitive mt-0.5">
-            {leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
+          <div className={`font-semibold whitespace-nowrap sensitive mt-0.5 ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
+            {feeUnknown ? '—' : leg.net_fee_usd > 0 ? `-${cur.money(leg.net_fee_usd, 3)}` : cur.money(0, 3)}
           </div>
         </div>
       </div>
@@ -349,8 +353,9 @@ export function TradesPage({
                               )}
                             </div>
                             <div className="text-[11px] text-[var(--fg-3)] sensitive">
-                              {t('fee_entry_short')} -{cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)} ·{' '}
-                              {t('fee_exit_short')} -{cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}
+                              {tr.entry_leg.fee_known === false || tr.exit_leg.fee_known === false
+                                ? t('leg_fee_unknown')
+                                : `${t('fee_entry_short')} -${cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)} · ${t('fee_exit_short')} -${cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}`}
                             </div>
                           </td>
                         )}
