@@ -1,0 +1,202 @@
+import { useState } from 'react'
+import { KeyRound, Lock } from 'lucide-react'
+import { useI18n } from '../../i18n'
+import { api } from '../../lib/api'
+import type { AuthStatusPayload } from '../../lib/types'
+
+interface AccessPasswordCardProps {
+  authStatus?: AuthStatusPayload
+  onAuthChanged?: (next: AuthStatusPayload) => void
+  onLockNow?: () => Promise<void>
+  flashOk: (msg: string, ms?: number) => void
+  setErrorMsg: (msg: string) => void
+}
+
+export function AccessPasswordCard({
+  authStatus,
+  onAuthChanged,
+  onLockNow,
+  flashOk,
+  setErrorMsg,
+}: AccessPasswordCardProps) {
+  const { locale } = useI18n()
+  const isZh = locale === 'zh-CN'
+  const authEnabled = Boolean(authStatus?.enabled)
+
+  const [curPwd, setCurPwd] = useState('')
+  const [newPwd, setNewPwd] = useState('')
+  const [confirmNewPwd, setConfirmNewPwd] = useState('')
+  const [pwdBusy, setPwdBusy] = useState(false)
+
+  const handleSavePassword = async () => {
+    if (pwdBusy) return
+    const np = newPwd.trim()
+    if (np.length < 4) {
+      setErrorMsg(isZh ? '新密码长度至少需要 4 位字符' : 'New password must be at least 4 characters')
+      return
+    }
+    if (!authEnabled && np !== confirmNewPwd.trim()) {
+      setErrorMsg(isZh ? '两次输入的密码不一致' : 'New passwords do not match')
+      return
+    }
+    setPwdBusy(true)
+    setErrorMsg('')
+    try {
+      const res = await api.authChangePassword(curPwd, np, true)
+      onAuthChanged?.(res)
+      setCurPwd('')
+      setNewPwd('')
+      setConfirmNewPwd('')
+      flashOk(
+        authEnabled
+          ? isZh
+            ? '访问密码已修改（其他旧会话已自动失效）'
+            : 'Password updated (older sessions invalidated)'
+          : isZh
+            ? '已开启本地访问密码保护'
+            : 'Local access password enabled',
+      )
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to update password')
+    } finally {
+      setPwdBusy(false)
+    }
+  }
+
+  const handleDisablePassword = async () => {
+    if (pwdBusy) return
+    if (!curPwd.trim()) {
+      setErrorMsg(isZh ? '关闭密码锁前请先输入当前访问密码' : 'Enter current password to disable lock')
+      return
+    }
+    setPwdBusy(true)
+    setErrorMsg('')
+    try {
+      const res = await api.authDisablePassword(curPwd)
+      onAuthChanged?.(res)
+      setCurPwd('')
+      setNewPwd('')
+      setConfirmNewPwd('')
+      flashOk(isZh ? '已关闭本地访问密码，当前为本机免密模式' : 'Password lock disabled')
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to disable password')
+    } finally {
+      setPwdBusy(false)
+    }
+  }
+
+  return (
+    <div data-testid="security-password-card" className="otl-card p-5 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)] flex items-center gap-1.5">
+            <KeyRound size={15} className="text-[var(--accent)]" />
+            <span>{isZh ? '安全与本地访问密码' : 'Security & Local Access Password'}</span>
+          </h3>
+          <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">
+            {isZh
+              ? '部署到 NAS 或局域网时建议开启，密码仅以 scrypt 加盐哈希保存在本地'
+              : 'Recommended on NAS / LAN — salted scrypt hash stored exclusively on disk'}
+          </p>
+        </div>
+        <span
+          className={`px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0 ${
+            authEnabled
+              ? 'otl-status-ok'
+              : 'border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-3)]'
+          }`}
+        >
+          {authEnabled
+            ? isZh
+              ? '密码已开启'
+              : 'Protected'
+            : isZh
+              ? '免密模式'
+              : 'Password Off'}
+        </span>
+      </div>
+
+      <div className="space-y-2 pt-1">
+        {authEnabled && (
+          <input
+            type="password"
+            data-testid="sec-current-pwd"
+            value={curPwd}
+            onChange={e => setCurPwd(e.target.value)}
+            placeholder={isZh ? '当前访问密码' : 'Current password'}
+            className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+          />
+        )}
+        <input
+          type="password"
+          data-testid="sec-new-pwd"
+          value={newPwd}
+          onChange={e => setNewPwd(e.target.value)}
+          placeholder={
+            authEnabled
+              ? isZh
+                ? '新密码（至少 4 位）'
+                : 'New password (min 4 chars)'
+              : isZh
+                ? '设置访问密码（至少 4 位）'
+                : 'Set access password (min 4 chars)'
+          }
+          className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+        />
+        {!authEnabled && (
+          <input
+            type="password"
+            data-testid="sec-confirm-pwd"
+            value={confirmNewPwd}
+            onChange={e => setConfirmNewPwd(e.target.value)}
+            placeholder={isZh ? '再次确认访问密码' : 'Confirm access password'}
+            className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
+          />
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+        <div className="flex items-center gap-2">
+          {authEnabled && onLockNow && (
+            <button
+              type="button"
+              data-testid="sec-lock-now-btn"
+              onClick={() => void onLockNow()}
+              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
+            >
+              <Lock size={12} />
+              <span>{isZh ? '立即锁定' : 'Lock Now'}</span>
+            </button>
+          )}
+          {authEnabled && authStatus?.can_skip !== false && (
+            <button
+              type="button"
+              data-testid="sec-disable-pwd-btn"
+              disabled={pwdBusy}
+              onClick={() => void handleDisablePassword()}
+              className="h-8 px-2.5 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer disabled:opacity-50"
+            >
+              {isZh ? '关闭密码锁' : 'Disable Lock'}
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          data-testid="sec-save-pwd-btn"
+          disabled={pwdBusy || !newPwd.trim()}
+          onClick={() => void handleSavePassword()}
+          className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
+          style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
+        >
+          {authEnabled
+            ? isZh
+              ? '修改密码'
+              : 'Update Password'
+            : isZh
+              ? '开启密码保护'
+              : 'Enable Password'}
+        </button>
+      </div>
+    </div>
+  )
+}

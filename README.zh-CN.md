@@ -13,7 +13,7 @@
 [![React 19 + Vite](https://img.shields.io/badge/前端-React%2019%20%2B%20Tailwind%20v4-38BDF8.svg)](web/package.json)
 [![Read-Only API](https://img.shields.io/badge/安全机制-GET--Only%20只读拦截-10B981.svg)](backend/src/opentradeledger/security/readonly_guard.py)
 
-[English README](README.md) · [架构设计文档](docs/specs/2026-11-23-opentradeledger-v1-design.md) · [贡献与新增交易所指南](CONTRIBUTING.md)
+[English README](README.md) · [项目与架构说明](docs/PROJECT.md) · [贡献与新增交易所指南](CONTRIBUTING.md)
 
 </div>
 

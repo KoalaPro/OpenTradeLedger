@@ -1,19 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
-  ArrowUpCircle,
-  Bell,
   Check,
-  ChevronDown,
-  Copy,
   ExternalLink,
-  KeyRound,
-  Lock,
   Pencil,
   Plus,
   RefreshCw,
   ShieldCheck,
-  Smartphone,
   Trash2,
 } from 'lucide-react'
 import { AnimatedCollapse } from '../components/AnimatedCollapse'
@@ -21,8 +14,11 @@ import { FloatingModal } from '../components/FloatingModal'
 import { FloatingToastViewport } from '../components/FloatingToast'
 import { SegmentedPills } from '../components/SegmentedPills'
 import { VenueBadge } from '../components/VenueBadge'
+import { AccessPasswordCard } from '../components/settings/AccessPasswordCard'
+import { AiConfigCard } from '../components/settings/AiConfigCard'
+import { BarkNotifyCard } from '../components/settings/BarkNotifyCard'
+import { VersionUpgradeCard } from '../components/settings/VersionUpgradeCard'
 import { useI18n } from '../i18n'
-import { api } from '../lib/api'
 import { CURRENCY_OPTIONS, useCurrency } from '../lib/currency'
 import type {
   AuthStatusPayload,
@@ -109,116 +105,16 @@ export function SettingsPage({
 
   const [goalLabel, setGoalLabel] = useState(settings.goal_label || '')
   const [goalInput, setGoalInput] = useState(String(settings.goal_target_usd ?? ''))
-  const [aiUrl, setAiUrl] = useState(settings.ai_base_url || '')
-  const [aiModel, setAiModel] = useState(settings.ai_model || '')
-  const [aiKey, setAiKey] = useState('')
-  const [aiModels, setAiModels] = useState<string[]>([])
-  const [fetchingModels, setFetchingModels] = useState(false)
-
-  const [barkServerUrl, setBarkServerUrl] = useState(
-    settings.notifications?.bark_server_url || 'https://api.day.app',
-  )
-  const [barkKey, setBarkKey] = useState('')
-  const [outboundProxyUrl, setOutboundProxyUrl] = useState(settings.outbound_proxy_url || '')
-  const [testingNotify, setTestingNotify] = useState(false)
-
-  // Local NAS password management state
-  const [curPwd, setCurPwd] = useState('')
-  const [newPwd, setNewPwd] = useState('')
-  const [confirmNewPwd, setConfirmNewPwd] = useState('')
-  const [pwdBusy, setPwdBusy] = useState(false)
-
-  // Version check, one-click OTA self-update & manual guide state
-  const [checkingVersion, setCheckingVersion] = useState(false)
-  const [upgradingStep, setUpgradingStep] = useState<'' | 'downloading' | 'restarting' | 'done'>('')
-  const [manualGuideOpen, setManualGuideOpen] = useState(false)
-  const [copiedKey, setCopiedKey] = useState<string>('')
-
-  const handleSelfUpgrade = async () => {
-    if (upgradingStep) return
-    setUpgradingStep('downloading')
-    setErrorMsg('')
-    try {
-      const res = await api.triggerSelfUpdate()
-      const targetVer = res.updated_to || versionStatus?.latest_version || ''
-      setUpgradingStep('restarting')
-      const deadline = Date.now() + 25000
-      while (Date.now() < deadline) {
-        try {
-          const h = await api.getHealth()
-          if (h?.status === 'ok' && (!targetVer || h.version === targetVer)) {
-            setUpgradingStep('done')
-            flashOk(
-              isZh
-                ? `已成功升级至 v${h.version}，正在自动加载新版界面…`
-                : `Upgraded to v${h.version} — reloading…`,
-              3000,
-            )
-            window.setTimeout(() => {
-              if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') {
-                window.location.reload()
-              }
-            }, 600)
-            return
-          }
-        } catch {
-          // Server is restarting; keep polling cleanly
-        }
-        await new Promise(resolve => window.setTimeout(resolve, 900))
-      }
-      setUpgradingStep('done')
-      if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') {
-        window.location.reload()
-      }
-    } catch (err) {
-      setUpgradingStep('')
-      setErrorMsg(err instanceof Error ? err.message : isZh ? '在线升级失败' : 'Self-update failed')
-    }
-  }
-
-  const copyTextSafe = async (key: string, text: string) => {
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text)
-      } else {
-        const ta = document.createElement('textarea')
-        ta.value = text
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        document.body.appendChild(ta)
-        ta.select()
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-      }
-      setCopiedKey(key)
-      window.setTimeout(() => setCopiedKey(prev => (prev === key ? '' : prev)), 1800)
-    } catch {
-      // Ignore clipboard permission errors silently
-    }
-  }
-
   const [statusMsg, setStatusMsg] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
 
   useEffect(() => {
     setGoalLabel(settings.goal_label || '')
     setGoalInput(String(settings.goal_target_usd ?? ''))
-    setAiUrl(settings.ai_base_url || '')
-    setAiModel(settings.ai_model || '')
-    setBarkServerUrl(settings.notifications?.bark_server_url || 'https://api.day.app')
-    setOutboundProxyUrl(settings.outbound_proxy_url || '')
-  }, [
-    settings.goal_label,
-    settings.goal_target_usd,
-    settings.ai_base_url,
-    settings.ai_model,
-    settings.outbound_proxy_url,
-    settings.notifications?.bark_server_url,
-  ])
+  }, [settings.goal_label, settings.goal_target_usd])
 
   const selectedAdapter = adapters.find(a => a.venue_id === addingVenue)
   const deletingAdapter = adapters.find(a => a.venue_id === deletingVenue)
-  const authEnabled = Boolean(authStatus?.enabled)
 
   const flashOk = (msg: string, ms = 3200) => {
     if (statusTimerRef.current !== null) {
@@ -310,63 +206,6 @@ export function SettingsPage({
       setErrorMsg(err instanceof Error ? err.message : 'Connection test failed')
     } finally {
       setBusyVenue('')
-    }
-  }
-
-  const handleSavePassword = async () => {
-    if (pwdBusy) return
-    const np = newPwd.trim()
-    if (np.length < 4) {
-      setErrorMsg(isZh ? '新密码长度至少需要 4 位字符' : 'New password must be at least 4 characters')
-      return
-    }
-    if (!authEnabled && np !== confirmNewPwd.trim()) {
-      setErrorMsg(isZh ? '两次输入的密码不一致' : 'New passwords do not match')
-      return
-    }
-    setPwdBusy(true)
-    setErrorMsg('')
-    try {
-      const res = await api.authChangePassword(curPwd, np, true)
-      onAuthChanged?.(res)
-      setCurPwd('')
-      setNewPwd('')
-      setConfirmNewPwd('')
-      flashOk(
-        authEnabled
-          ? isZh
-            ? '访问密码已修改（其他旧会话已自动失效）'
-            : 'Password updated (older sessions invalidated)'
-          : isZh
-            ? '已开启本地访问密码保护'
-            : 'Local access password enabled',
-      )
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to update password')
-    } finally {
-      setPwdBusy(false)
-    }
-  }
-
-  const handleDisablePassword = async () => {
-    if (pwdBusy) return
-    if (!curPwd.trim()) {
-      setErrorMsg(isZh ? '关闭密码锁前请先输入当前访问密码' : 'Enter current password to disable lock')
-      return
-    }
-    setPwdBusy(true)
-    setErrorMsg('')
-    try {
-      const res = await api.authDisablePassword(curPwd)
-      onAuthChanged?.(res)
-      setCurPwd('')
-      setNewPwd('')
-      setConfirmNewPwd('')
-      flashOk(isZh ? '已关闭本地访问密码，当前为本机免密模式' : 'Password lock disabled')
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to disable password')
-    } finally {
-      setPwdBusy(false)
     }
   }
 
@@ -615,412 +454,26 @@ export function SettingsPage({
           </div>
         </section>
 
-        {/* Right: Security, Preferences, AI & Notifications */}
+        {/* Right: Security, Version OTA, Preferences, AI & Notifications */}
         <section className="xl:col-span-5 space-y-4">
-          {/* NAS / Local Access Password Card */}
           {!demoMode && (
-            <div data-testid="security-password-card" className="otl-card p-5 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)] flex items-center gap-1.5">
-                    <KeyRound size={15} className="text-[var(--accent)]" />
-                    <span>{isZh ? '安全与本地访问密码' : 'Security & Local Access Password'}</span>
-                  </h3>
-                  <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">
-                    {isZh
-                      ? '部署到 NAS 或局域网时建议开启，密码仅以 scrypt 加盐哈希保存在本地'
-                      : 'Recommended on NAS / LAN — salted scrypt hash stored exclusively on disk'}
-                  </p>
-                </div>
-                <span
-                  className={`px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0 ${
-                    authEnabled
-                      ? 'otl-status-ok'
-                      : 'border border-[var(--border)] bg-[var(--surface-2)] text-[var(--fg-3)]'
-                  }`}
-                >
-                  {authEnabled
-                    ? isZh
-                      ? '密码已开启'
-                      : 'Protected'
-                    : isZh
-                      ? '免密模式'
-                      : 'Password Off'}
-                </span>
-              </div>
-
-              <div className="space-y-2 pt-1">
-                {authEnabled && (
-                  <input
-                    type="password"
-                    data-testid="sec-current-pwd"
-                    value={curPwd}
-                    onChange={e => setCurPwd(e.target.value)}
-                    placeholder={isZh ? '当前访问密码' : 'Current password'}
-                    className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                  />
-                )}
-                <input
-                  type="password"
-                  data-testid="sec-new-pwd"
-                  value={newPwd}
-                  onChange={e => setNewPwd(e.target.value)}
-                  placeholder={
-                    authEnabled
-                      ? isZh
-                        ? '新密码（至少 4 位）'
-                        : 'New password (min 4 chars)'
-                      : isZh
-                        ? '设置访问密码（至少 4 位）'
-                        : 'Set access password (min 4 chars)'
-                  }
-                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                />
-                {!authEnabled && (
-                  <input
-                    type="password"
-                    data-testid="sec-confirm-pwd"
-                    value={confirmNewPwd}
-                    onChange={e => setConfirmNewPwd(e.target.value)}
-                    placeholder={isZh ? '再次确认访问密码' : 'Confirm access password'}
-                    className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                  />
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                <div className="flex items-center gap-2">
-                  {authEnabled && onLockNow && (
-                    <button
-                      type="button"
-                      data-testid="sec-lock-now-btn"
-                      onClick={() => void onLockNow()}
-                      className="inline-flex items-center gap-1 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] cursor-pointer"
-                    >
-                      <Lock size={12} />
-                      <span>{isZh ? '立即锁定' : 'Lock Now'}</span>
-                    </button>
-                  )}
-                  {authEnabled && authStatus?.can_skip !== false && (
-                    <button
-                      type="button"
-                      data-testid="sec-disable-pwd-btn"
-                      disabled={pwdBusy}
-                      onClick={() => void handleDisablePassword()}
-                      className="h-8 px-2.5 rounded-lg border border-[var(--border)] text-[12px] text-[var(--fg-3)] hover:text-[var(--fg)] cursor-pointer disabled:opacity-50"
-                    >
-                      {isZh ? '关闭密码锁' : 'Disable Lock'}
-                    </button>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  data-testid="sec-save-pwd-btn"
-                  disabled={pwdBusy || !newPwd.trim()}
-                  onClick={() => void handleSavePassword()}
-                  className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer disabled:opacity-50"
-                  style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-                >
-                  {authEnabled
-                    ? isZh
-                      ? '修改密码'
-                      : 'Update Password'
-                    : isZh
-                      ? '开启密码保护'
-                      : 'Enable Password'}
-                </button>
-              </div>
-            </div>
+            <AccessPasswordCard
+              authStatus={authStatus}
+              onAuthChanged={onAuthChanged}
+              onLockNow={onLockNow}
+              flashOk={flashOk}
+              setErrorMsg={setErrorMsg}
+            />
           )}
 
-          {/* Version & NAS One-Click Upgrade Card */}
-          <div data-testid="version-update-card" className="otl-card p-5 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <ArrowUpCircle size={15} className="text-[var(--accent)] shrink-0" />
-                <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)] truncate">
-                  {isZh ? '版本与更新' : 'Version & Updates'}
-                </h3>
-                <span className="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--border)] font-mono text-[11px] text-[var(--fg-2)]">
-                  v{versionStatus?.current_version || '1.3.0'}
-                </span>
-              </div>
-
-              {versionStatus?.update_available ? (
-                <span
-                  data-testid="version-status-badge"
-                  className="otl-status-warn px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0"
-                >
-                  {isZh
-                    ? `新版本 v${versionStatus.latest_version}`
-                    : `New v${versionStatus.latest_version}`}
-                </span>
-              ) : versionStatus?.error && !versionStatus.checked_sec ? (
-                <span
-                  data-testid="version-status-badge"
-                  className="otl-status-err px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0"
-                >
-                  {isZh ? '检测失败' : 'Check Error'}
-                </span>
-              ) : versionStatus?.checked_sec ? (
-                <span
-                  data-testid="version-status-badge"
-                  className="otl-status-ok px-2 py-0.5 rounded-md text-[11px] font-semibold shrink-0"
-                >
-                  {isZh ? '已是最新' : 'Up to Date'}
-                </span>
-              ) : (
-                <span
-                  data-testid="version-status-badge"
-                  className="px-2 py-0.5 rounded-md border border-[var(--border)] bg-[var(--surface-2)] text-[11px] text-[var(--fg-3)] shrink-0"
-                >
-                  {settings.update_check_enabled === false
-                    ? isZh
-                      ? '自动检测关闭'
-                      : 'Auto-Check Off'
-                    : isZh
-                      ? '待检测'
-                      : 'Pending'}
-                </span>
-              )}
-            </div>
-
-            {versionStatus?.error && (
-              <div
-                data-testid="version-error-box"
-                className="otl-status-err rounded-lg px-3 py-2 text-[11.5px]"
-              >
-                {isZh ? versionStatus.error_zh || versionStatus.error : versionStatus.error}
-              </div>
-            )}
-
-            {versionStatus?.update_available && (
-              <div
-                data-testid="version-release-box"
-                className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] p-3.5 space-y-3"
-              >
-                <div className="flex items-center justify-between gap-2 text-[12px]">
-                  <span className="font-semibold text-[var(--fg)] truncate">
-                    {versionStatus.release_name || `v${versionStatus.latest_version}`}
-                  </span>
-                  <a
-                    href={versionStatus.release_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--accent)] hover:underline shrink-0"
-                  >
-                    <span>{isZh ? '更新日志' : 'Release Notes'}</span>
-                    <ExternalLink size={11} />
-                  </a>
-                </div>
-                {versionStatus.release_notes && (
-                  <pre className="m-0 max-h-32 overflow-y-auto whitespace-pre-wrap font-sans text-[11.5px] leading-relaxed text-[var(--fg-2)]">
-                    {versionStatus.release_notes}
-                  </pre>
-                )}
-
-                <div className="pt-2 border-t border-[var(--border)] space-y-2">
-                  <button
-                    type="button"
-                    data-testid="one-click-upgrade-btn"
-                    disabled={Boolean(upgradingStep)}
-                    onClick={() => void handleSelfUpgrade()}
-                    className="w-full h-9 px-4 rounded-lg text-[12.5px] font-semibold inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-70 transition-all"
-                    style={{
-                      background: upgradingStep === 'done' ? '#10b981' : 'var(--accent)',
-                      color: upgradingStep === 'done' ? '#ffffff' : 'var(--accent-fg)',
-                    }}
-                  >
-                    {upgradingStep === 'done' ? (
-                      <>
-                        <Check size={14} />
-                        <span>
-                          {isZh
-                            ? `已完成升级至 v${versionStatus.latest_version} · 正在刷新…`
-                            : `Upgraded to v${versionStatus.latest_version} · Reloading…`}
-                        </span>
-                      </>
-                    ) : upgradingStep ? (
-                      <>
-                        <RefreshCw size={13} className="animate-spin" />
-                        <span>
-                          {upgradingStep === 'downloading'
-                            ? isZh
-                              ? `正在下载并 SHA-256 校验 v${versionStatus.latest_version} 更新包…`
-                              : `Downloading & verifying v${versionStatus.latest_version}…`
-                            : isZh
-                              ? '校验通过 · 正在平滑热重启服务（约 2 秒）…'
-                              : 'Verified · Restarting service (~2s)…'}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <ArrowUpCircle size={14} />
-                        <span>
-                          {isZh
-                            ? `一键在线升级至 v${versionStatus.latest_version}（免终端 · 自动保留全部数据）`
-                            : `One-Click Upgrade to v${versionStatus.latest_version} (Preserves All Data)`}
-                        </span>
-                      </>
-                    )}
-                  </button>
-                  {upgradingStep && upgradingStep !== 'done' && (
-                    <div className="h-1 w-full rounded-full bg-[var(--track)] overflow-hidden">
-                      <div className="otl-ceremony-indeterminate" />
-                    </div>
-                  )}
-                  <p className="m-0 text-[11px] text-[var(--fg-3)] text-center">
-                    {isZh
-                      ? '兼容极空间、绿联、飞牛 fnOS、群晖、威联通及本地 Docker，无需敲命令或进 NAS 后台，密钥与历史账单 100% 保留'
-                      : 'Works across all NAS platforms without SSH or Docker socket access; 100% of keys & ledger history are preserved.'}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Optional Collapsible NAS GUI / CLI Manual Upgrade Reference */}
-            <div className="space-y-2">
-              <button
-                type="button"
-                data-testid="manual-upgrade-guide-toggle"
-                onClick={() => setManualGuideOpen(v => !v)}
-                className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer"
-              >
-                <span>
-                  {isZh
-                    ? '查看各品牌 NAS 图形界面重拉镜像 / 命令行手动更新说明（可选）'
-                    : 'Manual NAS Docker GUI / CLI Image Refresh Guide (Optional)'}
-                </span>
-                <ChevronDown
-                  size={13}
-                  className={`shrink-0 transition-transform duration-200 ${manualGuideOpen ? 'rotate-180' : ''}`}
-                />
-              </button>
-
-              <AnimatedCollapse open={manualGuideOpen}>
-                <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-3 space-y-2.5 text-[11.5px] text-[var(--fg-2)]">
-                  <div className="space-y-1 leading-relaxed">
-                    <div className="font-semibold text-[var(--fg)]">
-                      {isZh
-                        ? '方式一：NAS 图形界面更新底层镜像（极空间 / 绿联 / 飞牛 / 群晖通用）'
-                        : 'Option 1: NAS Docker Graphical UI (Zero Terminal)'}
-                    </div>
-                    <p className="m-0">
-                      {isZh
-                        ? '日常小版本直接点上方「一键在线升级」即可。若需更新底层基础镜像：打开 NAS 的「Docker」应用 → 若用 Compose/项目部署，进入项目点击「重新构建 / 更新」即可；若用单容器部署，先在「镜像」重新拉取 latest 标签，再对原容器执行「重置 / 重新创建」（保持 /app/data 挂载目录不变，数据零丢失）。'
-                        : 'For routine updates, use One-Click Upgrade above. To refresh the base Docker image via NAS GUI: open Docker -> Compose -> Rebuild/Update (or pull :latest in Images and recreate container keeping /app/data volume).'}
-                    </p>
-                  </div>
-
-                  <div className="space-y-1 pt-2 border-t border-[var(--border)]">
-                    <div className="text-[11px] text-[var(--fg-3)]">
-                      {isZh ? '方式二：SSH 终端命令（进阶可选）' : 'Option 2: SSH / Docker Compose CLI'}
-                    </div>
-                    <div className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5">
-                      <code className="flex-1 font-mono text-[11.5px] text-[var(--fg)] truncate select-all">
-                        docker compose pull &amp;&amp; docker compose up -d
-                      </code>
-                      <button
-                        type="button"
-                        data-testid="copy-nas-upgrade-cmd"
-                        onClick={() =>
-                          void copyTextSafe('nas_pull', 'docker compose pull && docker compose up -d')
-                        }
-                        title={isZh ? '复制命令' : 'Copy command'}
-                        aria-label={isZh ? '复制命令' : 'Copy command'}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-[var(--border)] bg-[var(--surface-2)] text-[11px] font-medium text-[var(--fg-2)] hover:text-[var(--fg)] cursor-pointer shrink-0 transition-colors"
-                      >
-                        {copiedKey === 'nas_pull' ? (
-                          <>
-                            <Check size={11} className="text-emerald-500" />
-                            <span className="text-emerald-500">{isZh ? '已复制' : 'Copied'}</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={11} />
-                            <span>{isZh ? '复制' : 'Copy'}</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </AnimatedCollapse>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--border)] text-[12px]">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-label={isZh ? '自动检查新版本' : 'Auto-check new versions'}
-                  aria-checked={settings.update_check_enabled !== false}
-                  data-testid="auto-update-check-switch"
-                  onClick={() =>
-                    void onUpdateSettings({
-                      update_check_enabled: settings.update_check_enabled === false,
-                    })
-                  }
-                  className="otl-switch"
-                >
-                  <span className="otl-switch-knob" />
-                </button>
-                <span className="text-[var(--fg-2)]">
-                  {isZh ? '自动检查更新' : 'Auto-check'}
-                </span>
-                {versionStatus?.checked_at && (
-                  <span className="text-[11px] text-[var(--fg-3)] hidden sm:inline">
-                    · {versionStatus.checked_at}
-                  </span>
-                )}
-              </div>
-
-              <button
-                type="button"
-                data-testid="check-version-btn"
-                disabled={checkingVersion || !onCheckVersion}
-                onClick={async () => {
-                  if (!onCheckVersion) return
-                  setCheckingVersion(true)
-                  setErrorMsg('')
-                  try {
-                    const res = await onCheckVersion(true)
-                    if (res?.error) {
-                      setErrorMsg(isZh ? res.error_zh || res.error : res.error)
-                    } else if (res?.update_available) {
-                      flashOk(
-                        isZh
-                          ? `检测到新版本 v${res.latest_version}`
-                          : `New version v${res.latest_version} available`,
-                        3000,
-                      )
-                    } else if (res) {
-                      flashOk(
-                        isZh
-                          ? `当前 v${res.current_version} 已是最新版本`
-                          : `v${res.current_version} is up to date`,
-                        2500,
-                      )
-                    }
-                  } finally {
-                    setCheckingVersion(false)
-                  }
-                }}
-                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[11.5px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
-              >
-                <RefreshCw size={12} className={checkingVersion ? 'animate-spin' : ''} />
-                <span>
-                  {checkingVersion
-                    ? isZh
-                      ? '检查中…'
-                      : 'Checking…'
-                    : isZh
-                      ? '检查更新'
-                      : 'Check Now'}
-                </span>
-              </button>
-            </div>
-          </div>
+          <VersionUpgradeCard
+            settings={settings}
+            versionStatus={versionStatus}
+            onCheckVersion={onCheckVersion}
+            onUpdateSettings={onUpdateSettings}
+            flashOk={flashOk}
+            setErrorMsg={setErrorMsg}
+          />
 
           <div className="otl-card p-5 space-y-4">
             <h2 className="m-0 text-[15px] font-semibold text-[var(--fg)]">{t('set_pref_title')}</h2>
@@ -1243,295 +696,19 @@ export function SettingsPage({
             </div>
           </div>
 
-          {/* OpenAI-Compatible AI Configuration */}
-          <div className="otl-card p-5 space-y-3">
-            <div>
-              <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('set_ai_title')}</h3>
-              <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">{t('set_ai_sub')}</p>
-            </div>
-            <input
-              type="text"
-              value={aiUrl}
-              onChange={e => setAiUrl(e.target.value)}
-              placeholder="Base URL (e.g. https://api.openai.com/v1)"
-              className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-            />
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <input
-                type="password"
-                value={aiKey}
-                onChange={e => setAiKey(e.target.value)}
-                placeholder={settings.ai_api_key_set ? 'API Key (configured)' : 'API Key'}
-                className="h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-              />
-              <button
-                type="button"
-                data-testid="fetch-ai-models-btn"
-                disabled={fetchingModels || !aiUrl.trim()}
-                onClick={async () => {
-                  setFetchingModels(true)
-                  setErrorMsg('')
-                  try {
-                    const res = await api.listAiModels(aiUrl.trim(), aiKey.trim())
-                    setAiModels(res.models)
-                    if (res.models.length > 0 && !aiModel.trim()) {
-                      setAiModel(res.models[0])
-                    }
-                    flashOk(
-                      locale === 'en'
-                        ? `Loaded ${res.count} available models`
-                        : `已获取 ${res.count} 个可用模型`,
-                      3000,
-                    )
-                  } catch (err) {
-                    setErrorMsg(err instanceof Error ? err.message : 'Failed to fetch models')
-                  } finally {
-                    setFetchingModels(false)
-                  }
-                }}
-                className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer whitespace-nowrap"
-              >
-                <RefreshCw size={12} className={fetchingModels ? 'animate-spin' : ''} />
-                <span>{locale === 'en' ? 'Fetch Models' : '获取模型列表'}</span>
-              </button>
-            </div>
-            {aiModels.length > 0 ? (
-              <div className="space-y-1.5">
-                <select
-                  aria-label="AI Model"
-                  data-testid="ai-model-select"
-                  value={aiModels.includes(aiModel) ? aiModel : '__custom__'}
-                  onChange={e => {
-                    if (e.target.value !== '__custom__') setAiModel(e.target.value)
-                  }}
-                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)] cursor-pointer"
-                >
-                  {aiModels.map(m => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                  {!aiModels.includes(aiModel) && (
-                    <option value="__custom__">
-                      {aiModel || (locale === 'en' ? 'Custom model…' : '自定义模型…')}
-                    </option>
-                  )}
-                </select>
-                <input
-                  type="text"
-                  value={aiModel}
-                  onChange={e => setAiModel(e.target.value)}
-                  placeholder="Model ID (e.g. gpt-4o-mini)"
-                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                />
-              </div>
-            ) : (
-              <input
-                type="text"
-                value={aiModel}
-                onChange={e => setAiModel(e.target.value)}
-                placeholder="Model (e.g. gpt-4o-mini / deepseek-chat)"
-                className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-              />
-            )}
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={async () => {
-                  await onUpdateSettings({ ai_base_url: aiUrl, ai_model: aiModel, ai_api_key: aiKey })
-                  setAiKey('')
-                  flashOk(t('set_save_ok'), 2500)
-                }}
-                className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
-                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-              >
-                {t('save_config')}
-              </button>
-            </div>
-          </div>
+          <AiConfigCard
+            settings={settings}
+            onUpdateSettings={onUpdateSettings}
+            flashOk={flashOk}
+            setErrorMsg={setErrorMsg}
+          />
 
-          {/* Bark notifications */}
-          <div data-testid="notifications-card" className="otl-card p-5 space-y-3.5">
-            <div>
-              <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">{t('set_notify_title')}</h3>
-              <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">{t('set_notify_sub')}</p>
-            </div>
-
-            {/* Beginner Step-by-Step Bark Guide */}
-            <div
-              data-testid="bark-onboarding-guide"
-              className="otl-surface-2 rounded-xl p-3.5 space-y-1.5 text-[11.5px] text-[var(--fg-2)] border border-[var(--border)]"
-            >
-              <div className="font-semibold text-[12px] text-[var(--fg)] inline-flex items-center gap-1.5">
-                <Smartphone size={13} className="text-[var(--accent)] shrink-0" />
-                <span>
-                  {isZh
-                    ? 'iPhone / iPad 新用户如何获取 Bark 推送？'
-                    : 'How to set up iOS Bark Push Notifications'}
-                </span>
-              </div>
-              <ol className="m-0 pl-4 space-y-0.5 list-decimal leading-relaxed">
-                <li>
-                  {isZh
-                    ? '在苹果 App Store 搜索并安装免费开源应用「Bark」；'
-                    : 'Install the free open-source "Bark" app from the iOS App Store;'}
-                </li>
-                <li>
-                  {isZh
-                    ? '打开 Bark App，点击首页第一条示例链接右侧的「复制」，直接整条粘贴到下方右侧「Bark 链接或专属 Key」输入框即可（系统会自动识别拆出服务器与 Key）；'
-                    : 'Open Bark, tap "Copy" next to the sample URL, and paste the full URL (or device key) into the right-hand Bark box below;'}
-                </li>
-                <li>
-                  {isZh
-                    ? '直接点击「测试推送」即可自动保存并听手机响铃！开启后将在：① 盯盘带单员空出名额、② 带单员新开/平仓、③ 个人账户新平仓入账、④ 交易所后台同步异常报错 时实时推送。'
-                    : 'Click "Test Push" directly to auto-save & verify! Alerts fire on: open copy slots, lead-trader fills, closed trades, and background sync errors.'}
-                </li>
-              </ol>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <div className="space-y-1">
-                <label className="block text-[11px] font-medium text-[var(--fg-2)]">
-                  {isZh ? 'Bark 服务器地址（默认官方即可）' : 'Bark Server URL (Default OK)'}
-                </label>
-                <input
-                  type="text"
-                  data-testid="bark-server-url-input"
-                  value={barkServerUrl}
-                  onChange={e => setBarkServerUrl(e.target.value)}
-                  placeholder="https://api.day.app"
-                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="block text-[11px] font-medium text-[var(--fg)]">
-                  {isZh ? 'Bark 链接或专属 Key（直接粘贴处）' : 'Bark App URL or Push Key (Paste here)'}
-                </label>
-                <input
-                  type="password"
-                  data-testid="bark-push-key-input"
-                  value={barkKey}
-                  onChange={e => setBarkKey(e.target.value)}
-                  placeholder={
-                    settings.notifications?.bark_push_key_set
-                      ? isZh
-                        ? '已配置（粘贴新链接或 Key 可覆盖）'
-                        : 'Configured (paste new URL/Key to replace)'
-                      : isZh
-                        ? '粘贴 Bark 完整链接或设备 Key'
-                        : 'Paste full Bark URL or Push Key'
-                  }
-                  className="h-8 w-full px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                data-testid="test-notify-btn"
-                disabled={testingNotify}
-                onClick={async () => {
-                  setTestingNotify(true)
-                  setErrorMsg('')
-                  try {
-                    const pendingNotifications = {
-                      bark_server_url: barkServerUrl.trim() || 'https://api.day.app',
-                      bark_push_key: barkKey.trim(),
-                    }
-                    const res = await api.testNotify({ notifications: pendingNotifications })
-                    if (res.settings) {
-                      setBarkServerUrl(res.settings.notifications?.bark_server_url || 'https://api.day.app')
-                      await onUpdateSettings({})
-                    }
-                    setBarkKey('')
-                    const sentList = (res.sent || []).join(', ')
-                    flashOk(
-                      isZh
-                        ? `配置已自动保存，测试推送已送达（${sentList}）`
-                        : `Saved & test alert delivered (${sentList})`,
-                    )
-                  } catch (err) {
-                    setErrorMsg(err instanceof Error ? err.message : 'Test notification failed')
-                  } finally {
-                    setTestingNotify(false)
-                  }
-                }}
-                className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] font-medium text-[var(--fg)] hover:bg-[var(--surface-hover)] disabled:opacity-50 cursor-pointer"
-              >
-                <Bell size={12} />
-                <span>{testingNotify ? (isZh ? '发送中…' : 'Sending…') : isZh ? '测试推送' : 'Test Push'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  await onUpdateSettings({
-                    notifications: {
-                      bark_server_url: barkServerUrl.trim() || 'https://api.day.app',
-                      bark_push_key: barkKey,
-                    },
-                  })
-                  setBarkKey('')
-                  flashOk(t('set_save_ok'), 2500)
-                }}
-                className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
-                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-              >
-                {t('save_config')}
-              </button>
-            </div>
-          </div>
-
-          {/* Optional Outbound Network Proxy (for Mainland China NAS reaching Binance) */}
-          <div data-testid="outbound-proxy-card" className="otl-card p-5 space-y-2.5">
-            <div>
-              <h3 className="m-0 text-[14px] font-semibold text-[var(--fg)]">
-                {isZh ? '网络代理配置（国内 NAS 连币安可选）' : 'Outbound Network Proxy (Optional)'}
-              </h3>
-              <p className="m-0 text-[11.5px] text-[var(--fg-3)] mt-0.5">
-                {isZh
-                  ? '若 NAS 直连币安超时，可填入局域网代理地址（如 http://192.168.x.x:7890；注意 Docker 容器内请填宿主机/软路由局域网 IP，勿填 127.0.0.1），留空则直连。'
-                  : 'Optional HTTP/HTTPS/SOCKS5 proxy for exchange APIs & public copy radar. In Docker on NAS, use LAN IP rather than 127.0.0.1.'}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                data-testid="outbound-proxy-input"
-                value={outboundProxyUrl}
-                onChange={e => setOutboundProxyUrl(e.target.value)}
-                placeholder={
-                  isZh
-                    ? '例如 http://192.168.x.x:7890（NAS 容器勿填 127.0.0.1，留空直连）'
-                    : 'e.g. http://192.168.x.x:7890 (leave blank for direct)'
-                }
-                className="h-8 flex-1 px-2.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] text-[12px] text-[var(--fg)]"
-              />
-              <button
-                type="button"
-                data-testid="save-proxy-btn"
-                onClick={async () => {
-                  try {
-                    await onUpdateSettings({ outbound_proxy_url: outboundProxyUrl.trim() })
-                    flashOk(
-                      isZh
-                        ? outboundProxyUrl.trim()
-                          ? '网络代理已生效'
-                          : '已清除网络代理，恢复直连模式'
-                        : 'Proxy settings saved',
-                      2500,
-                    )
-                  } catch (err) {
-                    setErrorMsg(err instanceof Error ? err.message : 'Invalid proxy URL')
-                  }
-                }}
-                className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer whitespace-nowrap"
-                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-              >
-                {t('save_config')}
-              </button>
-            </div>
-          </div>
+          <BarkNotifyCard
+            settings={settings}
+            onUpdateSettings={onUpdateSettings}
+            flashOk={flashOk}
+            setErrorMsg={setErrorMsg}
+          />
         </section>
       </div>
 
