@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { OverviewPage } from '../pages/OverviewPage'
@@ -269,4 +269,69 @@ it('opens itemized wallets from the equity allocation even when current holdings
   rerender(overview({ ...data, spot_wallet_balances: undefined }))
   expect(detail.queryByText('USDT')).toBeNull()
   expect(detail.getByText('当前快照没有逐币钱包余额。')).toBeTruthy()
+})
+
+it('falls back to all holdings when the selected asset category disappears on refresh', () => {
+  const sample = DASHBOARD_WITH_STOCK_AND_SPOT
+  const view = (data: DashboardData) => <I18nProvider locale="zh-CN"><OverviewPage data={data} onNavigate={() => {}} /></I18nProvider>
+  const { rerender } = render(view(sample))
+  const holdings = within(screen.getByTestId('overview-holdings'))
+  fireEvent.click(holdings.getByRole('button', { name: '美股' }))
+  expect(holdings.queryByText('WLFI')).toBeNull()
+  rerender(view({ ...sample, extensions: { ...sample.extensions, stocks: { ...sample.extensions.stocks, holdings: [] } } }))
+  expect(holdings.getByText('WLFI')).toBeTruthy()
+  rerender(view(sample))
+  expect(holdings.getByText('WLFI')).toBeTruthy()
+  expect(holdings.getByText('ANT')).toBeTruthy()
+})
+
+it('keeps the latest selected dashboard range when an earlier response finishes last', async () => {
+  let finish30: ((response: Response) => void) | undefined
+  const dash = (range: string, equity: number) => new Response(JSON.stringify({
+    ...DASHBOARD_WITH_STOCK_AND_SPOT, range_key: range, summary: { ...DASHBOARD_WITH_STOCK_AND_SPOT.summary, total_equity_usd: equity },
+  }))
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+    const u = new URL(String(input), 'http://localhost')
+    if (u.pathname.endsWith('/dashboard')) {
+      const range = u.searchParams.get('range') || 'all'
+      if (range === '30d') return new Promise<Response>(resolve => { finish30 = resolve })
+      return dash(range, range === '7d' ? 777 : 111)
+    }
+    if (u.pathname.endsWith('/settings')) return new Response(JSON.stringify(SETTINGS_ALL_EXT_OFF))
+    if (u.pathname.endsWith('/exchanges')) return new Response(JSON.stringify({adapters: []}))
+    if (u.pathname.endsWith('/fx-rates')) return new Response(JSON.stringify(DEFAULT_FX))
+    return new Response(JSON.stringify({authenticated: true, require_setup: false}))
+  })
+  render(<App />)
+  await screen.findByTestId('overview-page')
+  const ranges = within(screen.getByTestId('topbar-range-slot'))
+  fireEvent.click(ranges.getByRole('button', { name: '30天' }))
+  await waitFor(() => expect(finish30).toBeTypeOf('function'))
+  expect(screen.queryByRole('button', { name: /总净资产/ })).toBeNull()
+  fireEvent.click(ranges.getByRole('button', { name: '7天' }))
+  await waitFor(() => expect(screen.getByTestId('kpi-equity').textContent).toContain('777.00'))
+  await act(async () => { finish30!(dash('30d', 3030)) })
+  expect(screen.getByTestId('kpi-equity').textContent).toContain('777.00')
+})
+
+it('closes details from the previous ledger when a refresh discovers a mode change', async () => {
+  const sample = DASHBOARD_WITH_STOCK_AND_SPOT
+  let demo = false
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname.endsWith('/dashboard')) return Response.json({
+      ...sample, demo_mode: demo, range_key: url.searchParams.get('range') || 'all',
+      spot_holdings: demo ? [] : sample.spot_holdings,
+    })
+    if (url.pathname.endsWith('/settings')) return Response.json(SETTINGS_ALL_EXT_OFF)
+    if (url.pathname.endsWith('/exchanges')) return Response.json({ adapters: [] })
+    if (url.pathname.endsWith('/fx-rates')) return Response.json(DEFAULT_FX)
+    return Response.json({ authenticated: true, require_setup: false })
+  })
+  render(<App />)
+  fireEvent.click(await screen.findByText('WLFI'))
+  expect(await screen.findByTestId('spot-holding-detail-modal')).toBeTruthy()
+  demo = true
+  fireEvent.click(within(screen.getByTestId('topbar-range-slot')).getByRole('button', { name: '7天' }))
+  await waitFor(() => expect(screen.queryByTestId('spot-holding-detail-modal')).toBeNull())
 })

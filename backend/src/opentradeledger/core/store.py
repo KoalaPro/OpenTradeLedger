@@ -507,6 +507,13 @@ class LedgerStore:
             }
         return {}
 
+    def snapshot_sync_metadata(self) -> list[tuple[Any, ...]]:
+        with self._connect() as conn:
+            return [tuple(row) for row in conn.execute(
+                "SELECT key, value_json, updated_at FROM kv_meta "
+                "WHERE key IN ('sync_schedule', 'venue_health', 'last_sync_ms')"
+            )]
+
     def snapshot_venue_partition(self, venue_id: str) -> dict[str, list[tuple[Any, ...]]]:
         """Capture an in-memory rollback point of a single venue's SQLite partition."""
         vid = (venue_id or "").strip().lower()
@@ -538,6 +545,12 @@ class LedgerStore:
         """Atomically restore a single venue's SQLite partition to a prior snapshot."""
         vid = (venue_id or "").strip().lower()
         with self._connect() as conn:
+            if "sync_metadata" in snap:
+                conn.execute("DELETE FROM kv_meta WHERE key IN ('sync_schedule', 'venue_health', 'last_sync_ms')")
+                conn.executemany(
+                    "INSERT INTO kv_meta (key, value_json, updated_at) VALUES (?, ?, ?)",
+                    snap["sync_metadata"],
+                )
             conn.execute("DELETE FROM otl_venue_kv WHERE venue_id = ?", (vid,))
             conn.execute("DELETE FROM otl_venue_records WHERE venue_id = ?", (vid,))
             conn.execute("DELETE FROM otl_plugin_snapshots WHERE venue_id = ?", (vid,))

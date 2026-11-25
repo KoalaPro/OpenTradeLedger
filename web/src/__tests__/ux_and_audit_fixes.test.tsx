@@ -714,3 +714,99 @@ describe('Audit Bugfixes: Calendar, Add-Account Modal, Privacy, Currency, Drafts
     expect(screen.getByTestId('fees-ai-page').textContent).toContain('本地精算规则')
   })
 })
+
+describe('Settings persistence and login preferences', () => {
+  function settingsServer(editEasicoin = false) {
+    let locked = false
+    let settings = { ...baseSettings, goal_enabled: true, goal_target_usd: 12345 } as UserSettings
+    const updates: Record<string, unknown>[] = []
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const path = String(input).split('?')[0]
+      if (path === '/api/v1/auth/status') return Response.json({ authenticated: !locked, enabled: true })
+      if (path === '/api/v1/auth/logout') {
+        locked = true
+        return Response.json({ authenticated: false, enabled: true })
+      }
+      if (path === '/api/v1/settings') {
+        if (init?.method === 'PUT') {
+          const patch = JSON.parse(String(init.body))
+          updates.push(patch)
+          if (patch.outbound_proxy_url === 'bad') return Response.json({ detail: 'Invalid proxy address' }, { status: 400 })
+          settings = { ...settings, ...patch }
+        }
+        return Response.json(settings)
+      }
+      if (path === '/api/v1/dashboard') return Response.json(twoTradeDashboard)
+      if (path === '/api/v1/exchanges/verify') return Response.json({ ok: true, verified: true })
+      if (path === '/api/v1/sync') return Response.json({
+        detail_zh: '历史数据请求超时', committed: false,
+      }, { status: 502 })
+      if (path === '/api/v1/exchanges') return Response.json({
+        adapters: editEasicoin ? [{
+          venue_id: 'easicoin', display_name: 'EasiCoin', display_name_zh: '易币',
+          configured: true, capabilities: {}, health: { status: 'connected' },
+          credential: { label: '旧账户', masked_api_key: 'FAKE...1111', enabled: true },
+        }] : [],
+      })
+      return Response.json({ ok: true, rates: DEFAULT_FX.rates })
+    })
+    window.location.hash = '#/settings'
+    return updates
+  }
+
+  it('reports a failed proxy save without success, then clears the error on a successful retry', async () => {
+    settingsServer()
+    render(<App />)
+    const input = await screen.findByTestId('outbound-proxy-input')
+    fireEvent.change(input, { target: { value: 'bad' } })
+    fireEvent.click(screen.getByTestId('save-proxy-btn'))
+    await screen.findByText('Invalid proxy address')
+    expect(screen.queryByText('网络代理已生效')).toBeNull()
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.click(screen.getByTestId('save-proxy-btn'))
+    await screen.findByText('已清除网络代理，恢复直连模式')
+    await waitFor(() => expect(screen.queryAllByText('Invalid proxy address')).toHaveLength(0))
+  })
+
+  it('keeps the existing goal when a negative amount is entered', async () => {
+    const updates = settingsServer()
+    render(<App />)
+    const input = await screen.findByDisplayValue('12345')
+    fireEvent.change(input, { target: { value: '-1' } })
+    fireEvent.click(input.parentElement!.querySelector('button')!)
+    expect(updates.some(patch => 'goal_target_usd' in patch)).toBe(false)
+    expect(await screen.findByTestId('settings-error-banner')).toBeTruthy()
+  })
+
+  it('explains that a rejected EasiCoin backfill kept the existing account', async () => {
+    settingsServer(true)
+    render(<App />)
+    fireEvent.click(await screen.findByTestId('edit-adapter-easicoin'))
+    fireEvent.change(screen.getByTestId('exchange-key-input'), { target: { value: 'fixture-key' } })
+    fireEvent.change(screen.getByTestId('exchange-secret-input'), { target: { value: 'fixture-secret' } })
+    fireEvent.click(screen.getByTestId('save-exchange-btn'))
+    const modal = screen.getByTestId('add-exchange-modal')
+    await waitFor(() => expect(modal.textContent).toContain('历史数据请求超时'))
+    expect(modal.textContent).toContain('原账户凭据和记录已保留')
+    expect(screen.queryByTestId('settings-ok-banner')).toBeNull()
+  })
+
+  it('preserves the selected English language when a locked page is reloaded', async () => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+    })
+    settingsServer()
+    const app = render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'English' }))
+    await waitFor(() => expect(document.documentElement.lang).toBe('en'))
+    fireEvent.click(screen.getByTestId('sec-lock-now-btn'))
+    await screen.findByTestId('auth-login-card')
+    app.unmount()
+    render(<App />)
+    await screen.findByTestId('auth-login-card')
+    expect(document.documentElement.lang).toBe('en')
+    vi.unstubAllGlobals()
+  })
+})

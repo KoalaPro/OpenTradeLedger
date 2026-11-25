@@ -84,7 +84,12 @@ function buildHashRoute(page: NavPage, extTab?: ExtensionSubTab): string {
 
 export default function App() {
   const [hash, setHash] = useState(() => typeof window !== 'undefined' ? window.location.hash : '')
-  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
+  const [settings, setSettings] = useState<UserSettings>(() => {
+    try {
+      if (window.localStorage.getItem('otl.locale') === 'en') return { ...DEFAULT_SETTINGS, locale: 'en' }
+    } catch { /* Device storage can be unavailable in private browsing. */ }
+    return DEFAULT_SETTINGS
+  })
   const enabledTabs = enabledExtensionTabs(settings.modules)
   const { page, extTab, redirectToOverview } = parseHashRoute(hash, enabledTabs)
   const [privacyMode, setPrivacyMode] = useState(false)
@@ -102,6 +107,7 @@ export default function App() {
   const [lastSyncHadError, setLastSyncHadError] = useState(false)
   const [generatingAi, setGeneratingAi] = useState(false)
   const [error, setError] = useState('')
+  const [dashboardError, setDashboardError] = useState('')
   const [drilldown, setDrilldown] = useState<{ venueId: string; venueName?: string; symbol: string; rangeKey?: string } | null>(null)
   const [drilldownOpen, setDrilldownOpen] = useState(false)
 
@@ -115,6 +121,12 @@ export default function App() {
     document.documentElement.dataset.privacy = privacyMode ? 'on' : 'off'
     document.title = settings.locale === 'en' ? 'OpenTradeLedger' : '交易账本 · OpenTradeLedger'
   }, [settings.theme, settings.polarity, settings.locale, privacyMode])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('otl.locale', settings.locale)
+    } catch { /* Language remains available for the current page. */ }
+  }, [settings.locale])
 
   const isAuthLocked = Boolean(authStatus.require_setup || authStatus.authenticated === false)
 
@@ -179,37 +191,63 @@ export default function App() {
   const effVenue = page === 'trades' ? venueFilter : 'ALL'
   const effSymbol = page === 'trades' ? symbolFilter : 'ALL'
 
-  const loadAll = useCallback(async () => {
+  const currentQuery = useRef({ rangeKey, effVenue, effSymbol })
+  const dashboardRequest = useRef(0)
+  const ledgerEpoch = useRef(0)
+  const switchingLedger = useRef(false)
+
+  useLayoutEffect(() => {
+    currentQuery.current = { rangeKey, effVenue, effSymbol }
+    dashboardRequest.current++
+  }, [rangeKey, effVenue, effSymbol])
+
+  const invalidateDashboard = useCallback(() => {
+    dashboardRequest.current++
+    ledgerEpoch.current++
+    setDashboardError('')
+    setData(null)
+    setDrilldown(null)
+    setDrilldownOpen(false)
+    setAdapters([])
+    setExchangeErrorCount(0)
+  }, [])
+
+  useLayoutEffect(() => {
+    if (isAuthLocked) invalidateDashboard()
+  }, [isAuthLocked, invalidateDashboard])
+
+  const loadDashboardOnly = useCallback(async () => {
+    if (switchingLedger.current) return
+    const id = ++dashboardRequest.current
+    const query = currentQuery.current
     try {
-      const [dash, pref, ex] = await Promise.all([
-        api.getDashboard(rangeKey, effVenue, effSymbol),
-        api.getSettings(),
-        api.listExchanges(),
-      ])
+      const dash = await api.getDashboard(query.rangeKey, query.effVenue, query.effSymbol)
+      if (id !== dashboardRequest.current) return
       setData(dash)
+      setDashboardError('')
+    } catch (e) {
+      if (id !== dashboardRequest.current || handlePossibleAuthError(e)) return
+      setDashboardError(e instanceof Error ? e.message : 'Failed to load data')
+    }
+  }, [handlePossibleAuthError])
+
+  const loadAll = useCallback(async () => {
+    if (switchingLedger.current) return
+    const epoch = ledgerEpoch.current
+    try {
+      const [, pref, ex] = await Promise.all([loadDashboardOnly(), api.getSettings(), api.listExchanges()])
+      if (epoch !== ledgerEpoch.current) return
       setSettings(pref)
       if (!initializedPrivacyRef.current) {
         initializedPrivacyRef.current = true
         setPrivacyMode(Boolean(pref.privacy_mode))
       }
       applyExchangeList(ex)
-      setError('')
     } catch (e) {
-      if (handlePossibleAuthError(e)) return
-      setError(e instanceof Error ? e.message : 'Failed to load data')
+      if (epoch !== ledgerEpoch.current || handlePossibleAuthError(e)) return
+      setError(e instanceof Error ? e.message : 'Failed to load settings')
     }
-  }, [rangeKey, effVenue, effSymbol, handlePossibleAuthError])
-
-  const loadDashboardOnly = useCallback(async () => {
-    try {
-      const dash = await api.getDashboard(rangeKey, effVenue, effSymbol)
-      setData(dash)
-      setError('')
-    } catch (e) {
-      if (handlePossibleAuthError(e)) return
-      setError(e instanceof Error ? e.message : 'Failed to load data')
-    }
-  }, [rangeKey, effVenue, effSymbol, handlePossibleAuthError])
+  }, [loadDashboardOnly, handlePossibleAuthError])
 
   useEffect(() => {
     if (!authChecked || isAuthLocked) {
@@ -250,21 +288,18 @@ export default function App() {
     [handlePossibleAuthError],
   )
 
-  const handleUpdateSettings = async (patch: Record<string, unknown>) => {
+  const handleUpdateSettings = async (patch: Record<string, unknown>, showPageError = true) => {
+    setError('')
     try {
       const next = await api.updateSettings(patch)
       setSettings(next)
       if (typeof patch.privacy_mode === 'boolean') setPrivacyMode(patch.privacy_mode)
-      const dash = await api.getDashboard(
-        rangeKey,
-        page === 'trades' ? venueFilter : 'ALL',
-        page === 'trades' ? symbolFilter : 'ALL',
-      )
-      setData(dash)
     } catch (e) {
-      if (handlePossibleAuthError(e)) return
-      setError(e instanceof Error ? e.message : 'Failed to update settings')
+      const message = e instanceof Error ? e.message : 'Failed to update settings'
+      if (!handlePossibleAuthError(e) && showPageError) setError(message)
+      return message
     }
+    await loadDashboardOnly()
   }
 
   const handleSync = async () => {
@@ -298,7 +333,7 @@ export default function App() {
   }
 
   const handleSaveJournal = async (tradeId: string, tags: string[], note: string) => {
-    await api.saveJournal(tradeId, tags, note)
+    await api.saveJournal(tradeId, tags, note, data?.demo_mode)
     await loadAll()
   }
 
@@ -306,7 +341,7 @@ export default function App() {
     setGeneratingAi(true)
     setError('')
     try {
-      await api.generateAiReview(rangeKey, mode)
+      await api.generateAiReview(rangeKey, mode, data?.demo_mode)
       await loadAll()
     } catch (e) {
       if (handlePossibleAuthError(e)) return
@@ -344,6 +379,12 @@ export default function App() {
     setHash('#/overview')
   }, [data, hash, redirectToOverview])
 
+  useLayoutEffect(() => {
+    setDrilldown(null)
+    setDrilldownOpen(false)
+  }, [data?.demo_mode])
+
+  const visibleError = error || dashboardError
   const activeCurrency: CurrencyCode = settings.display_currency || 'USDT'
 
   return (
@@ -413,19 +454,22 @@ export default function App() {
               />
 
               <main className="flex-1 px-6 py-5 max-w-[1440px] w-full mx-auto">
-                <AnimatedCollapse open={Boolean(error)} innerClassName="pb-4">
+                <AnimatedCollapse open={Boolean(visibleError)} innerClassName="pb-4">
                   <div
                     data-testid="global-error-banner"
                     className="otl-status-err px-4 py-2.5 rounded-lg text-[12.5px] font-medium"
                   >
-                    {error}
+                    {visibleError}
                   </div>
                 </AnimatedCollapse>
 
-                {!data ? (
-                  <div className="py-20 text-center text-[13px] text-[var(--fg-3)]">Loading…</div>
-                ) : (
-                  <div key={page} className="otl-page-enter">
+                {(!data || data.range_key !== rangeKey) && (
+                  <div role="status" className="py-20 text-center text-[13px] text-[var(--fg-3)]">
+                    {settings.locale === 'en' ? 'Loading…' : '加载中…'}
+                  </div>
+                )}
+                {data && (
+                  <div key={page + (data.demo_mode ? '-demo' : '-live')} hidden={data.range_key !== rangeKey} className="otl-page-enter">
                     {page === 'overview' && (
                       <OverviewPage
                         data={data}
@@ -503,7 +547,8 @@ export default function App() {
                         versionStatus={versionStatus}
                         onCheckVersion={handleCheckVersion}
                         onUpdateSettings={async patch => {
-                          await handleUpdateSettings(patch)
+                          const failure = await handleUpdateSettings(patch, false)
+                          if (failure) return failure
                           if (typeof patch.update_check_enabled === 'boolean') {
                             void handleCheckVersion(false)
                           }
@@ -512,23 +557,23 @@ export default function App() {
                           onStep?.('verifying')
                           await api.verifyExchange(body)
                           onStep?.('syncing')
-                          try {
-                            const syncRes = await api.triggerSync(body.venue_id, body)
-                            const venueRes = syncRes.venues?.[body.venue_id]
-                            if (venueRes && !venueRes.ok) {
-                              const isZh = settings.locale === 'zh-CN'
-                              throw new Error(
-                                (isZh ? venueRes.error_zh : venueRes.error) ||
-                                  venueRes.error ||
-                                  'Exchange sync failed',
-                              )
-                            }
-                            if (syncRes.committed === undefined) {
-                              await api.upsertExchange(body)
-                            }
-                          } finally {
-                            await loadAll()
+                          const syncRes = await api.triggerSync(body.venue_id, body)
+                          if (syncRes.auth_status) {
+                            invalidateDashboard()
+                            setAuthStatus(syncRes.auth_status)
+                            if (syncRes.auth_status.require_setup || syncRes.auth_status.authenticated === false) return
                           }
+                          const venueRes = syncRes.venues?.[body.venue_id]
+                          if (syncRes.ok === false || syncRes.committed === false || venueRes?.ok === false) {
+                            const isZh = settings.locale === 'zh-CN'
+                            throw new Error(
+                              (isZh ? venueRes?.error_zh : venueRes?.error) ||
+                                venueRes?.error ||
+                                (isZh ? '交易所同步失败' : 'Exchange sync failed'),
+                            )
+                          }
+                          if (syncRes.committed === undefined) await api.upsertExchange(body)
+                          await loadAll()
                           onStep?.('done')
                         }}
                         onDeleteExchange={async (vid, keepData = false) => {
@@ -555,11 +600,18 @@ export default function App() {
                           }
                         }}
                         onToggleDemo={async enabled => {
-                          await api.setDemoMode(enabled)
-                          const st = await api.authStatus().catch(() => authStatus)
-                          setAuthStatus(st)
-                          if (!st.require_setup && st.authenticated !== false) {
+                          switchingLedger.current = true
+                          invalidateDashboard()
+                          try {
+                            await api.setDemoMode(enabled)
+                            const st = await api.authStatus()
+                            setAuthStatus(st)
+                            switchingLedger.current = false
+                            if (!st.require_setup && st.authenticated !== false) await loadAll()
+                          } catch (e) {
+                            switchingLedger.current = false
                             await loadAll()
+                            if (!handlePossibleAuthError(e)) setError(e instanceof Error ? e.message : 'Failed to switch ledger')
                           }
                         }}
                       />

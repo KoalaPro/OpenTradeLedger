@@ -19,6 +19,7 @@ import { AiConfigCard } from '../components/settings/AiConfigCard'
 import { BarkNotifyCard } from '../components/settings/BarkNotifyCard'
 import { VersionUpgradeCard } from '../components/settings/VersionUpgradeCard'
 import { useI18n } from '../i18n'
+import { ApiError } from '../lib/api'
 import { CURRENCY_OPTIONS, useCurrency } from '../lib/currency'
 import type {
   AuthStatusPayload,
@@ -41,7 +42,7 @@ interface SettingsPageProps {
   onLockNow?: () => Promise<void>
   versionStatus?: VersionCheckPayload | null
   onCheckVersion?: (force?: boolean) => Promise<VersionCheckPayload | null>
-  onUpdateSettings: (patch: Record<string, unknown>) => Promise<void>
+  onUpdateSettings: (patch: Record<string, unknown>) => Promise<void | string>
   onUpsertExchange: (
     body: {
       venue_id: string
@@ -78,7 +79,7 @@ export function SettingsPage({
   onLockNow,
   versionStatus,
   onCheckVersion,
-  onUpdateSettings,
+  onUpdateSettings: persistSettings,
   onUpsertExchange,
   onDeleteExchange,
   onTestExchange,
@@ -114,6 +115,7 @@ export function SettingsPage({
   }, [settings.goal_label, settings.goal_target_usd])
 
   const selectedAdapter = adapters.find(a => a.venue_id === addingVenue)
+  const firstLiveConnection = (demoMode || previewFallback) && !adapters.some(adapter => adapter.configured)
   const deletingAdapter = adapters.find(a => a.venue_id === deletingVenue)
 
   const flashOk = (msg: string, ms = 3200) => {
@@ -135,11 +137,25 @@ export function SettingsPage({
     }
   }, [])
 
+  const onUpdateSettings = async (patch: Record<string, unknown>) => {
+    setStatusMsg('')
+    setErrorMsg('')
+    try {
+      const failure = await persistSettings(patch)
+      if (!failure) return true
+      setErrorMsg(failure)
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : isZh ? '设置保存失败' : 'Failed to save settings')
+    }
+    return false
+  }
+
   const handleAddSubmit = async () => {
     if (!addingVenue || !apiKey.trim() || !apiSecret.trim()) return
     if (selectedAdapter?.requires_passphrase && !passphrase.trim()) return
     setBusyVenue(addingVenue)
     setSubmitStep('verifying')
+    setStatusMsg('')
     setModalError('')
     setErrorMsg('')
     try {
@@ -178,9 +194,16 @@ export function SettingsPage({
         closeCeremonyTimerRef.current = window.setTimeout(finishClose, 380)
       }
     } catch (err) {
-      const m = err instanceof Error ? err.message : 'Connection failed'
-      setModalError(m)
-      setErrorMsg(m)
+      const detail = err instanceof Error ? err.message : isZh ? '连接失败' : 'Connection failed'
+      const rolledBack = err instanceof ApiError && err.committed === false
+      const updateHint = selectedAdapter?.configured
+        ? isZh ? '原账户凭据和记录已保留。' : 'The previous credentials and records were kept.'
+        : isZh ? '未保存新账户。' : 'The new account was not saved.'
+      const historyFailed = rolledBack && err.errorCode !== 'LOCAL_SAVE_FAILED'
+      const phase = historyFailed ? isZh ? '历史同步失败。' : 'Historical sync failed.' : ''
+      const message = rolledBack ? [phase, detail, updateHint].filter(Boolean).join(' ') : detail
+      setModalError(message)
+      setErrorMsg(message)
       setSubmitStep('')
       setBusyVenue('')
       setModalShake(true)
@@ -654,12 +677,17 @@ export function SettingsPage({
                   <button
                     type="button"
                     onClick={async () => {
-                      await onUpdateSettings({
+                      const target = Number(goalInput)
+                      if (!Number.isFinite(target) || target <= 0) {
+                        setStatusMsg('')
+                        setErrorMsg(isZh ? '目标净值必须大于 0' : 'Target equity must be greater than zero')
+                        return
+                      }
+                      if (await onUpdateSettings({
                         goal_enabled: true,
                         goal_label: goalLabel.trim(),
-                        goal_target_usd: Number(goalInput) > 0 ? Number(goalInput) : null,
-                      })
-                      flashOk(t('set_save_ok'), 2500)
+                        goal_target_usd: target,
+                      })) flashOk(t('set_save_ok'), 2500)
                     }}
                     className="h-8 px-3 rounded-lg text-[12px] font-semibold cursor-pointer"
                     style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
@@ -985,6 +1013,8 @@ export function SettingsPage({
                     <RefreshCw size={12} className="animate-spin" />
                     <span>{isZh ? '验证并同步中…' : 'Verifying & Syncing…'}</span>
                   </>
+                ) : firstLiveConnection ? (
+                  <span>{isZh ? '连接并进入我的账本' : 'Connect and open my ledger'}</span>
                 ) : (
                   <span>{isZh ? '验证并保存连接' : t('confirm_save')}</span>
                 )}

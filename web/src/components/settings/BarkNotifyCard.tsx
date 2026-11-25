@@ -6,7 +6,7 @@ import type { UserSettings } from '../../lib/types'
 
 interface BarkNotifyCardProps {
   settings: UserSettings
-  onUpdateSettings: (patch: Record<string, unknown>) => Promise<void>
+  onUpdateSettings: (patch: Record<string, unknown>) => Promise<void | boolean>
   flashOk: (msg: string, ms?: number) => void
   setErrorMsg: (msg: string) => void
 }
@@ -125,7 +125,7 @@ export function BarkNotifyCard({
                 const res = await api.testNotify({ notifications: pendingNotifications })
                 if (res.settings) {
                   setBarkServerUrl(res.settings.notifications?.bark_server_url || 'https://api.day.app')
-                  await onUpdateSettings({})
+                  if ((await onUpdateSettings({})) === false) return
                 }
                 setBarkKey('')
                 const sentList = (res.sent || []).join(', ')
@@ -148,12 +148,13 @@ export function BarkNotifyCard({
           <button
             type="button"
             onClick={async () => {
-              await onUpdateSettings({
+              const saved = await onUpdateSettings({
                 notifications: {
                   bark_server_url: barkServerUrl.trim() || 'https://api.day.app',
                   bark_push_key: barkKey,
                 },
               })
+              if (saved === false) return
               setBarkKey('')
               flashOk(t('set_save_ok'), 2500)
             }}
@@ -195,7 +196,8 @@ export function BarkNotifyCard({
             data-testid="save-proxy-btn"
             onClick={async () => {
               try {
-                await onUpdateSettings({ outbound_proxy_url: outboundProxyUrl.trim() })
+                const saved = await onUpdateSettings({ outbound_proxy_url: outboundProxyUrl.trim() })
+                if (saved === false) return
                 flashOk(
                   isZh
                     ? outboundProxyUrl.trim()

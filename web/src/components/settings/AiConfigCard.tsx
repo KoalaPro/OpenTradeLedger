@@ -6,7 +6,7 @@ import type { UserSettings } from '../../lib/types'
 
 interface AiConfigCardProps {
   settings: UserSettings
-  onUpdateSettings: (patch: Record<string, unknown>) => Promise<void>
+  onUpdateSettings: (patch: Record<string, unknown>) => Promise<void | boolean>
   flashOk: (msg: string, ms?: number) => void
   setErrorMsg: (msg: string) => void
 }
@@ -125,7 +125,8 @@ export function AiConfigCard({
         <button
           type="button"
           onClick={async () => {
-            await onUpdateSettings({ ai_base_url: aiUrl, ai_model: aiModel, ai_api_key: aiKey })
+            const saved = await onUpdateSettings({ ai_base_url: aiUrl, ai_model: aiModel, ai_api_key: aiKey })
+            if (saved === false) return
             setAiKey('')
             flashOk(t('set_save_ok'), 2500)
           }}

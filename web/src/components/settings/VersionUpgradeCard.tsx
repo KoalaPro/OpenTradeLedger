@@ -9,7 +9,7 @@ interface VersionUpgradeCardProps {
   settings: UserSettings
   versionStatus?: VersionCheckPayload | null
   onCheckVersion?: (force?: boolean) => Promise<VersionCheckPayload | null>
-  onUpdateSettings: (patch: Record<string, unknown>) => Promise<void>
+  onUpdateSettings: (patch: Record<string, unknown>) => Promise<void | boolean>
   flashOk: (msg: string, ms?: number) => void
   setErrorMsg: (msg: string) => void
 }

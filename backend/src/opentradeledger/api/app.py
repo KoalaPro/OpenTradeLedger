@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,7 @@ from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.logo_cache import InstrumentLogos
 from opentradeledger.core.notifier import bark_configured, parse_bark_input
 from opentradeledger.core.store import LedgerStore
-from opentradeledger.core.sync_manager import SyncManager
+from opentradeledger.core.sync_manager import CandidateRollbackError, CandidateSaveError, SyncManager
 from opentradeledger.core.venue_health import VenueHealthTracker, humanize_exchange_error
 from opentradeledger.core.self_updater import SelfUpdateError, SelfUpdateService
 from opentradeledger.core.version_checker import VersionCheckService
@@ -465,7 +466,7 @@ def create_app(
             )
 
     @app.post("/api/v1/sync")
-    async def trigger_sync(body: SyncRequest | None = None) -> Response:
+    async def trigger_sync(request: Request, body: SyncRequest | None = None) -> Response:
         if body and body.candidate_credential is not None:
             cand = body.candidate_credential
             vid = cand.venue_id.strip().lower()
@@ -484,15 +485,27 @@ def create_app(
                 passphrase=cand.passphrase.strip(),
                 enabled=cand.enabled,
             )
+            # Existing users can edit credentials while intentionally viewing the demo.
+            # Also finish onboarding for older installations that saved a key before setup.
+            enter_live_ledger = ledger_service.demo_mode and (
+                not vault.list_masked()
+                or auth_manager.get_status(request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False)["require_setup"]
+            )
             try:
                 res = await sync_manager.sync_candidate_and_commit(temp_cred)
-                if (
-                    res.get("committed")
-                    and bool(ledger_service.demo_mode)
-                    and not auth_manager.get_status(None, demo_mode=False).get("require_setup")
-                ):
-                    ledger_service.set_demo_mode(False)
-                return JSONResponse(content=res)
+            except CandidateRollbackError:
+                return JSONResponse(status_code=500, content={
+                    "detail": "Local rollback failed. Check the data directory and verify the account before retrying.",
+                    "detail_zh": "本地回滚失败，请检查数据目录并核对账户状态后再重试。",
+                    "error_code": "LOCAL_ROLLBACK_FAILED",
+                })
+            except CandidateSaveError:
+                return JSONResponse(status_code=500, content={
+                    "detail": "Local save failed. Check available disk space and data directory permissions.",
+                    "detail_zh": "本地保存失败，请检查磁盘空间和数据目录写入权限。",
+                    "error_code": "LOCAL_SAVE_FAILED",
+                    "committed": False,
+                })
             except Exception as exc:
                 diag = humanize_exchange_error(vid, exc)
                 return JSONResponse(
@@ -505,6 +518,13 @@ def create_app(
                         "committed": False,
                     },
                 )
+
+            if res.get("committed") and enter_live_ledger and ledger_service.demo_mode:
+                ledger_service.set_demo_mode(False)
+                res["auth_status"] = auth_manager.get_status(
+                    request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False
+                )
+            return JSONResponse(content=res)
 
         req_venue = body.venue_id if body else None
         if ledger_service.is_demo_active() and not req_venue:
@@ -536,6 +556,14 @@ def create_app(
 
     def _apply_settings_patch(patch: dict[str, Any]) -> None:
         current = ledger_service.get_preferences().model_dump()
+        target = patch.get("goal_target_usd")
+        if target is not None:
+            try:
+                amount = float(target)
+            except (TypeError, ValueError, OverflowError):
+                amount = float("nan")
+            if isinstance(target, bool) or not math.isfinite(amount) or amount <= 0:
+                raise HTTPException(status_code=422, detail="Target equity must be a positive finite number")
         if "outbound_proxy_url" in patch:
             try:
                 patch = {

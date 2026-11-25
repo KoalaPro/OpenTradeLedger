@@ -27,6 +27,14 @@ HOT_OBSERVATION_WINDOW_SEC = 900
 IDLE_BACKOFF_LADDER_SEC = (900, 1800, 3600, 7200, 14400)
 
 
+class CandidateSaveError(RuntimeError):
+    """The historical sync succeeded, but its local changes could not be committed."""
+
+
+class CandidateRollbackError(RuntimeError):
+    """Local storage failed while restoring the previous venue state."""
+
+
 def should_sync_venue(
     schedule_map: dict[str, Any],
     venue_id: str,
@@ -363,10 +371,10 @@ class SyncManager:
             raise ValueError(f"Unsupported exchange adapter: {vid}")
 
         async with self._sync_lock:
-            self.ledger_service.syncing = True
             now_s = int(time.time())
             base_iv = max(1, int(round(self.poll_interval_sec)))
             partition_snap = self.store.snapshot_venue_partition(vid)
+            self.ledger_service.syncing = True
             client: Any = None
             try:
                 client = adapter.create_client(cred)
@@ -379,7 +387,9 @@ class SyncManager:
                 if outcome.mode == "custom_noop":
                     await adapter.test_connection(cred)
 
-                masked = self.vault.upsert(cred)
+                # No awaits during the local commit: take shared metadata at this point,
+                # after the network calls and immediately before any metadata writes.
+                partition_snap["sync_metadata"] = self.store.snapshot_sync_metadata()
                 schedule = self._load_schedule()
                 prev_entry = schedule.get(vid) if isinstance(schedule.get(vid), dict) else {}
                 sched_fp_before = tuple(int(x) for x in (prev_entry.get("fingerprint") or []))
@@ -397,12 +407,10 @@ class SyncManager:
                 self._save_schedule(schedule)
                 h_state = self.health_tracker.record_success(vid)
                 now_ms = int(time.time() * 1000)
-                self.ledger_service.last_sync_ms = now_ms
                 self.store.set_meta("last_sync_ms", now_ms)
-                return {
+                result = {
                     "ok": True,
                     "committed": True,
-                    "credential": masked,
                     "health": h_state,
                     "synced_ms": now_ms,
                     "venues": {
@@ -416,8 +424,16 @@ class SyncManager:
                         }
                     },
                 }
-            except Exception:
-                self.store.restore_venue_partition(vid, partition_snap)
+                result["credential"] = self.vault.upsert(cred)
+                self.ledger_service.last_sync_ms = now_ms
+                return result
+            except Exception as exc:
+                try:
+                    self.store.restore_venue_partition(vid, partition_snap)
+                except Exception as rollback_error:
+                    raise CandidateRollbackError("Could not restore venue data") from rollback_error
+                if "sync_metadata" in partition_snap:
+                    raise CandidateSaveError("Could not save local account data") from exc
                 raise
             finally:
                 if client is not None and hasattr(client, "aclose"):

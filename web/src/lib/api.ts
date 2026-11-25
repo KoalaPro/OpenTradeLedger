@@ -16,6 +16,7 @@ export class ApiError extends Error {
   retryAfterSec: number
   errorCode: string
   rawError: string
+  committed?: boolean
 
   constructor(
     message: string,
@@ -26,6 +27,7 @@ export class ApiError extends Error {
       retryAfterSec?: number
       errorCode?: string
       rawError?: string
+      committed?: boolean
     },
   ) {
     super(message)
@@ -36,6 +38,7 @@ export class ApiError extends Error {
     this.retryAfterSec = Number(opts.retryAfterSec || 0)
     this.errorCode = opts.errorCode || ''
     this.rawError = opts.rawError || ''
+    this.committed = opts.committed
   }
 }
 
@@ -57,6 +60,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
       retryAfterSec: Number(body.retry_after_sec || 0),
       errorCode: String(body.error_code || ''),
       rawError: String(body.raw_error || ''),
+      committed: typeof body.committed === 'boolean' ? body.committed : undefined,
     })
   }
   return (await res.json()) as T
@@ -187,6 +191,7 @@ export const api = {
   ): Promise<{
     ok: boolean
     committed?: boolean
+    auth_status?: AuthStatusPayload
     venues?: Record<
       string,
       {
@@ -216,21 +221,22 @@ export const api = {
       body: JSON.stringify({ enabled }),
     })
   },
-  saveJournal(tradeId: string, tags: string[], note: string): Promise<{ ok: boolean }> {
+  saveJournal(tradeId: string, tags: string[], note: string, demoMode?: boolean): Promise<{ ok: boolean }> {
     return req(`/api/v1/journal/${encodeURIComponent(tradeId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tags, note }),
+      body: JSON.stringify({ tags, note, demo_mode: demoMode }),
     })
   },
   generateAiReview(
     rangeKey: string,
     mode: 'auto' | 'ai' | 'local_rules' = 'auto',
+    demoMode?: boolean,
   ): Promise<NonNullable<DashboardData['ai_review']>> {
     return req('/api/v1/ai-review', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ range_key: rangeKey, mode }),
+      body: JSON.stringify({ range_key: rangeKey, mode, demo_mode: demoMode }),
     })
   },
   listAiModels(baseUrl: string, apiKey: string): Promise<{ ok: boolean; models: string[]; count: number }> {

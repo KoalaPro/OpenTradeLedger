@@ -68,6 +68,9 @@ export function OverviewPage({
   const totalHoldingsCount = futuresList.length + stockList.length + spotList.length
   const activeCategoriesCount =
     (futuresList.length > 0 ? 1 : 0) + (stockList.length > 0 ? 1 : 0) + (spotList.length > 0 ? 1 : 0)
+  const selectedCount = { all: totalHoldingsCount, futures: futuresList.length, stocks: stockList.length, spot: spotList.length }[holdingTab]
+  if (holdingTab !== 'all' && selectedCount === 0) setHoldingTab('all')
+
   const showFutures = holdingTab === 'all' || holdingTab === 'futures'
   const showStocks = holdingTab === 'all' || holdingTab === 'stocks'
   const showSpot = holdingTab === 'all' || holdingTab === 'spot'

@@ -278,3 +278,102 @@ def test_ai_review_isolated_by_range_key_and_data_driven_staleness(tmp_path: Pat
     assert dash_all_stale["ai_review"]["stale"] is True
     assert "2" in dash_all_stale["ai_review"]["stale_reason_zh"]
     assert "3" in dash_all_stale["ai_review"]["stale_reason_zh"]
+
+
+def test_first_verified_account_leaves_demo_and_survives_password_setup(tmp_path, monkeypatch):
+    from opentradeledger.security.vault import CredentialVault
+
+    registry = build_default_registry()
+    adapter = registry.get("easicoin")
+    monkeypatch.setattr(adapter, "create_client", lambda cred: cred)
+
+    async def fixture_sync(client, store, **kwargs):
+        if client.api_key == "reject":
+            raise TimeoutError("backfill timed out")
+        store.venue_scope("easicoin").set_kv("audit_balance", 42)
+        return VenueSyncOutcome(42, False, (), (1,))
+
+    monkeypatch.setattr(adapter, "sync_venue", fixture_sync)
+    app = create_app(data_dir=tmp_path, demo_mode=True, registry=registry, enable_background_sync=False)
+    client = TestClient(app)
+    candidate = {"venue_id": "easicoin", "api_key": "reject", "api_secret": "test-secret"}
+    assert client.post("/api/v1/sync", json={"candidate_credential": candidate}).status_code == 502
+    assert client.get("/api/v1/auth/status").json()["demo_bypass"]
+    assert CredentialVault(tmp_path).get_decrypted("easicoin") is None
+
+    candidate["api_key"] = "fixture-accept"
+    accepted = client.post("/api/v1/sync", json={"candidate_credential": candidate}).json()
+    assert accepted["committed"] is True
+    assert client.get("/api/v1/auth/status").json()["require_setup"]
+    assert accepted["auth_status"]["require_setup"]
+    assert client.get("/api/v1/dashboard").status_code == 401
+
+    restarted = TestClient(create_app(data_dir=tmp_path, demo_mode=True, registry=registry, enable_background_sync=False))
+    assert restarted.get("/api/v1/auth/status").json()["require_setup"]
+    assert restarted.post("/api/v1/auth/setup", json={"password": "test-password"}).status_code == 200
+    assert restarted.get("/api/v1/dashboard").json()["demo_mode"] is False
+    assert CredentialVault(tmp_path).get_decrypted("easicoin").api_key == "fixture-accept"
+    assert LedgerStore(tmp_path).venue_scope("easicoin").get_kv("audit_balance") == 42
+
+    # A user who has already entered the real ledger can edit a key in the demo's
+    # settings without unexpectedly revealing their real balances on screen.
+    restarted.post("/api/v1/demo", json={"enabled": True}).raise_for_status()
+    assert restarted.post("/api/v1/sync", json={"candidate_credential": candidate}).json()["committed"]
+    assert restarted.get("/api/v1/dashboard").json()["explicit_demo_mode"] is True
+
+
+def test_invalid_goal_amount_keeps_previous_goal(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path, demo_mode=True, enable_background_sync=False))
+    assert client.put("/api/v1/settings", json={"goal_enabled": True, "goal_target_usd": 12345}).is_success
+    for invalid in [-1, 0, "nan", "unparseable"]:
+        rejected = client.put("/api/v1/settings", json={"goal_target_usd": invalid, "goal_label": "new"})
+        assert 400 <= rejected.status_code < 500
+        previous = client.get("/api/v1/settings").json()
+        assert previous["goal_target_usd"] == 12345
+        assert previous["goal_label"] == ""
+
+
+def test_local_metadata_save_failure_keeps_previous_credential_and_sync_state(tmp_path, monkeypatch):
+    from opentradeledger.security.vault import CredentialVault
+
+    registry = build_default_registry()
+    adapter = registry.get("easicoin")
+    monkeypatch.setattr(adapter, "create_client", lambda credential: credential)
+
+    async def sync_fixture(client, store, **kwargs):
+        store.venue_scope("easicoin").set_kv("label", client.label)
+        return VenueSyncOutcome(len(client.label), False, (), (len(client.label),))
+
+    monkeypatch.setattr(adapter, "sync_venue", sync_fixture)
+    http = TestClient(create_app(data_dir=tmp_path, registry=registry, auto_prompt_setup=False, enable_background_sync=False))
+    candidate = {"venue_id": "easicoin", "api_key": "fixture-key-one", "api_secret": "fixture-secret", "label": "Old"}
+    assert http.post("/api/v1/sync", json={"candidate_credential": candidate}).json()["committed"]
+    store = LedgerStore(tmp_path)
+    previous = {k: store.get_meta(k) for k in ("sync_schedule", "venue_health", "last_sync_ms")}
+    vault_bytes = (tmp_path / "vault.enc").read_bytes()
+
+    original_save = LedgerStore.set_meta
+    def fail_last_sync(self, key, value):
+        if key == "last_sync_ms":
+            raise OSError("fixture local write failure")
+        return original_save(self, key, value)
+
+    monkeypatch.setattr(LedgerStore, "set_meta", fail_last_sync)
+    candidate.update(label="Replacement", api_key="fixture-key-two")
+    failed = http.post("/api/v1/sync", json={"candidate_credential": candidate})
+    assert failed.status_code >= 400
+    assert failed.json().get("committed") is False
+    assert (tmp_path / "vault.enc").read_bytes() == vault_bytes
+    assert CredentialVault(tmp_path).get_decrypted("easicoin").label == "Old"
+    assert store.venue_scope("easicoin").get_kv("label") == "Old"
+    assert {k: store.get_meta(k) for k in previous} == previous
+    assert failed.json()["error_code"] == "LOCAL_SAVE_FAILED"
+
+    def fail_rollback(self, venue_id, snapshot):
+        raise OSError("fixture rollback failure")
+
+    monkeypatch.setattr(LedgerStore, "restore_venue_partition", fail_rollback)
+    uncertain = http.post("/api/v1/sync", json={"candidate_credential": candidate})
+    assert uncertain.status_code == 500
+    assert uncertain.json()["error_code"] == "LOCAL_ROLLBACK_FAILED"
+    assert "committed" not in uncertain.json()
