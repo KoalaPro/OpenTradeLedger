@@ -11,8 +11,8 @@ FROM python:3.12-slim AS runtime
 WORKDIR /app
 
 LABEL org.opencontainers.image.source="https://github.com/KoalaPro/OpenTradeLedger" \
-      org.opencontainers.image.title="OpenTradeLedger" \
-      org.opencontainers.image.description="Local-first, strictly read-only multi-exchange trade ledger" \
+      org.opencontainers.image.title="交易账本 · OpenTradeLedger" \
+      org.opencontainers.image.description="本地优先、严格只读的多交易所实盘交易账本与闭环核账引擎" \
       org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

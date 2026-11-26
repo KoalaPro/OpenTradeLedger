@@ -408,7 +408,10 @@ export function AnalyticsPage({
                     <td className="text-right whitespace-nowrap">{row.trade_count}</td>
                     <td className="text-right whitespace-nowrap">{row.win_rate_pct.toFixed(1)}%</td>
                     <td className="text-right whitespace-nowrap text-[var(--fg-2)] sensitive">
-                      -{cur.plainMoney(row.gross_fee_usd)} / <span className="txt-pos">+{cur.plainMoney(row.rebate_usd)}</span>
+                      {Math.abs(row.gross_fee_usd) < 1e-9 ? cur.plainMoney(0) : `-${cur.plainMoney(row.gross_fee_usd)}`} /{' '}
+                      <span className={Math.abs(row.rebate_usd) < 1e-9 ? 'txt-flat' : 'txt-pos'}>
+                        {Math.abs(row.rebate_usd) < 1e-9 ? cur.plainMoney(0) : `+${cur.plainMoney(row.rebate_usd)}`}
+                      </span>
                     </td>
                     <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_usd)}`}>
                       {cur.signedMoney(row.net_pnl_usd)}

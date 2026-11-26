@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "opentradeledger"
 version = "1.4.0"
-description = "Local-first, read-only multi-exchange trade ledger with per-leg fee/rebate accounting and closed-loop reconciliation."
+description = "交易账本：本地优先、严格只读的多交易所实盘核账账本与逐腿手续费精算引擎 (Local-first, read-only multi-exchange trade ledger)"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"

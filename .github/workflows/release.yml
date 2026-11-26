@@ -166,7 +166,12 @@ jobs:
           with urllib.request.urlopen(req_assets, timeout=20) as resp:
               cur_assets = json.loads(resp.read().decode("utf-8"))
 
-          for asset_file, ctype in ((tar_path, "application/gzip"), (sha_path, "text/plain; charset=utf-8")):
+          upload_targets = [(tar_path, "application/gzip"), (sha_path, "text/plain; charset=utf-8")]
+          demo_mp4 = pathlib.Path("docs/demo/opentradeledger-demo.mp4")
+          if demo_mp4.is_file():
+              upload_targets.append((demo_mp4, "video/mp4"))
+
+          for asset_file, ctype in upload_targets:
               for existing_asset in cur_assets:
                   if existing_asset.get("name") == asset_file.name:
                       del_req = urllib.request.Request(

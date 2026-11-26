@@ -1,130 +1,142 @@
 <div align="center">
 
-<img src="web/src/assets/ledger-logo.png" width="76" alt="OpenTradeLedger Logo" />
+<img src="web/src/assets/ledger-logo.png" width="76" alt="交易账本 Logo" />
 
-# OpenTradeLedger · 交易账本
+# 交易账本 · OpenTradeLedger
 
-**Local-First, Strictly Read-Only Multi-Exchange Trade Ledger & Actuarial Accounting Engine**
+**本地优先、严格只读的多交易所实盘交易账本与精算级闭环核账引擎**
 
 [![CI](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/ci.yml)
 [![Docker GHCR](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/KoalaPro/OpenTradeLedger/pkgs/container/opentradeledger)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/开源协议-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](pyproject.toml)
-[![React 19 + Vite](https://img.shields.io/badge/Frontend-React%2019%20%2B%20Tailwind%20v4-38BDF8.svg)](web/package.json)
-[![Read-Only API](https://img.shields.io/badge/Security-GET--Only%20Guard-10B981.svg)](backend/src/opentradeledger/security/readonly_guard.py)
+[![React 19 + Vite](https://img.shields.io/badge/前端-React%2019%20%2B%20Tailwind%20v4-38BDF8.svg)](web/package.json)
+[![Read-Only API](https://img.shields.io/badge/安全防线-GET--Only%20只读拦截-10B981.svg)](backend/src/opentradeledger/security/readonly_guard.py)
 
-[简体中文说明 (README.zh-CN.md)](README.zh-CN.md) · [Architecture Reference](docs/PROJECT.md) · [Contributing & Adapter Guide](CONTRIBUTING.md)
+[项目与架构说明](docs/PROJECT.md) · [版本更新日志](CHANGELOG.md) · [贡献与新增交易所指南](CONTRIBUTING.md) · [English Documentation (README.en.md)](README.en.md)
 
 </div>
 
 ---
 
-## Screenshots
+## 实机演示与界面预览
 
-> All screenshots below are captured in built-in **Demo Mode** using 100% synthetic data.
+> 以下演示视频与界面截图均在内置 **演示模式（Demo Mode）** 下录制，采用 100% 模拟脱敏数据，开箱免密钥即可体验完整功能。
 
-### Overview — Multi-Exchange Unified Holdings & Equity Curve (Obsidian Dark)
-![OpenTradeLedger Overview Dark](docs/screenshots/overview-dark.png)
+### 全流程实机演示（点击下方链接可观看 / 下载 1600×1000 高清 MP4 视频）
 
-### Explicit Per-Leg Fee Disclosure — Independent Entry & Exit Fee Cards
-![OpenTradeLedger Trades Per-Leg Fees](docs/screenshots/trades-per-leg-fees.png)
+<div align="center">
 
-### Multi-Theme, Bilingual, Live GBP FX & Interactive Equity Breakdown Drawer (Light EN)
-![OpenTradeLedger Overview Light EN GBP](docs/screenshots/overview-light-en-gbp.png)
+[![交易账本 OpenTradeLedger 实机功能演示](docs/screenshots/demo-preview.gif)](docs/demo/opentradeledger-demo.mp4)
 
----
+**[🎬 点击观看 / 下载高清完整演示视频（MP4 · 1600×1000）](docs/demo/opentradeledger-demo.mp4)**
 
-## Why OpenTradeLedger?
+</div>
 
-Most open-source portfolio trackers focus on spot holdings without futures fee accounting, while most trading journals rely on manual CSV imports and ignore **maker/taker execution drag, real-time fee rebates, exchange token discounts, funding payments, and closed-loop balance reconciliation**.
+### 总览页 — 细线原生账本布局、多交易所统一持仓与 `0.00 U` 闭环核账（曜石暗色）
+![交易账本总览曜石黑](docs/screenshots/overview-dark.png)
 
-**OpenTradeLedger (交易账本)** runs 100% locally on your computer or NAS, connects to exchanges exclusively via **read-only (`GET`-only) APIs**, and gives you an institutional-grade personal ledger:
+### 进场 / 出场双腿手续费独立拆解 — 挂吃单费率 bps、真实返佣流水与复盘笔记
+![交易账本逐腿进出场手续费](docs/screenshots/trades-per-leg-fees.png)
 
-- **Closed-Loop Accounting (`0.00 U` Drift Check) & Equity Breakdown Drawer**: Automatically reconciles `Opening Equity + Net Transfers + Realized PnL + Fees/Rebates + Funding + Unrealized PnL = Current Equity`. Click **Total Equity** for an animated 4-tile asset structure & per-exchange breakdown drawer, or open **Reconciliation** to inspect any cent-level drift.
-- **Explicit Per-Leg Fee & Real-Time Rebate Disclosure**: Never hides costs behind a single lump sum. Every trade discloses **Entry Fee** and **Exit Fee** independently — including order mode (Maker / Taker / Stop / Reverse), effective bps rate, gross fee, settled real-time exchange rebates pulled directly from live rebate/bill streams (never guessed from static formulas), and separate notation for pre-deduction BNB/MX token discounts so every settlement waterfall reconciles to `0.0000`.
-- **Unified Multi-Asset Holdings**: Consolidates **Futures**, **US Equities / 1:1 Tokenized Stocks**, and **Auto-Detected Crypto Spot** (automatically filtering stablecoins & `< $1` dust without double-counting stock tokens) with category filter pills and slide-over trade drill-down drawers.
-- **Live 7-Currency FX Switching**: Switch the entire ledger instantaneously across `USDT`, `USD`, `CNY`, `GBP`, `EUR`, `HKD`, and `JPY` backed by live FX feeds (`open.er-api.com` + `frankfurter.dev` fallback, cached in SQLite).
-- **Adaptive Idle-Account Backoff Polling**: Active accounts sync every `20s`; idle accounts (`< 20 U` equity with no open positions) automatically back off (`15m → 30m → 1h → 2h → 4h`) to save API quota, snapping straight back to `20s` on any balance delta (`>= 0.05 U`) or new activity.
-- **4-Tier Automatic Instrument Logo Cache**: Automatically resolves crypto pairs (including `1000PEPE`-style multiplier contracts) and tokenized US stocks (`NVDAX`, `AAPLX`, `STOCK`, `ON`) into a 30-day local disk cache with deterministic SVG fallback.
-- **Zero-Hardcode 11-Venue & Multi-Account Architecture**: Ships with 11 fully independent read-only adapters — **Binance**, **OKX (v5)**, **Bybit (v5)**, **Gate**, **Bitget (UTA)**, **MEXC**, **Hyperliquid (Keyless `0x`)**, **KuCoin**, **BingX**, **HTX**, and **EasiCoin**. Every exchange natively supports **multiple isolated accounts (Master, Sub-Accounts, and separate accounts)** with automatic remote UID verification, `Main` / `Sub` role badges, duplicate-UID anti-double-counting protection, and keyless `0x` sub-account discovery on Hyperliquid.
-- **Strict Local-First Security & NAS Access Lock**:
-  - Runtime `assert_readonly_request()` guard blocks any non-`GET` HTTP method and enforces per-venue read-only path allowlists before signing requests.
-  - Credentials entered in the Web Settings UI are encrypted locally with **Fernet (AES-128-CBC + HMAC-SHA256)** using a `0600` local key file inside your `data/` directory. Zero cloud upload, zero telemetry.
-  - **Built-in NAS / LAN Password Gate**: First-time live deployments present a welcome setup screen to set a local access password (`hashlib.scrypt` salted hash + `HttpOnly` signed session cookie with 30-day device remember, brute-force cooldown, one-click lock, and `--reset-password` local CLI recovery) paired with a smooth brand unlock ceremony — or skip for single-user desktop use.
-  - **Honest API Health & Error Diagnostics**: Exchanges only display **Connected** when live verification/sync succeeds; any invalid key, IP whitelist rejection, clock drift, or timeout immediately flips the status to **API Error** with bilingual root-cause diagnostics and raw exchange error details.
-- **OpenAI-Compatible AI Reviewer with Model Picker & Prompt Transparency**: Plug in any OpenAI-compatible LLM endpoint (OpenAI, DeepSeek, Ollama, OpenRouter, etc., supporting both `/chat/completions` and `/responses`), click **Fetch Models** (`/v1/models`) to select from live available models, inspect the exact 8 sanitized ledger dimensions sent to the AI (zero API keys, UIDs, or wallet addresses), or use the built-in zero-LLM bilingual local actuarial fallback.
-- **Modern Personal Finance UX**:
-  - **3 Themes**: Obsidian (default dark), Ocean (deep navy), and Light.
-  - **Bilingual**: Instant `简体中文` / `English` switching.
-  - **Regional PnL Polarity**: One-click switch between `Red Up / Green Down` (CN/Asia) and `Green Up / Red Down` (Global).
-  - **Privacy Blur Mode**: One-click masking of all balances, PnL, and fee figures for safe screenshots or screen sharing.
-  - **Public Copy-Trade Radar & Toggleable Modules**: Built-in keyless public copy-trading slot alarm (urgent iOS Bark ring + `bnc://` deep link when full traders open slots) and live inferred position tracking, toggleable Copy Trading & Equities modules, inline equity goal editor, and Bark alerts (monitoring remains available without a Bark device key).
+### 11 大交易所严格只读接入 — 同所多账号（主/子账户识别）与 Hyperliquid 免私钥 `0x` 发现
+![交易账本11平台与免密钥链上接入](docs/screenshots/settings-11-venues.png)
+
+### 多主题、中英文、7 币种实时汇率（GBP）与总净资产构成明细弹窗（极简浅色）
+![交易账本极简浅色英镑视图](docs/screenshots/overview-light-en-gbp.png)
 
 ---
 
-## Supported Built-in Exchanges (Read-Only · Multi-Account & Sub-Account Ready)
+## 为什么做「交易账本」？
 
-| Exchange | Futures | Real-Time Rebates | Token Fee Discount | Copy Trading | Spot / Tokenized Stocks | Auth |
+市面上的开源资产看板大多只覆盖现货余额，缺乏永续合约逐腿手续费、真实返佣流水与资金费精算；而多数交易复盘工具仍停留在手工上传 CSV，既无法自动核对多交易所真实净值，也常把整笔交易成本糊成一个总数字。
+
+**交易账本（OpenTradeLedger）** 100% 运行在你自己的电脑或家庭 NAS 上，**仅通过只读 API 连接交易所**，专注解决实盘交易者最关心的账务准确性、多账号汇总与复盘效率：
+
+- **闭环恒等式核账（`0.00 U` 误差校验）与资产构成穿透**：按平台与账户分区独立验证 `期初权益 + 净充提划转 + 已实现盈亏 + 手续费与真实返佣 + 资金费 + 未实现盈亏 = 当前真实净资产`。点击 **资产构成** 查看合约保证金、跟单专账、正股/代币化美股与现货理财四维占比，点击 **对账明细** 逐项复核每一分钱差额。
+- **进场 / 出场双腿手续费独立明示与实时返佣实算**：拒绝笼统的“总手续费”。每笔平仓并排拆解 **进场腿** 与 **出场腿** 成本卡片——清晰列出成交类型（挂单 Maker / 吃单 Taker / 止损 / 反手）、实测有效费率（bps）、毛手续费、来自交易所真实账单流水的实收返佣（绝不套静态比例估算）以及 BNB / MX 等平台币抵扣说明；原始接口未提供分腿明细时诚实标注 `分腿费用未知` 并完整纳入成本矩阵。
+- **11 平台全独立对等架构 & 同交易所多账号（主账户 / 子账户 / 独立号）隔离核账**：
+  - 开箱内置 **币安 Binance**、**OKX (v5)**、**Bybit (v5)**、**Gate**、**Bitget (UTA)**、**MEXC**、**Hyperliquid（链上免密钥 `0x`）**、**KuCoin（库币）**、**BingX**、**火币 HTX**、**易币 EasiCoin** 11 套完全解耦的只读适配器。
+  - **全平台原生支持同一交易所绑定多个账号**：自动探测远端脱敏 `UID` 并识别 `主账户` / `子账户` / `链上钱包` 身份徽标，内置重复 `UID` 冲突拦截（杜绝同一账户两把 Key 导致总净资产翻倍）与换钥归属校验（防止跨账号串账）；Hyperliquid 仅需填入公开 42 位 `0x` 地址即可免私钥同步，并支持一键探测勾选导入名下链上子账户。
+  - **封存保留与数值强校验**：解绑 API Key 时可选择「仅解绑凭证、保留本地历史（已封存）」或「彻底清除分区数据」；全平台内置钱包金额有限数强校验与子接口局部异常防写小保护，绝不因上游瞬时繁忙或畸形返回冲掉已有资产。
+- **免密钥公开带单盯盘雷达 & iOS Bark 秒级提醒**：无需任何 API Key 即可监控公开带单员跟单余位与实时成交流推算持仓，支持自定义扫描频率（最低 `3 秒` 极速抢位），车位释放或带单调仓时通过 iOS Bark 推送即时响铃并直跳交易所 App。
+- **多资产统一总览与 7 币种实时汇率瞬切**：合约在途仓位、美股正股 / 1:1 代币化股票与全账户现货尾仓同屏呈现；顶栏一键在 `USDT`、`USD`、`CNY`、`GBP`、`EUR`、`HKD`、`JPY` 之间实时换算全部净值与图表。
+- **通用 AI 智能复盘（数据外发四态透明披露）**：兼容任意 OpenAI 格式接口（DeepSeek、OpenAI、Ollama、OpenRouter 等），支持在线拉取模型列表点选；严格仅发送 8 项脱敏聚合指标（零 API Key、零 UID、零原始订单号），并明确标注 `0 笔成交本地短路`、`纯本地精算`、`远端异常回退本地`、`远端模型生成` 四类状态。
+- **本地优先安全防线与跨品牌 NAS 网页一键升级**：
+  - 网络层经 `readonly_guard.py` 强制拦截非只读请求与任何交易/划转/提币路径；API 凭证经 **Fernet（AES-128-CBC + HMAC-SHA256）** 本地 `0600` 权限加密落盘；内置 `scrypt` 局域网访问密码锁与 `--reset-password` 本地恢复命令。
+  - **网页内一键在线升级（OTA）**：检测到新版本后直接在设置页点击「一键在线升级」，自动完成官方 Release 包 SHA-256 校验与秒级热切换，无需 SSH 终端、无需挂载高危 `docker.sock`。
+
+---
+
+## 内置只读交易所支持一览
+
+| 交易所 | 合约账本 | 实时返佣 / 挂单返费 | 平台币抵扣 | 同所多账号 & 主/子识别 | 现货 / 代币化美股 | 只读鉴权方式 |
 |---|:---:|:---:|:---:|:---:|:---:|---|
-| **Binance** | ✓ | ✓ | ✓ (BNB) | ✓ | ✓ | API Key + Secret |
+| **币安 Binance** | ✓ | ✓ | ✓ (BNB) | ✓ | ✓ | API Key + Secret |
 | **OKX (v5)** | ✓ | ✓ | ✓ (OKB) | ✓ | ✓ | API Key + Secret + Passphrase |
 | **Bybit (v5)** | ✓ | ✓ | ✓ (MNT) | ✓ | ✓ | API Key + Secret |
-| **Gate** | ✓ | ✓ | ✓ (GT/Points) | ✓ | ✓ | API Key + Secret |
+| **Gate** | ✓ | ✓ | ✓ (GT/点卡) | ✓ | ✓ | API Key + Secret |
 | **Bitget (UTA)** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret + Passphrase |
-| **MEXC** | ✓ | ✓ | ✓ (MX) | — | ✓ | API Key + Secret |
-| **Hyperliquid** | ✓ | ✓ (Maker Rebates) | — | — | ✓ (Spot / HIP-3) | **Public `0x` Address (Zero Keys · Auto Sub-Account Discovery)** |
-| **KuCoin** | ✓ | ✓ | ✓ (KCS) | — | ✓ | API Key + Secret + Passphrase |
+| **MEXC** | ✓ | ✓ | ✓ (MX) | ✓ | ✓ | API Key + Secret |
+| **Hyperliquid** | ✓ | ✓ (Maker 返费) | — | ✓（自动发现链上子账户） | ✓ (链上现货 / HIP-3) | **免密钥公开 `0x` 钱包地址** |
+| **KuCoin（库币）** | ✓ | ✓ | ✓ (KCS) | ✓ | ✓ | API Key + Secret + Passphrase |
 | **BingX** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret |
-| **HTX** | ✓ | ✓ | ✓ (HTX) | ✓ | ✓ | API Key + Secret |
-| **EasiCoin** | ✓ | ✓ | — | — | ✓ | API Key + Secret |
+| **火币 HTX** | ✓ | ✓ | ✓ (HTX) | ✓ | ✓ | API Key + Secret |
+| **易币 EasiCoin** | ✓ | ✓ | — | ✓ | ✓ | API Key + Secret |
 
-Want to add Kraken, Coinbase, Backpack, or another venue? See [CONTRIBUTING.md](CONTRIBUTING.md)。
+需要扩展 Kraken、Coinbase、Backpack 等更多平台？请参考 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
-## Quick Start
+## 快速开始
 
-### Option 1: Docker / NAS Pre-Built Image (Fastest — `amd64` & `arm64`)
+### 方式一：全品牌 NAS 图形界面零终端部署（极空间 / 绿联 / 飞牛 fnOS / 群晖 / 威联通通用）
 
-Pre-built multi-arch images (`linux/amd64` and `linux/arm64`) are published automatically to GitHub Container Registry (`ghcr.io/koalapro/opentradeledger:latest`) — no `git` or local compilation required on your NAS:
+无需开启 SSH、无需敲命令行，也无需手动编辑隐藏 `.env` 文件：
 
-```bash
-curl -fsSLO https://raw.githubusercontent.com/KoalaPro/OpenTradeLedger/main/docker-compose.yml
-docker compose up -d
+1. **打开 NAS 自带的「Docker」应用 → 选择「Compose / 项目」→ 点击「新增项目」**，直接粘贴下方配置创建（中国大陆网络推荐直接使用下方南京大学 GHCR 镜像加速源，支持 `amd64` 与 `arm64` 双架构；海外环境可改为 `ghcr.io/koalapro/opentradeledger:latest`）：
+
+```yaml
+services:
+  opentradeledger:
+    image: ghcr.nju.edu.cn/koalapro/opentradeledger:latest
+    container_name: opentradeledger
+    ports:
+      - "8012:8012"   # 如 8012 端口已被占用，直接修改左侧数字（如 "8013:8012"）即可
+    environment:
+      OTL_HOST: "0.0.0.0"
+      OTL_PORT: "8012"
+      OTL_DATA_DIR: "/app/data"
+      OTL_DEMO_MODE: "true"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
 ```
 
-Open **http://127.0.0.1:8012** to explore the full 6-page multi-exchange ledger immediately in sanitized Demo Mode.
+2. **浏览器访问 `http://你的NAS局域网IP:8012`（或自定义端口）**：
+   - 首次打开默认进入脱敏**演示模式**，可直接浏览全部六大页面；
+   - 准备接入实盘时，前往 **「设置与连接」** 添加首个只读交易所账号（或关闭「演示数据模式」开关），系统会自动引导设置本地访问密码并切入正式账本。
+3. **后续升级**：在「设置与连接 → 版本与更新」中点击 **「一键在线升级」** 即可自动完成校验与热更新，密码、加密密钥和历史账单 100% 保留。
 
-**Switching to Live NAS Deployment & Upgrading Later**:
-1. Create a `.env` file next to `docker-compose.yml` containing `OTL_DEMO_MODE=false` and run `docker compose up -d`.
-2. Set your local NAS access password on first open, then add **read-only** API keys in **Settings → Connected Exchanges**.
-3. **New Version Detection & One-Click Upgrade**: Deployed instances automatically check GitHub Releases (read-only, zero telemetry, 6h cache, toggleable in Settings) and display a version badge when an update is out. Because `./data` is mounted outside the container, upgrading preserves all passwords, encrypted keys, and historical trades:
-   ```bash
-   docker compose pull && docker compose up -d
-   ```
-   *(Or click **Update Image** directly in Synology Container Manager, fnOS Docker, Portainer, or Watchtower.)*
-
-### Option 2: Local Development (Python + Node.js)
-
-**Prerequisites**: Python 3.11+ and Node.js 20+.
+### 方式二：本机直接运行（Python 3.11+ & Node.js 20+）
 
 ```bash
-# 1. Install backend dependencies
+# 1. 安装后端依赖
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 2. Build the frontend SPA
+# 2. 构建前端静态资源
 cd web
 npm install
 npm run build
 cd ..
 
-# 3. Launch in Demo Mode (zero API keys required)
+# 3. 启动演示模式（无需任何 API Key）
 python scripts/run_server.py --demo --port 8012
 ```
 
-For live mode pointing to a custom local data folder (SQLite DB + encrypted vault + logo cache):
+正式实盘模式指定本地数据目录启动：
 
 ```bash
 python scripts/run_server.py --host 127.0.0.1 --port 8012 --data-dir ./data
@@ -132,51 +144,47 @@ python scripts/run_server.py --host 127.0.0.1 --port 8012 --data-dir ./data
 
 ---
 
-## Architecture Overview
+## 目录结构
 
 ```text
 OpenTradeLedger/
-├── .github/workflows/ci.yml   # Automated privacy audit, pytest, typecheck, vitest & build
+├── .github/workflows/           # CI 门禁、多架构 GHCR 镜像构建与 GitHub Release / OTA 打包流水线
 ├── backend/
 │   ├── src/opentradeledger/
-│   │   ├── security/          # Strict GET-only guard & Fernet credential vault
-│   │   ├── adapters/          # 7 independent exchange modules (client.py + sync.py + accounting.py)
-│   │   ├── core/              # Venue-partitioned SQLite WAL store, venue-agnostic ledger aggregator,
-│   │   │                      # adaptive sync manager, live FX rates, 4-tier logo cache,
-│   │   │                      # AI reviewer, multi-channel notifier
-│   │   └── api/               # FastAPI v1 REST API + SPA static server
-│   └── tests/                 # Pytest suite (security, adapters, ledger, API)
+│   │   ├── adapters/            # 11 大交易所全独立只读包（client.py / sync.py / accounting.py）
+│   │   ├── api/                 # FastAPI 路由装配（app.py / routes_exchanges.py / schemas.py / http_helpers.py）
+│   │   ├── core/                # 多账号分区代理、SyncManager、LedgerService、实时汇率、公开盯盘、AI 复盘、OTA 升级
+│   │   └── security/            # GET-Only 只读网络护栏、Fernet 密钥保险箱、scrypt 本地会话锁
+│   └── tests/                   # 按业务领域组织的后端单元/精算/安全与架构 AST 守卫测试套件
 ├── web/
 │   └── src/
-│       ├── assets/            # Brand icon
-│       ├── styles/            # Tailwind CSS v4 + Obsidian/Ocean/Light themes & motion
-│       ├── i18n/              # Built-in zh-CN and en dictionaries
-│       ├── components/        # Sidebar, TopBar, EquityChart, MonthlyCalendar, DrilldownDrawer
-│       └── pages/             # Overview, Trades, Analytics, Fees & AI, Modules, Settings
-├── docs/screenshots/          # Sanitized Demo Mode showcase screenshots
-├── scripts/
-│   ├── run_server.py          # Unified CLI entrypoint
-│   └── privacy_audit.py       # Pre-commit secret & PII static scanner
-├── Dockerfile
-└── docker-compose.yml
+│       ├── components/          # 细线账本通用组件、settings/ 设置页弹窗与卡片子组件、顶栏与图标库
+│       ├── pages/               # 总览、合约交易、收益分析、成本与复盘、扩展模块、设置与连接六大页面
+│       ├── styles/              # 曜石暗色 / 深海蓝 / 极简浅色主题令牌与弹簧微动效
+│       └── __tests__/           # Vitest + Testing Library 前端交互与跨模块契约测试
+├── docs/
+│   ├── PROJECT.md               # 核心架构边界与核账口径文档
+│   ├── demo/                    # 高清实机功能演示视频（MP4）
+│   └── screenshots/             # 演示模式动图预览与界面截图
+└── scripts/
+    ├── run_server.py            # 统一服务入口（支持 OTA 热更新槽位自动挂载）
+    └── privacy_audit.py         # 提交前隐私、密钥与内网信息静态扫描门禁
 ```
 
 ---
 
-## Security & Verification
-
-Run the full test suite and built-in privacy gate before pushing any changes:
+## 测试与隐私安全门禁
 
 ```bash
 python scripts/privacy_audit.py
-pytest -q backend/tests
+PYTHONPATH=backend/src pytest -q backend/tests
 cd web && npm run typecheck && npm run test && npm run build
 ```
 
-> **Security Note**: Always restrict exchange API keys to **Read-Only** permissions (disable Spot/Futures Trading, Withdrawals, and Internal Transfers) and enable IP whitelisting wherever supported by your exchange.
+> **安全提醒**：在交易所创建 API Key 时，请务必**仅勾选只读权限（Read-Only）**，严格关闭现货交易、合约交易、内部划转和提币权限，并建议绑定可信 IP 白名单。
 
 ---
 
-## License
+## 开源协议
 
-MIT License — see [LICENSE](LICENSE).
+本项目基于 [MIT License](LICENSE) 开源。
