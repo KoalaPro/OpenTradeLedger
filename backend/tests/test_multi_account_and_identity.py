@@ -717,3 +717,39 @@ def test_secondary_account_logo_lookup_unique_reconcile_keys_and_legacy_uid_back
     ex_names = {ex["venue_id"]: ex["display_name_zh"] for ex in dash["exchanges"]}
     assert ex_names["bybit"] == "Bybit #1"
     assert ex_names["bybit__second01"] == "Bybit 日内"
+
+
+def test_gate_card_3501_and_3516_treated_as_principal_cashflow(tmp_path: Path) -> None:
+    """Gate U-Card top-up/spend (`code=3501`) and refund (`code=3516`) adjust net principal, not trading loss."""
+    reg = build_default_registry()
+    store = LedgerStore(tmp_path / "data")
+    vault = CredentialVault(tmp_path / "data")
+    vault.upsert(ExchangeCredentialRecord(venue_id="gate", label="Gate 日内", api_key="k", api_secret="s"))
+
+    sc = store.venue_scope("gate")
+    sc.set_kv(
+        "live_bundle",
+        {
+            "wallet_total": {"total": {"amount": "110.00"}, "details": {"spot": {"amount": "110.00"}}},
+            "unified": {"unified_account_total_equity": "110.00", "balances": {"USDT": {"equity": "110.00"}}},
+            "futures_account": {"available": "110.00", "total": "110.00", "unrealised_pnl": "0"},
+            "futures_positions": [],
+        },
+    )
+    sc.upsert_records(
+        "spot_account_book",
+        [
+            {"id": "1", "time": 1790000000000, "currency": "USDT", "change": "200.00", "type": "deposit", "code": "110"},
+            {"id": "2", "time": 1790000100000, "currency": "USDT", "change": "-90.98", "type": "unknown", "code": "3501"},
+            {"id": "3", "time": 1790000200000, "currency": "USDT", "change": "0.98", "type": "unknown", "code": "3516"},
+        ],
+        key_fn=lambda r: str(r["id"]),
+        ts_fn=lambda r: float(r["time"]) / 1000.0,
+    )
+
+    svc = LedgerService(store, vault, reg, default_demo_mode=False)
+    dash = svc.get_dashboard(range_key="all")
+    assert dash["summary"]["total_equity_usd"] == 110.00
+    assert dash["summary"]["net_principal_usd"] == 110.00
+    assert dash["summary"]["whole_net_pnl_usd"] == 0.00
+    assert dash["reconciliation"]["residual_usd"] == 0.0

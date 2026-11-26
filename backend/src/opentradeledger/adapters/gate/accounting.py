@@ -1071,6 +1071,9 @@ def build_gate_venue_ledger(
     earn_ledger_usdt = Decimal("0")
     cv_net_usdt = Decimal("0")
 
+    _GATE_CARD_PAY_IN_CODES = ("3008", "3020", "3026", "3027", "3028", "3516", "3520")
+    _GATE_CARD_PAY_OUT_CODES = ("3001", "3019", "3501", "3519")
+
     for sb_row in spot_account_book:
         if str(sb_row.get("currency") or "").upper() != "USDT":
             continue
@@ -1079,11 +1082,15 @@ def build_gate_venue_ledger(
         chg = dec(sb_row.get("change"))
         if tp == "deposit":
             deposit_in_usd += chg
-        elif tp == "push_rcvd":
+        elif tp in ("push_rcvd", "pay_in") or (cd in _GATE_CARD_PAY_IN_CODES and chg > 0):
             push_in_usd += chg
         elif tp in ("c2c_om", "c2c_in") and chg > 0:
             c2c_in_usd += chg
-        elif tp in ("withdraw", "push_dctd", "c2c_out") or (tp == "c2c_om" and chg < 0):
+        elif (
+            tp in ("withdraw", "push_dctd", "c2c_out", "pay_out")
+            or (tp == "c2c_om" and chg < 0)
+            or (cd in _GATE_CARD_PAY_OUT_CODES and chg < 0)
+        ):
             outflow_usd += abs(chg)
         elif cd in ("150222", "150223", "150256", "150258"):
             launchpad_net_usdt += chg
@@ -1236,9 +1243,17 @@ def build_gate_venue_ledger(
             continue
         day_sb = fmt_bj(ts_sb, "%Y-%m-%d")
 
-        if tp in ("deposit", "push_rcvd") or (tp in ("c2c_om", "c2c_in") and chg > 0):
+        if (
+            tp in ("deposit", "push_rcvd", "pay_in")
+            or (tp in ("c2c_om", "c2c_in") and chg > 0)
+            or (cd in _GATE_CARD_PAY_IN_CODES and chg > 0)
+        ):
             daily_ext_flow[day_sb] += chg
-        elif tp in ("withdraw", "push_dctd", "c2c_out") or (tp == "c2c_om" and chg < 0):
+        elif (
+            tp in ("withdraw", "push_dctd", "c2c_out", "pay_out")
+            or (tp == "c2c_om" and chg < 0)
+            or (cd in _GATE_CARD_PAY_OUT_CODES and chg < 0)
+        ):
             daily_ext_flow[day_sb] -= abs(chg)
         elif tp in ("fct_out", "fct_in", "fct_refund"):
             daily_copy_prin_flow[day_sb] += -chg
