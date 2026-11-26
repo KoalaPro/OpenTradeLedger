@@ -169,3 +169,72 @@ async def test_bybit_weekly_history_reuses_and_closes_its_transport(monkeypatch)
         bybit = BybitReadOnlyClient(api_key="k", api_secret="s", client=shared)
         await bybit.aclose()
         assert not shared.is_closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("request_delay_ms", "late_rejection"), [(230, False), (230, True), (10_000, False)])
+async def test_bybit_moving_retention_and_partial_history_survive_sync(tmp_path, request_delay_ms, late_rejection):
+    from opentradeledger.adapters.bybit.sync import sync_bybit_venue
+    from opentradeledger.core.store import LedgerStore
+
+    clock = NOW
+    starts = []
+    checked_last_pages = []
+    inject = late_rejection
+    records = {
+        "recent": NOW - DAY,
+        "middle": NOW - 300 * DAY,
+        "boundary": NOW - 730 * DAY + 105 * request_delay_ms + 17 * 60_000,
+    }
+    store = LedgerStore(tmp_path)
+    store.upsert_plugin_snapshot("bybit", {"closed_pnl": [
+        {"symbol": "ETHUSDT", "orderId": "archived", "updatedTime": str(NOW - 800 * DAY)},
+    ]})
+
+    def serve(request):
+        nonlocal clock
+        path = request.url.path
+        params = request.url.params
+        result = {"list": [], "rows": []}
+        if path.endswith("/closed-pnl"):
+            clock += request_delay_ms
+            start = int(params.get("startTime", clock - 7 * DAY))
+            end = int(params.get("endTime", clock))
+            if not params.get("cursor"):
+                starts.append(start)
+            if start < clock - 730 * DAY:
+                return httpx.Response(200, json={"retCode": 10001, "retMsg": "startTime is too old"})
+            result["list"] = [
+                {"symbol": "ETHUSDT", "orderId": key, "updatedTime": str(ts)}
+                for key, ts in records.items() if start <= ts <= end
+            ]
+            if start < NOW - 729 * DAY:
+                checked_last_pages.append(start)
+                if params.get("cursor"):
+                    if inject:
+                        return httpx.Response(200, json={"retCode": 10001, "retMsg": "invalid cursor"})
+                    result["list"] = [{"symbol": "ETHUSDT", "orderId": "last", "updatedTime": str(end)}]
+                else:
+                    result["nextPageCursor"] = "tail"
+        elif path.endswith("/wallet-balance"):
+            result = {"list": [{"totalEquity": "120", "coin": []}]}
+        elif path.endswith("/query-account-coins-balance"):
+            result = {"balance": []}
+        return httpx.Response(200, json={"retCode": 0, "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as http:
+        client = BybitReadOnlyClient(api_key="k", api_secret="s", client=http, clock_ms=lambda: clock)
+        outcome = await sync_bybit_venue(client, store, now_s=clock // 1000)
+        snap = store.venue_scope("bybit").get_kv("snapshot")
+        expected = {"archived", *records}
+        assert {r["orderId"] for r in snap["closed_pnl"]} == (expected if inject else expected | {"last"})
+        assert len(starts) == 105 and len(checked_last_pages) == 2
+        assert snap["_closed_pnl_backfilled_v2"] is (not inject)
+        assert any("closed_pnl" in w for w in outcome.warnings) is inject
+        if inject:
+            inject = False
+            await sync_bybit_venue(client, store, now_s=clock // 1000)
+            recovered = store.venue_scope("bybit").get_kv("snapshot")
+            assert recovered["_closed_pnl_backfilled_v2"]
+            assert len(recovered["closed_pnl"]) == len(expected) + 1
+            assert {r["orderId"] for r in recovered["closed_pnl"]} == expected | {"last"}

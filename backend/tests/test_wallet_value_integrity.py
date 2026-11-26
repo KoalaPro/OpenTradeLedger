@@ -295,3 +295,37 @@ def test_dashboard_isolates_bad_historical_funding_until_new_balance(tmp_path, v
     after = service.get_dashboard(range_key="all")
     assert after["summary"]["total_equity_usd"] == 145
     assert all(w["venue_id"] != venue for w in after["warnings"])
+
+
+@pytest.mark.parametrize(("available_fields", "expected"), [
+    ({"available": 0, "usdtAvailable": "23"}, 0),
+    ({"available": "0", "usdtAvailable": "23"}, 0),
+    ({"usdtAvailable": 0}, 0),
+    ({"available": None, "usdtAvailable": "23"}, 23),
+    ({"available": "", "usdtAvailable": "23"}, 23),
+    ({}, 120),
+])
+def test_bitget_account_available_margin_preserves_zero(tmp_path, available_fields, expected):
+    from opentradeledger.adapters.registry import build_default_registry
+
+    store = LedgerStore(tmp_path)
+    uta = {"accountEquity": "120", **available_fields}
+    store.venue_scope("bitget").set_kv("live_bundle", {"uta_assets": uta})
+    adapter = build_default_registry().get("bitget")
+    card = adapter.build_venue_ledger(store, journals={}, now_s=1765000000).exchange_card
+    assert card["equity_usd"] == 120
+    assert card["available_margin_usd"] == expected
+
+
+@pytest.mark.parametrize("live", [
+    {"uta_assets": {"assets": [{"coin": "USDT", "equity": "120", "available": 0}]}},
+    {"uta_assets": {"available": 0, "assets": [{"coin": "USDT", "equity": "120", "available": "60"}]}},
+    {"futures_accounts": [{"available": 0, "crossedMaxAvailable": "37", "usdtEquity": "120"}]},
+])
+def test_bitget_zero_available_margin_in_fallback_wallets(tmp_path, live):
+    from opentradeledger.adapters.registry import build_default_registry
+
+    store = LedgerStore(tmp_path)
+    store.venue_scope("bitget").set_kv("live_bundle", live)
+    card = build_default_registry().get("bitget").build_venue_ledger(store, journals={}, now_s=1765000000).exchange_card
+    assert card["available_margin_usd"] == 0

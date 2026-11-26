@@ -24,6 +24,8 @@ from opentradeledger.security.readonly_guard import ReadOnlyGuardError, assert_r
 
 TZ_UTC8 = timezone(timedelta(hours=8))
 SEVEN_DAYS_MS = 7 * 86_400 * 1000
+CLOSED_PNL_RETENTION_MS = 730 * 86_400_000
+CLOSED_PNL_CLOCK_MARGIN_MS = 15 * 60_000
 THIRTY_DAYS_MS = 30 * 86_400 * 1000 - 1000
 
 BYBIT_ALLOWED_GET_PATHS: tuple[str, ...] = (
@@ -242,7 +244,7 @@ class BybitReadOnlyClient:
         base_params: dict[str, Any],
         *,
         list_key: str = "list",
-        exhaust_cursor: bool = False,
+        closed_pnl_rows: dict[str, dict[str, Any]] | None = None,
         id_fn: Callable[[dict[str, Any]], str],
         limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
@@ -251,6 +253,7 @@ class BybitReadOnlyClient:
         cursor = ""
         seen_cursors: set[str] = set()
 
+        exhaust_cursor = closed_pnl_rows is not None
         while exhaust_cursor or len(seen_cursors) < self.max_pages:
             params = {**base_params, "limit": eff_limit}
             if cursor:
@@ -269,6 +272,8 @@ class BybitReadOnlyClient:
                     rid = id_fn(row)
                     if rid not in collected:
                         collected[rid] = row
+                        if closed_pnl_rows is not None:
+                            closed_pnl_rows[rid] = row
                         new_count += 1
 
             if not next_cursor:
@@ -289,17 +294,14 @@ class BybitReadOnlyClient:
         *,
         id_fn: Callable[[dict[str, Any]], str],
         ts_field: str,
-        scan_sparse_history: bool = False,
+        closed_pnl_rows: dict[str, dict[str, Any]] | None = None,
         since_ms: int = 0,
         limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """Fetches recent default window first, then steps backwards in 7-day chunks up to max_windows."""
-        merged: dict[str, dict[str, Any]] = {}
-
-        # Window 0: default recent 7d call (preserves compatibility with simple mocks & catches latest trades)
-        first_rows = await self._paginate_cursor(path, base_params, id_fn=id_fn, limit=limit, exhaust_cursor=scan_sparse_history)
-        for r in first_rows:
-            merged[id_fn(r)] = r
+        scan_sparse_history = closed_pnl_rows is not None
+        first_rows = await self._paginate_cursor(path, base_params, id_fn=id_fn, limit=limit, closed_pnl_rows=closed_pnl_rows)
+        merged = closed_pnl_rows if closed_pnl_rows is not None else {id_fn(r): r for r in first_rows}
 
         windows = self.closed_pnl_windows if scan_sparse_history else self.max_windows
         if windows <= 1:
@@ -311,12 +313,13 @@ class BybitReadOnlyClient:
 
         # An empty week says nothing about an older closed position. Bound full
         # closed-PnL scans by the supported history horizon, including the last partial week.
-        if scan_sparse_history:
-            since_ms = max(since_ms, now_ms - 730 * 86_400_000)
         w_end = now_ms - SEVEN_DAYS_MS + 60_000
         empty_streak = 0
         min_windows_before_early_stop = 26 if since_ms <= 0 else 8
         for win_idx in range(1, windows):
+            if scan_sparse_history:
+                # The exchange checks retention at arrival, including time spent on earlier pages.
+                since_ms = max(since_ms, self._clock_ms() - CLOSED_PNL_RETENTION_MS + CLOSED_PNL_CLOCK_MARGIN_MS)
             if since_ms > 0 and w_end < since_ms:
                 break
             w_start = max(since_ms, w_end - SEVEN_DAYS_MS) if since_ms > 0 else (w_end - SEVEN_DAYS_MS)
@@ -325,11 +328,12 @@ class BybitReadOnlyClient:
                 {**base_params, "startTime": w_start, "endTime": w_end},
                 id_fn=id_fn,
                 limit=limit,
-                exhaust_cursor=scan_sparse_history,
+                closed_pnl_rows=closed_pnl_rows,
             )
             if scan_sparse_history:
-                merged.update((id_fn(row), row) for row in win_rows)
-            elif win_rows:
+                w_end = w_start - 1
+                continue
+            if win_rows:
                 # Guard against static test mocks that ignore startTime/endTime and return out-of-window rows
                 new_in_win = 0
                 in_bounds = False
@@ -468,14 +472,15 @@ class BybitReadOnlyClient:
         return res.get("list") or []
 
     async def get_closed_pnl(
-        self, category: str = "linear", limit: Optional[int] = None, since_ms: int = 0
+        self, category: str = "linear", limit: Optional[int] = None, since_ms: int = 0,
+        *, received: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         return await self._paginate_7d_windows(
             "/v5/position/closed-pnl",
             {"category": category},
             id_fn=lambda r: f"{r.get('orderId')}_{r.get('updatedTime')}_{r.get('symbol')}",
             ts_field="updatedTime",
-            scan_sparse_history=True,
+            closed_pnl_rows=received if received is not None else {},
             since_ms=since_ms,
             limit=limit,
         )
@@ -588,7 +593,10 @@ class BybitReadOnlyClient:
         positions_usdt = await _opt("positions_usdt", self.get_positions("linear", "USDT"), [])
         positions_usdc = await _opt("positions_usdc", self.get_positions("linear", "USDC"), [])
         positions = list(positions_usdt) + list(positions_usdc)
-        closed_pnl = await _opt("closed_pnl", self.get_closed_pnl("linear", since_ms=since_ms), [])
+        received_pnl: dict[str, dict[str, Any]] = {}
+        closed_pnl = await _opt("closed_pnl", self.get_closed_pnl("linear", since_ms=since_ms, received=received_pnl), None)
+        if closed_pnl is None:
+            closed_pnl = list(received_pnl.values())
         executions = await _opt("executions", self.get_executions("linear", since_ms=since_ms), [])
         fee_rates = await _opt("fee_rates", self.get_fee_rate("linear"), [])
         tx_logs = await _opt("tx_logs", self.get_transaction_log("UNIFIED", since_ms=since_ms), [])

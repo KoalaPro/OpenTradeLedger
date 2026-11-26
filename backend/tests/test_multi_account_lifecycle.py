@@ -1427,3 +1427,52 @@ def test_verified_archive_uid_takes_precedence_over_shared_order_history(tmp_pat
     else:
         assert dash["summary"]["total_equity_usd"] == 2200
         assert active_trade["note"] == ""
+
+
+@pytest.mark.parametrize("first", ["bybit", "bybit__old"])
+@pytest.mark.parametrize(("overlap", "known_first"), [(False, False), (True, False), (False, True)])
+def test_rebind_two_uidless_archives(tmp_path, first, overlap, known_first):
+    store = LedgerStore(tmp_path)
+    rows = {
+        "bybit": _archived_bybit_snapshot("BTCUSDT", "order-a", "deposit-a"),
+        "bybit__old": _archived_bybit_snapshot("ETHUSDT", "order-b", "deposit-a" if overlap else "deposit-b"),
+    }
+    uids = {"bybit": "770011", "bybit__old": "770022"}
+    for account, snapshot in rows.items():
+        store.upsert_plugin_snapshot(account, snapshot)
+    if known_first:
+        store.venue_scope(first).set_kv("account_uid", uids[first])
+    original = {key: store.snapshot_venue_partition(key) for key in rows}
+    registry = build_default_registry()
+
+    class Client:
+        def __init__(self, cred):
+            self.account = cred.api_key
+
+        async def get_api_key_info(self):
+            return {"userID": uids[self.account], "readOnly": 1}
+
+        async def get_wallet_balance(self, account_type="UNIFIED"):
+            return rows[self.account]["wallet"]
+
+        async def fetch_full_snapshot(self, **kwargs):
+            return rows[self.account].copy()
+
+    registry.get("bybit").create_client = Client
+    http = TestClient(create_app(data_dir=tmp_path, registry=registry, auto_prompt_setup=False, enable_background_sync=False))
+    other = next(key for key in rows if key != first)
+    for account in [first, other]:
+        resp = http.post("/api/v1/sync", json={"candidate_credential": {
+            "venue_id": "bybit", "account_id": account, "api_key": account, "api_secret": "fixture",
+        }})
+        if overlap:
+            assert resp.status_code == 409 and resp.json()["error_code"] == "ARCHIVED_ACCOUNT_UID_EXISTS"
+            assert {key: store.snapshot_venue_partition(key) for key in rows} == original
+            assert not CredentialVault(tmp_path).list_decrypted()
+        else:
+            assert resp.status_code == 200 and resp.json()["committed"], resp.text
+            assert CredentialVault(tmp_path).get_decrypted(account).remote_uid == uids[account]
+    if not overlap:
+        dash = http.get("/api/v1/dashboard").json()
+        assert dash["summary"]["total_equity_usd"] == 2200
+        assert {card["venue_id"] for card in dash["exchanges"]} == set(rows)

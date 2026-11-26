@@ -82,7 +82,11 @@ async def sync_bybit_venue(
             {"funding": valid_funding_balance},
         )
     # Older releases stopped after empty weeks and still recorded a successful sync.
-    raw_snap["_closed_pnl_backfilled_v2"] = "closed_pnl" not in (raw_snap.get("_failed_fields") or [])
+    failed_fields = raw_snap.get("_failed_fields") or []
+    raw_snap["_closed_pnl_backfilled_v2"] = "closed_pnl" not in failed_fields
+    if "closed_pnl" in failed_fields and raw_snap.get("closed_pnl"):
+        # Keep the retry marker, but let the history merger persist the pages already read.
+        raw_snap["_failed_fields"] = [field for field in failed_fields if field != "closed_pnl"]
     snap = store.upsert_plugin_snapshot(
         "bybit", raw_snap, merge_specs=BYBIT_MERGE_SPECS, validate=extract_bybit_snapshot_activity,
     )

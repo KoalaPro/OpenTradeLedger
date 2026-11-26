@@ -732,6 +732,7 @@ class SyncManager:
                     and not prev_bound_uid
                     and (existing_cred is None or is_rotating_existing)
                 )
+                fresh_fps: set[str] | None = None
                 client = adapter.create_client(cred)
                 if needs_archive_fp_proof:
                     old_fps = adapter.extract_archive_record_fingerprints(
@@ -814,7 +815,10 @@ class SyncManager:
                         {adapter_id, *self.store.list_partition_account_ids(adapter_id)}
                         | set(active_creds_by_acct.keys())
                     )
-                    fresh_fps: set[str] | None = None
+                    verified_uid = str(probed.get("remote_uid") or (post_sync_kv_uid if uses_sync_uid else "")).strip()
+                    target_owner_verified = needs_archive_fp_proof or (
+                        has_existing_data and bool(verified_uid) and verified_uid.lower() == prev_bound_uid.lower()
+                    )
                     for other_acct in sorted(candidate_partitions):
                         if other_acct == acct_id:
                             continue
@@ -845,6 +849,10 @@ class SyncManager:
                         err_code = "ARCHIVE_OWNER_UNVERIFIED"
                         if other_fps & fresh_fps:
                             err_code = "DUPLICATE_ACCOUNT_UID" if other_cred else "ARCHIVED_ACCOUNT_UID_EXISTS"
+                        elif target_owner_verified and other_cred is None:
+                            # A verified original row can be rebound independently.
+                            # The disjoint archive stays unclaimed until its own rebind.
+                            continue
                         raise AccountIdentityError(
                             err_code,
                             masked_uid=mask_uid(resolved_uid),

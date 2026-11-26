@@ -43,6 +43,14 @@ if TYPE_CHECKING:
 BG_PENDING_REBATE_WINDOW_SEC = 86_400
 
 
+def _available_amount(account: Mapping[str, Any], *fields: str) -> Decimal | None:
+    for field in fields:
+        value = account.get(field)
+        if value not in (None, ""):
+            return dec(value)
+    return None
+
+
 def bitget_uta_equity(assets: Any) -> Decimal:
     """Read the supported aggregate or per-account representation, preserving explicit zero."""
     rows = assets if isinstance(assets, list) else [assets]
@@ -964,7 +972,8 @@ def build_bitget_venue_ledger(
     uta_assets = bg_lb.get("uta_assets")
     if isinstance(uta_assets, Mapping) and uta_assets:
         bg_uta_equity_usd = bitget_uta_equity(uta_assets)
-        bg_futures_available_usd = dec(uta_assets.get("available") or uta_assets.get("usdtAvailable") or bg_uta_equity_usd)
+        uta_available = _available_amount(uta_assets, "available", "usdtAvailable")
+        bg_futures_available_usd = uta_available if uta_available is not None else bg_uta_equity_usd
         assets_arr = uta_assets.get("assets") or uta_assets.get("list") or []
         if isinstance(assets_arr, list):
             for ca in assets_arr:
@@ -975,7 +984,9 @@ def build_bitget_venue_ledger(
                     eq_v = dec(ca.get("usdtEquity") or ca.get("equity"))
                     if c_nm in ("USDT", "USDC", "USD1", "USD"):
                         bg_uta_equity_usd += eq_v
-                        bg_futures_available_usd += dec(ca.get("available") or eq_v)
+                        if uta_available is None:
+                            coin_available = _available_amount(ca, "available")
+                            bg_futures_available_usd += coin_available if coin_available is not None else eq_v
                     else:
                         px_c = dec(bg_spot_tickers.get(c_nm), "1" if eq_v > 0 and ca.get("usdtEquity") else "0")
                         val_c = dec(ca.get("usdtEquity")) or (dec(ca.get("equity")) * px_c)
@@ -987,7 +998,9 @@ def build_bitget_venue_ledger(
         for cb in bg_lb.get("classic_balances") or []:
             bg_uta_equity_usd += dec(cb.get("usdtBalance"))
         for fa_bg in bg_lb.get("futures_accounts") or []:
-            bg_futures_available_usd += dec(fa_bg.get("available") or fa_bg.get("crossedMaxAvailable"))
+            available = _available_amount(fa_bg, "available", "crossedMaxAvailable")
+            if available is not None:
+                bg_futures_available_usd += available
             if bg_uta_equity_usd == 0:
                 bg_uta_equity_usd += dec(fa_bg.get("usdtEquity") or fa_bg.get("accountEquity"))
 
