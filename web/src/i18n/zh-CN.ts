@@ -91,6 +91,7 @@ export const zhCN = {
   mode_STOP_MARKET: '止损市价',
   mode_TP_MARKET: '止盈市价',
   mode_REVERSE_MARKET: '反手市价',
+  mode_MIXED: '混合成交',
   mode_UNKNOWN: '成交方式未知',
 
   wf_gross_pnl: '平仓价差毛利',

@@ -638,8 +638,150 @@ def normalize_bingx_closed_trades(
         key=lambda r: parse_bingx_ts_ms(r.get("filledTm") or r.get("time") or r.get("updateTime")),
     )
 
-    open_lots: dict[tuple[str, str], dict[str, float]] = {}
+    open_lots: dict[tuple[str, str], dict[str, Any]] = {}
     records: list[dict[str, Any]] = []
+
+    def _emit_bingx_record(
+        *,
+        sym: str,
+        trade_side: str,
+        qty: float,
+        open_ms: int,
+        close_ms: int,
+        en_px: float,
+        ex_px: float,
+        en_notional: float,
+        ex_notional: float,
+        en_fee: float,
+        ex_fee: float,
+        en_known: bool,
+        en_makers: bool,
+        en_takers: bool,
+        ex_makers: bool,
+        ex_takers: bool,
+        realized_pnl: float,
+        oid_id: str,
+        is_partial: bool,
+    ) -> None:
+        total_fee = round(en_fee + ex_fee, 6)
+        en_reb = round(en_fee * rebate_ratio, 6)
+        ex_reb = round(ex_fee * rebate_ratio, 6)
+        total_rebate = round(en_reb + ex_reb, 6)
+
+        funding_pnl = 0.0
+        for fl in funding_by_sym.get(sym, []):
+            if fl["_id"] in consumed_fund:
+                continue
+            if open_ms - 5_000 <= fl["time"] <= close_ms + 5_000:
+                consumed_fund.add(fl["_id"])
+                funding_pnl += float(fl["val"])
+
+        book_pnl = round(realized_pnl - total_fee + funding_pnl, 6)
+        net_pnl = round(book_pnl + total_rebate, 6)
+        settled_str = _fmt_bj_ms(close_ms) if total_rebate > 0 else ""
+        en_maker = en_makers and not en_takers
+        ex_maker = ex_makers and not ex_takers
+        en_mode = "MIXED" if (en_makers and en_takers) else ("LIMIT_MAKER" if en_makers else "MARKET_TAKER")
+        ex_mode = "MIXED" if (ex_makers and ex_takers) else ("LIMIT_MAKER" if ex_makers else "MARKET_TAKER")
+
+        records.append(
+            {
+                "trade_id": f"bingx_{oid_id}_{close_ms}",
+                "venue_id": "bingx",
+                "venue_name": "BingX",
+                "venue_name_zh": "BingX",
+                "symbol": sym,
+                "side": trade_side,
+                "qty": round(qty, 8),
+                "open_time_ms": open_ms,
+                "close_time_ms": close_ms,
+                "gross_pnl_usd": round(realized_pnl, 4),
+                "funding_pnl_usd": round(funding_pnl, 4),
+                "book_pnl_usd": round(book_pnl, 4),
+                "total_fee_usd": round(total_fee, 4),
+                "total_rebate_usd": round(total_rebate, 4),
+                "total_discount_saved_usd": 0.0,
+                "net_fee_usd": round(max(0.0, total_fee - total_rebate), 4),
+                "net_pnl_usd": round(net_pnl, 4),
+                "rebate_status": "SETTLED",
+                "is_partial_close": is_partial,
+                "entry_leg": {
+                    "role": ("MAKER" if en_maker else "TAKER") if en_known else "UNKNOWN",
+                    "mode_code": en_mode if en_known else "UNKNOWN",
+                    "fee_known": en_known,
+                    "fee_bps": round((en_fee / en_notional) * 10_000, 2) if (en_known and en_notional > 0) else None,
+                    "time_ms": open_ms,
+                    "avg_price": round(en_px, 6),
+                    "notional_usd": round(en_notional, 2),
+                    "gross_fee_usd": round(en_fee, 4),
+                    "discount_saved_usd": 0.0,
+                    "discount_asset": "",
+                    "rebate_usd": round(en_reb, 4),
+                    "rebate_pct": round(rebate_ratio * 100.0, 2),
+                    "net_fee_usd": round(max(0.0, en_fee - en_reb), 4),
+                    "rebate_status": "SETTLED",
+                    "settled_at": settled_str,
+                },
+                "exit_leg": {
+                    "role": "MAKER" if ex_maker else "TAKER",
+                    "mode_code": ex_mode,
+                    "fee_known": True,
+                    "fee_bps": round((ex_fee / ex_notional) * 10_000, 2) if ex_notional > 0 else 0.0,
+                    "time_ms": close_ms,
+                    "avg_price": round(ex_px, 6),
+                    "notional_usd": round(ex_notional, 2),
+                    "gross_fee_usd": round(ex_fee, 4),
+                    "discount_saved_usd": 0.0,
+                    "discount_asset": "",
+                    "rebate_usd": round(ex_reb, 4),
+                    "rebate_pct": round(rebate_ratio * 100.0, 2),
+                    "net_fee_usd": round(max(0.0, ex_fee - ex_reb), 4),
+                    "rebate_status": "SETTLED",
+                    "settled_at": settled_str,
+                },
+            }
+        )
+
+    def _flush_bingx_lot(sym: str, trade_side: str, lot: dict[str, Any], *, full_close: bool) -> None:
+        exits = lot.get("exits") or []
+        if not exits:
+            return
+        closed_q = sum(float(x["qty"]) for x in exits)
+        open_q = float(lot["qty"])
+        ratio = 1.0 if (full_close or open_q <= 1e-12) else min(1.0, closed_q / open_q)
+        open_ms = int(lot["open_ms"])
+        close_ms = max(int(x["ts"]) for x in exits)
+        en_notional = float(lot["notional"]) * ratio
+        en_px = (float(lot["notional"]) / open_q) if open_q > 0 else float(exits[0]["px"])
+        en_fee = float(lot["fee"]) * ratio
+        ex_notional = sum(float(x["notional"]) for x in exits)
+        ex_px = (ex_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
+        ex_fee = sum(float(x["fee"]) for x in exits)
+        rpnl_sum = sum(float(x["realized_pnl"]) for x in exits)
+        distinct_oids = {str(x["oid_raw"]) for x in exits if x.get("oid_raw")}
+        distinct_ts = {int(x["ts"]) for x in exits}
+        is_partial = (not full_close) or len(distinct_oids) > 1 or (len(exits) > 1 and len(distinct_ts) > 1)
+        _emit_bingx_record(
+            sym=sym,
+            trade_side=trade_side,
+            qty=closed_q,
+            open_ms=open_ms,
+            close_ms=close_ms,
+            en_px=en_px,
+            ex_px=ex_px,
+            en_notional=en_notional,
+            ex_notional=ex_notional,
+            en_fee=en_fee,
+            ex_fee=ex_fee,
+            en_known=True,
+            en_makers=bool(lot["maker_notional"] > 0),
+            en_takers=bool(lot["taker_notional"] > 0),
+            ex_makers=any(bool(x["is_maker"]) for x in exits),
+            ex_takers=any(not bool(x["is_maker"]) for x in exits),
+            realized_pnl=rpnl_sum,
+            oid_id=str(exits[-1]["oid_id"]),
+            is_partial=is_partial,
+        )
 
     for idx, f in enumerate(sorted_fills):
         sym = normalize_bingx_symbol(str(f.get("symbol") or ""))
@@ -656,6 +798,8 @@ def normalize_bingx_closed_trades(
         pos_side = str(f.get("positionSide") or "").upper()
         role_raw = str(f.get("role") or ("MAKER" if f.get("maker") else "TAKER")).upper()
         is_maker = "MAKER" in role_raw
+        oid_raw = str(f.get("orderId") or "").strip()
+        oid_id = str(f.get("orderId") or f.get("tradeId") or idx)
 
         if pos_side in {"LONG", "SHORT"}:
             trade_side = pos_side
@@ -668,116 +812,110 @@ def normalize_bingx_closed_trades(
         if is_open and abs(realized_pnl) <= 1e-9:
             lot = open_lots.setdefault(
                 lot_key,
-                {"qty": 0.0, "notional": 0.0, "fee": 0.0, "open_ms": float(ts), "maker_notional": 0.0},
+                {
+                    "qty": 0.0,
+                    "closed_qty": 0.0,
+                    "notional": 0.0,
+                    "fee": 0.0,
+                    "open_ms": float(ts),
+                    "maker_notional": 0.0,
+                    "taker_notional": 0.0,
+                    "exits": [],
+                },
             )
-            if lot["qty"] <= 1e-12:
+            if (lot["qty"] - lot["closed_qty"]) <= 1e-12 and not lot["exits"]:
                 lot["open_ms"] = float(ts)
             lot["qty"] += qty
             lot["notional"] += px * qty
             lot["fee"] += fee
             if is_maker:
                 lot["maker_notional"] += px * qty
+            else:
+                lot["taker_notional"] += px * qty
             continue
 
         lot = open_lots.get(lot_key)
-        if lot and lot["qty"] > 1e-12:
-            ratio = min(1.0, qty / lot["qty"])
-            open_ms = int(lot["open_ms"])
-            en_notional = lot["notional"] * ratio
-            en_px = lot["notional"] / lot["qty"]
-            en_fee = lot["fee"] * ratio
-            en_maker = lot["maker_notional"] >= (lot["notional"] * 0.5)
-            lot["qty"] = max(0.0, lot["qty"] - qty)
-            lot["notional"] = max(0.0, lot["notional"] - en_notional)
-            lot["fee"] = max(0.0, lot["fee"] - en_fee)
-            lot["maker_notional"] = max(0.0, lot["maker_notional"] * (1.0 - ratio))
-            en_known = True
+        rem_open_q = (float(lot["qty"]) - float(lot["closed_qty"])) if lot else 0.0
+        if lot and rem_open_q > 1e-12:
+            if qty <= rem_open_q + 1e-9:
+                lot["exits"].append(
+                    {
+                        "qty": qty,
+                        "px": px,
+                        "notional": px * qty,
+                        "fee": fee,
+                        "realized_pnl": realized_pnl,
+                        "is_maker": is_maker,
+                        "ts": ts,
+                        "oid_raw": oid_raw,
+                        "oid_id": oid_id,
+                    }
+                )
+                lot["closed_qty"] += qty
+                if float(lot["qty"]) - float(lot["closed_qty"]) <= 1e-9:
+                    _flush_bingx_lot(sym, trade_side, lot, full_close=True)
+                    open_lots.pop(lot_key, None)
+            else:
+                close_sh = rem_open_q / qty
+                open_sh = 1.0 - close_sh
+                lot["exits"].append(
+                    {
+                        "qty": rem_open_q,
+                        "px": px,
+                        "notional": px * rem_open_q,
+                        "fee": fee * close_sh,
+                        "realized_pnl": realized_pnl,
+                        "is_maker": is_maker,
+                        "ts": ts,
+                        "oid_raw": oid_raw,
+                        "oid_id": oid_id,
+                    }
+                )
+                lot["closed_qty"] = float(lot["qty"])
+                _flush_bingx_lot(sym, trade_side, lot, full_close=True)
+                open_lots.pop(lot_key, None)
+                if pos_side not in {"LONG", "SHORT"}:
+                    opp_side = "SHORT" if trade_side == "LONG" else "LONG"
+                    rem_q = qty - rem_open_q
+                    open_lots[(sym, opp_side)] = {
+                        "qty": rem_q,
+                        "closed_qty": 0.0,
+                        "notional": px * rem_q,
+                        "fee": fee * open_sh,
+                        "open_ms": float(ts),
+                        "maker_notional": (px * rem_q) if is_maker else 0.0,
+                        "taker_notional": 0.0 if is_maker else (px * rem_q),
+                        "exits": [],
+                    }
         else:
-            open_ms = ts
             en_px = (px - realized_pnl / qty) if trade_side == "LONG" else (px + realized_pnl / qty)
             if en_px <= 0:
                 en_px = px
-            en_notional = en_px * qty
-            en_fee = 0.0
-            en_maker = False
-            en_known = False
+            _emit_bingx_record(
+                sym=sym,
+                trade_side=trade_side,
+                qty=qty,
+                open_ms=ts,
+                close_ms=ts,
+                en_px=en_px,
+                ex_px=px,
+                en_notional=en_px * qty,
+                ex_notional=px * qty,
+                en_fee=0.0,
+                ex_fee=fee,
+                en_known=False,
+                en_makers=False,
+                en_takers=False,
+                ex_makers=is_maker,
+                ex_takers=not is_maker,
+                realized_pnl=realized_pnl,
+                oid_id=oid_id,
+                is_partial=False,
+            )
 
-        ex_notional = px * qty
-        ex_fee = fee
-        total_fee = round(en_fee + ex_fee, 6)
-        en_reb = round(en_fee * rebate_ratio, 6)
-        ex_reb = round(ex_fee * rebate_ratio, 6)
-        total_rebate = round(en_reb + ex_reb, 6)
+    for (sym_rem, side_rem), lot_rem in list(open_lots.items()):
+        if lot_rem.get("exits"):
+            _flush_bingx_lot(sym_rem, side_rem, lot_rem, full_close=False)
 
-        funding_pnl = 0.0
-        for fl in funding_by_sym.get(sym, []):
-            if fl["_id"] in consumed_fund:
-                continue
-            if open_ms - 5_000 <= fl["time"] <= ts + 5_000:
-                consumed_fund.add(fl["_id"])
-                funding_pnl += float(fl["val"])
-
-        book_pnl = round(realized_pnl - total_fee + funding_pnl, 6)
-        net_pnl = round(book_pnl + total_rebate, 6)
-        oid = str(f.get("orderId") or f.get("tradeId") or idx)
-        settled_str = _fmt_bj_ms(ts) if total_rebate > 0 else ""
-
-        records.append(
-            {
-                "trade_id": f"bingx_{oid}_{ts}",
-                "venue_id": "bingx",
-                "venue_name": "BingX",
-                "venue_name_zh": "BingX",
-                "symbol": sym,
-                "side": trade_side,
-                "qty": qty,
-                "open_time_ms": open_ms,
-                "close_time_ms": ts,
-                "gross_pnl_usd": round(realized_pnl, 4),
-                "funding_pnl_usd": round(funding_pnl, 4),
-                "book_pnl_usd": round(book_pnl, 4),
-                "total_fee_usd": round(total_fee, 4),
-                "total_rebate_usd": round(total_rebate, 4),
-                "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(max(0.0, total_fee - total_rebate), 4),
-                "net_pnl_usd": round(net_pnl, 4),
-                "rebate_status": "SETTLED",
-                "is_partial_close": bool(lot and lot["qty"] > 1e-9),
-                "entry_leg": {
-                    "role": ("MAKER" if en_maker else "TAKER") if en_known else "UNKNOWN",
-                    "mode_code": ("LIMIT_MAKER" if en_maker else "MARKET_TAKER") if en_known else "UNKNOWN",
-                    "fee_known": en_known,
-                    "fee_bps": round((en_fee / en_notional) * 10_000, 2) if (en_known and en_notional > 0) else None,
-                    "time_ms": open_ms,
-                    "avg_price": round(en_px, 6),
-                    "notional_usd": round(en_notional, 2),
-                    "gross_fee_usd": round(en_fee, 4),
-                    "discount_saved_usd": 0.0,
-                    "discount_asset": "",
-                    "rebate_usd": round(en_reb, 4),
-                    "rebate_pct": round(rebate_ratio * 100.0, 2),
-                    "net_fee_usd": round(max(0.0, en_fee - en_reb), 4),
-                    "rebate_status": "SETTLED",
-                    "settled_at": settled_str,
-                },
-                "exit_leg": {
-                    "role": "MAKER" if is_maker else "TAKER",
-                    "mode_code": "LIMIT_MAKER" if is_maker else "MARKET_TAKER",
-                    "fee_known": True,
-                    "fee_bps": round((ex_fee / ex_notional) * 10_000, 2) if ex_notional > 0 else 0.0,
-                    "time_ms": ts,
-                    "avg_price": round(px, 6),
-                    "notional_usd": round(ex_notional, 2),
-                    "gross_fee_usd": round(ex_fee, 4),
-                    "discount_saved_usd": 0.0,
-                    "discount_asset": "",
-                    "rebate_usd": round(ex_reb, 4),
-                    "rebate_pct": round(rebate_ratio * 100.0, 2),
-                    "net_fee_usd": round(max(0.0, ex_fee - ex_reb), 4),
-                    "rebate_status": "SETTLED",
-                    "settled_at": settled_str,
-                },
-            }
-        )
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)
     return records

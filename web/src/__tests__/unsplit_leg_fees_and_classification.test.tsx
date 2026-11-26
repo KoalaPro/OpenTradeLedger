@@ -268,3 +268,95 @@ it.each([[1, '1 BTC', -2, '-2.0 bps'], [null, '100 张', null, '费率未知']] 
     expect(entry.textContent).not.toContain('免佣')
   },
 )
+
+describe('Consolidated partial take-profit trade UI', () => {
+  it('renders single entry fee and localized MIXED exit mode label when TP batches mix Maker & Taker', () => {
+    const consolidatedTrade: ClosedTrade = {
+      trade_id: 'fut_ETH_USDT_1795705714_1795708860_long',
+      venue_id: 'gate',
+      venue_name: 'Gate',
+      venue_name_zh: 'Gate',
+      color_token: 'gate',
+      symbol: 'ETH_USDT',
+      side: 'LONG',
+      qty: 3.684,
+      open_time_ms: 1795705714217,
+      close_time_ms: 1795708860515,
+      open_time_str: '11-26 23:08',
+      close_time_str: '11-27 00:01',
+      close_date: '2026-11-27',
+      holding_sec: 3146,
+      is_partial_close: true,
+      gross_pnl_usd: 64.7927,
+      funding_pnl_usd: -0.1274,
+      book_pnl_usd: 61.2546,
+      total_fee_usd: 3.4106,
+      total_rebate_usd: 2.6356,
+      total_discount_saved_usd: 0,
+      net_fee_usd: 0.775,
+      net_pnl_usd: 63.8902,
+      effective_relief_pct: 77.3,
+      rebate_status: 'PENDING',
+      entry_leg: {
+        role: 'MAKER',
+        mode_code: 'LIMIT_MAKER',
+        fee_known: true,
+        fee_bps: 2.0,
+        time_ms: 1795705714000,
+        time_str: '11-26 23:08:34',
+        avg_price: 1670,
+        notional_usd: 6152.28,
+        gross_fee_usd: 1.2305,
+        discount_saved_usd: 0,
+        discount_asset: '',
+        rebate_usd: 0.9844,
+        rebate_pct: 80,
+        net_fee_usd: 0.2461,
+        rebate_status: 'PENDING',
+        settled_at: '',
+      },
+      exit_leg: {
+        role: 'TAKER',
+        mode_code: 'MIXED',
+        fee_known: true,
+        fee_bps: 3.51,
+        time_ms: 1795708860000,
+        time_str: '11-27 00:01:00',
+        avg_price: 1687.5876,
+        notional_usd: 6217.07,
+        gross_fee_usd: 2.1802,
+        discount_saved_usd: 0,
+        discount_asset: '',
+        rebate_usd: 1.6512,
+        rebate_pct: 75.7,
+        net_fee_usd: 0.529,
+        rebate_status: 'PENDING',
+        settled_at: '',
+      },
+      tags: [],
+      note: '',
+    }
+
+    render(
+      <I18nProvider locale="zh-CN">
+        <CurrencyProvider currency="USDT" fx={DEFAULT_FX}>
+          <TradesPage
+            data={makeBaseDashboard([consolidatedTrade])}
+            venueFilter="ALL"
+            onVenueChange={() => {}}
+            symbolFilter="ALL"
+            onSymbolChange={() => {}}
+            onSaveJournal={async () => {}}
+          />
+        </CurrencyProvider>
+      </I18nProvider>,
+    )
+
+    const entryCard = screen.getByTestId('entry-leg-fee-card')
+    const exitCard = screen.getByTestId('exit-leg-fee-card')
+    expect(entryCard.textContent).toContain('-1.231')
+    expect(exitCard.textContent).toContain('混合成交')
+    expect(exitCard.textContent).not.toContain('MIXED')
+    expect(exitCard.textContent).toContain('-2.180')
+  })
+})

@@ -31,6 +31,7 @@ from opentradeledger.core.venue_primitives import (
     fmt_bj,
     fmt_pct_clean,
     format_duration_zh,
+    merge_legacy_journal_entries,
     norm_ms,
     norm_sec,
     normalize_contract_symbol,
@@ -346,100 +347,39 @@ def _build_bitget_closed_records(
             )
         )
 
-        if len(close_groups) <= 1:
-            ex_fee_1 = sum((x["fee_usd"] for x in ex_fills), Decimal("0")) if ex_fills else close_fee
-            drafts.append(
-                {
-                    "record_key": f"bg_fut_{contract}_{pid_str}",
-                    "contract": contract,
-                    "side_str": side_str,
-                    "qty_closed": qty_closed,
-                    "t_open_ms": t_open_ms,
-                    "t_close_ms": t_close_ms,
-                    "t_open": t_open,
-                    "t_close": t_close,
-                    "is_partial_close": False,
-                    "en_fills": en_fills,
-                    "ex_fills": ex_fills,
-                    "en_px": open_px,
-                    "ex_px": close_px,
-                    "en_not": qty_closed * open_px,
-                    "ex_not": qty_closed * close_px,
-                    "en_fee": en_fee_tot,
-                    "ex_fee": ex_fee_1,
-                    "en_bgb_q": en_bgb_q_tot,
-                    "ex_bgb_q": ex_bgb_q_tot,
-                    "en_bgb_sav": en_bgb_sav_tot,
-                    "ex_bgb_sav": ex_bgb_sav_tot,
-                    "en_share": Decimal("1"),
-                    "pnl_gross": pnl_gross,
-                    "fund_pnl": fund_pnl,
-                    "book_pnl": pos_book_target,
-                }
-            )
-        else:
-            tot_ex_q = sum((x["qty"] for x in ex_fills), Decimal("0")) or qty_closed
-            rem_gross = pnl_gross
-            rem_fund = fund_pnl
-            rem_en_fee = en_fee_tot
-            rem_book = pos_book_target
-            for g_idx, (gk, g_flist) in enumerate(close_groups):
-                is_last = g_idx == len(close_groups) - 1
-                g_qty = sum((x["qty"] for x in g_flist), Decimal("0"))
-                share = Decimal("1") if (is_last or tot_ex_q <= 0) else min(Decimal("1"), g_qty / tot_ex_q)
-                g_ex_not = sum((x["notional"] for x in g_flist), Decimal("0"))
-                g_ex_px = (g_ex_not / g_qty) if g_qty > 0 else close_px
-                g_ex_fee = sum((x["fee_usd"] for x in g_flist), Decimal("0"))
-                g_ex_bgb_q = sum((x["bgb_qty"] for x in g_flist), Decimal("0"))
-                g_ex_bgb_sav = sum((x["bgb_saved"] for x in g_flist), Decimal("0"))
-                g_close_ms = max(x["ts_ms"] for x in g_flist)
-                g_close_s = norm_sec(g_close_ms)
-
-                if is_last:
-                    g_en_fee = rem_en_fee
-                    g_gross = rem_gross
-                    g_fund = rem_fund
-                    g_book = rem_book
-                else:
-                    g_en_fee = en_fee_tot * share
-                    raw_exec_pnl = sum((x["exec_pnl"] for x in g_flist), Decimal("0"))
-                    g_gross = raw_exec_pnl if raw_exec_pnl != 0 else (pnl_gross * share)
-                    g_fund = fund_pnl * share
-                    g_book = g_gross + g_fund - g_en_fee - g_ex_fee
-                    rem_en_fee -= g_en_fee
-                    rem_gross -= g_gross
-                    rem_fund -= g_fund
-                    rem_book -= g_book
-
-                drafts.append(
-                    {
-                        "record_key": f"bg_fut_{contract}_{pid_str}_{gk}",
-                        "contract": contract,
-                        "side_str": side_str,
-                        "qty_closed": g_qty,
-                        "t_open_ms": t_open_ms,
-                        "t_close_ms": g_close_ms,
-                        "t_open": t_open,
-                        "t_close": g_close_s,
-                        "is_partial_close": not is_last,
-                        "en_fills": en_fills,
-                        "ex_fills": g_flist,
-                        "en_px": open_px,
-                        "ex_px": g_ex_px,
-                        "en_not": g_qty * open_px,
-                        "ex_not": g_ex_not,
-                        "en_fee": g_en_fee,
-                        "ex_fee": g_ex_fee,
-                        "en_bgb_q": en_bgb_q_tot * share,
-                        "ex_bgb_q": g_ex_bgb_q,
-                        "en_bgb_sav": en_bgb_sav_tot * share,
-                        "ex_bgb_sav": g_ex_bgb_sav,
-                        "en_share": share,
-                        "pnl_gross": g_gross,
-                        "fund_pnl": g_fund,
-                        "book_pnl": g_book,
-                    }
-                )
+        ex_fee_1 = sum((x["fee_usd"] for x in ex_fills), Decimal("0")) if ex_fills else close_fee
+        is_partial_bg = len(close_groups) > 1
+        legacy_rks = [f"bg_fut_{contract}_{pid_str}_{gk}" for gk, _ in close_groups] if is_partial_bg else []
+        drafts.append(
+            {
+                "record_key": f"bg_fut_{contract}_{pid_str}",
+                "legacy_keys": legacy_rks,
+                "contract": contract,
+                "side_str": side_str,
+                "qty_closed": qty_closed,
+                "t_open_ms": t_open_ms,
+                "t_close_ms": t_close_ms,
+                "t_open": t_open,
+                "t_close": t_close,
+                "is_partial_close": is_partial_bg,
+                "en_fills": en_fills,
+                "ex_fills": ex_fills,
+                "en_px": open_px,
+                "ex_px": close_px,
+                "en_not": qty_closed * open_px,
+                "ex_not": qty_closed * close_px,
+                "en_fee": en_fee_tot,
+                "ex_fee": ex_fee_1,
+                "en_bgb_q": en_bgb_q_tot,
+                "ex_bgb_q": ex_bgb_q_tot,
+                "en_bgb_sav": en_bgb_sav_tot,
+                "ex_bgb_sav": ex_bgb_sav_tot,
+                "en_share": Decimal("1"),
+                "pnl_gross": pnl_gross,
+                "fund_pnl": fund_pnl,
+                "book_pnl": pos_book_target,
+            }
+        )
 
     # Detect Strategy Bot (`strategy`) & Copy (`trace`) sessions from `v3_funding_fin`
     ff_seen: set[str] = set()
@@ -654,7 +594,7 @@ def _build_bitget_closed_records(
         exp_net = book_pnl + eff_reb
         hold_s = max(0, int(dr["t_close"] - dr["t_open"]))
         record_key = dr["record_key"]
-        j_entry = journals.get(record_key) or {}
+        j_entry = merge_legacy_journal_entries(journals, record_key, dr.get("legacy_keys") or ())
         tot_bgb_q_rec = dr["en_bgb_q"] + dr["ex_bgb_q"]
         tot_bgb_sav_rec = dr["en_bgb_sav"] + dr["ex_bgb_sav"]
 

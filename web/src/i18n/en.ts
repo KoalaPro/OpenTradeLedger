@@ -93,6 +93,7 @@ export const en: Record<MessageKey, string> = {
   mode_STOP_MARKET: 'Stop Market',
   mode_TP_MARKET: 'TP Market',
   mode_REVERSE_MARKET: 'Reverse',
+  mode_MIXED: 'Mixed Maker/Taker',
   mode_UNKNOWN: 'Execution mode unknown',
 
   wf_gross_pnl: 'Gross Spread PnL',

@@ -76,7 +76,17 @@ def amount_usd(amount: float, ccy: str, inst_id: str, price: float, okb_price: f
     return None
 
 
-def build_fill_leg(fills: list[dict], spec: dict, inst: str, at_ms: int, avg_price: float, okb_price: float) -> dict:
+def build_fill_leg(
+    fills: list[dict],
+    spec: dict,
+    inst: str,
+    at_ms: int,
+    avg_price: float,
+    okb_price: float,
+    *,
+    scale: float = 1.0,
+) -> dict:
+    eff_scale = scale if (0.0 < scale < 1.0) else 1.0
     fees, credits, discount = 0.0, 0.0, 0.0
     notionals: list[float | None] = []
     role_samples: dict[str, dict[str, float]] = {}
@@ -89,12 +99,13 @@ def build_fill_leg(fills: list[dict], spec: dict, inst: str, at_ms: int, avg_pri
         signed_fee = finite_number(fill.get("fee"))
         fee = (amount_usd(signed_fee, ccy, inst, positive_number(fill.get("fillPx")), okb_price)
                if signed_fee is not None else None)
-        notional = fill_notional(fill, spec)
+        raw_notional = fill_notional(fill, spec)
+        notional = (raw_notional * eff_scale) if raw_notional is not None else None
         notionals.append(notional)
         if fee is None:
             fee_known = False
             continue
-        cost, credit = max(0.0, -fee), max(0.0, fee)
+        cost, credit = max(0.0, -fee) * eff_scale, max(0.0, fee) * eff_scale
         fees += cost
         credits += credit
         if ccy == "OKB":
@@ -107,9 +118,14 @@ def build_fill_leg(fills: list[dict], spec: dict, inst: str, at_ms: int, avg_pri
 
     role = next(iter(roles)) if len(roles) == 1 else "UNKNOWN"
     notional = sum(n for n in notionals if n is not None) if notionals and all(notionals) else None
+    mode_code = (
+        "MIXED"
+        if ("MAKER" in roles and "TAKER" in roles)
+        else {"MAKER": "LIMIT_MAKER", "TAKER": "MARKET_TAKER"}.get(role, "UNKNOWN")
+    )
     return {
         "role": role, "fee_known": fee_known,
-        "mode_code": {"MAKER": "LIMIT_MAKER", "TAKER": "MARKET_TAKER"}.get(role, "UNKNOWN"),
+        "mode_code": mode_code,
         "fee_bps": round((fees - credits) / notional * 10000, 2) if fee_known and notional else None,
         "time_ms": at_ms, "avg_price": avg_price, "notional_usd": notional, "role_samples": role_samples,
         "gross_fee_usd": fees, "fill_rebate_usd": credits, "discount_saved_usd": discount,

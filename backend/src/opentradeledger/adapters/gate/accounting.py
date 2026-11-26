@@ -30,6 +30,7 @@ from opentradeledger.core.venue_primitives import (
     fmt_bj,
     fmt_pct_clean,
     format_duration_zh,
+    merge_legacy_journal_entries,
     norm_ms,
     norm_sec,
     normalize_internal_record_to_public_trade,
@@ -579,6 +580,7 @@ def build_gate_venue_ledger(
         *,
         rec_key: str,
         base_rec_key: str,
+        legacy_keys: Sequence[str] = (),
         contract_name: str,
         pos_side: str,
         open_s: float,
@@ -647,7 +649,7 @@ def build_gate_venue_ledger(
         expected_net = b_pnl + eff_reb
         hold_sec = max(0, int(close_s - open_s))
 
-        j_entry = journals.get(rec_key) or journals.get(base_rec_key) or {}
+        j_entry = merge_legacy_journal_entries(journals, rec_key, [base_rec_key, *legacy_keys])
         internal_records.append(
             {
                 "record_key": rec_key,
@@ -746,133 +748,43 @@ def build_gate_venue_ledger(
             if kind_e == "EXIT" and oid_e not in distinct_exit_oids:
                 distinct_exit_oids.append(oid_e)
 
-        if len(distinct_exit_oids) <= 1:
-            en_w = [(e[2], e[6], e[7]) for e in seq_events if e[0] == "ENTRY"]
-            ex_w = [(e[2], e[6], e[7]) for e in seq_events if e[0] == "EXIT"]
-            _emit_gate_record(
-                rec_key=base_record_key,
-                base_rec_key=base_record_key,
-                contract_name=contract,
-                pos_side=side,
-                open_s=t_open,
-                close_s=t_close,
-                qty_b=qty_base_total,
-                en_fills_w=en_w,
-                ex_fills_w=ex_w,
-                en_px_fb=entry_px_fb,
-                ex_px_fb=exit_px_fb,
-                g_pnl=gross_pnl_tot,
-                b_fee=book_fee_tot,
-                f_pnl=funding_pnl_tot,
-                b_pnl=gate_book_pnl_tot,
-                mult_v=mult,
-                is_partial=False,
-                override_leg_qty=qty_base_total if qty_base_total > 0 else None,
-            )
-        else:
-            grouped_seq: list[tuple[str, list[tuple[str, float, str, str, Decimal, Decimal, Mapping[str, Any], Decimal]]]] = []
-            for ev in seq_events:
-                if ev[0] == "ENTRY":
-                    grouped_seq.append(("ENTRY", [ev]))
-                else:
-                    if grouped_seq and grouped_seq[-1][0] == "EXIT" and grouped_seq[-1][1][0][3] == ev[3]:
-                        grouped_seq[-1][1].append(ev)
-                    else:
-                        grouped_seq.append(("EXIT", [ev]))
-
-            total_exit_groups = sum(1 for k_g, _ in grouped_seq if k_g == "EXIT")
-            seen_exit_groups = 0
-            open_pool: list[list[Any]] = []
-            pool_t0 = t_open
-            rem_gross = gross_pnl_tot
-            rem_fund = funding_pnl_tot
-            rem_book_fee = book_fee_tot
-            rem_book_pnl = gate_book_pnl_tot
-
-            for k_g, ev_list in grouped_seq:
-                if k_g == "ENTRY":
-                    for _, ts_e, tk_e, _, c_e, px_e, tr_e, sh_e in ev_list:
-                        if sum((p[3] for p in open_pool), Decimal("0")) <= Decimal("1e-9"):
-                            pool_t0 = ts_e
-                        open_pool.append([tk_e, tr_e, sh_e, c_e, px_e])
-                else:
-                    seen_exit_groups += 1
-                    is_last_grp = seen_exit_groups == total_exit_groups
-                    ex_contracts = sum((x[4] for x in ev_list), Decimal("0"))
-                    ex_px_avg = (
-                        sum((x[4] * x[5] for x in ev_list), Decimal("0")) / ex_contracts
-                        if ex_contracts > 0
-                        else exit_px_fb
-                    )
-                    ex_t1 = max(x[1] for x in ev_list)
-                    ex_oid = ev_list[-1][3]
-                    ex_w_grp = [(x[2], x[6], x[7]) for x in ev_list]
-
-                    pool_tot_c = sum((p[3] for p in open_pool), Decimal("0"))
-                    pool_avg_px = (
-                        sum((p[3] * p[4] for p in open_pool), Decimal("0")) / pool_tot_c
-                        if pool_tot_c > 0
-                        else entry_px_fb
-                    )
-                    slice_ratio = (
-                        Decimal("1")
-                        if (is_last_grp or pool_tot_c <= 0)
-                        else min(Decimal("1"), ex_contracts / pool_tot_c)
-                    )
-                    sliced_en_w: list[tuple[str, Mapping[str, Any], Decimal]] = []
-                    if slice_ratio >= Decimal("1") - Decimal("1e-11"):
-                        for p_item in open_pool:
-                            if p_item[2] > 0:
-                                sliced_en_w.append((p_item[0], p_item[1], p_item[2]))
-                        open_pool.clear()
-                    else:
-                        for p_item in open_pool:
-                            take_sh = p_item[2] * slice_ratio
-                            take_c = p_item[3] * slice_ratio
-                            p_item[2] -= take_sh
-                            p_item[3] -= take_c
-                            if take_sh > 0:
-                                sliced_en_w.append((p_item[0], p_item[1], take_sh))
-
-                    q_grp = ex_contracts * mult
-                    if is_last_grp:
-                        g_pnl_grp = rem_gross
-                        f_pnl_grp = rem_fund
-                        b_fee_grp = rem_book_fee
-                        b_pnl_grp = rem_book_pnl
-                        rk_grp = base_record_key
-                    else:
-                        g_pnl_grp = (ex_px_avg - pool_avg_px) * q_grp if side == "long" else (pool_avg_px - ex_px_avg) * q_grp
-                        f_pnl_grp = funding_pnl_tot * (ex_contracts / total_contracts_closed) if total_contracts_closed > 0 else Decimal("0")
-                        en_f_est = sum((abs(dec(tr_i.get("fee"))) * sh_i for _, tr_i, sh_i in sliced_en_w), Decimal("0"))
-                        ex_f_est = sum((abs(dec(tr_i.get("fee"))) * sh_i for _, tr_i, sh_i in ex_w_grp), Decimal("0"))
-                        b_fee_grp = en_f_est + ex_f_est
-                        b_pnl_grp = g_pnl_grp + f_pnl_grp - b_fee_grp
-                        rem_gross -= g_pnl_grp
-                        rem_fund -= f_pnl_grp
-                        rem_book_fee = max(Decimal("0"), rem_book_fee - b_fee_grp)
-                        rem_book_pnl -= b_pnl_grp
-                        rk_grp = f"fut_{contract}_{int(pool_t0)}_{int(ex_t1)}_{side}_{ex_oid}"
-
-                    _emit_gate_record(
-                        rec_key=rk_grp,
-                        base_rec_key=base_record_key,
-                        contract_name=contract,
-                        pos_side=side,
-                        open_s=pool_t0,
-                        close_s=ex_t1,
-                        qty_b=q_grp,
-                        en_fills_w=sliced_en_w,
-                        ex_fills_w=ex_w_grp,
-                        en_px_fb=pool_avg_px,
-                        ex_px_fb=ex_px_avg,
-                        g_pnl=g_pnl_grp,
-                        b_fee=b_fee_grp,
-                        f_pnl=f_pnl_grp,
-                        b_pnl=b_pnl_grp,
-                        mult_v=mult,
-                        is_partial=not is_last_grp,
-                    )
+        en_w = [(e[2], e[6], e[7]) for e in seq_events if e[0] == "ENTRY"]
+        ex_w = [(e[2], e[6], e[7]) for e in seq_events if e[0] == "EXIT"]
+        is_partial = len(distinct_exit_oids) > 1
+        legacy_suffixes = tuple(f"_{side}_{oid}" for oid in distinct_exit_oids if oid)
+        legacy_rks = (
+            [
+                k
+                for k in journals
+                if k != base_record_key
+                and k.startswith(f"fut_{contract}_")
+                and legacy_suffixes
+                and k.endswith(legacy_suffixes)
+            ]
+            if is_partial
+            else []
+        )
+        _emit_gate_record(
+            rec_key=base_record_key,
+            base_rec_key=base_record_key,
+            legacy_keys=legacy_rks,
+            contract_name=contract,
+            pos_side=side,
+            open_s=t_open,
+            close_s=t_close,
+            qty_b=qty_base_total,
+            en_fills_w=en_w,
+            ex_fills_w=ex_w,
+            en_px_fb=entry_px_fb,
+            ex_px_fb=exit_px_fb,
+            g_pnl=gross_pnl_tot,
+            b_fee=book_fee_tot,
+            f_pnl=funding_pnl_tot,
+            b_pnl=gate_book_pnl_tot,
+            mult_v=mult,
+            is_partial=is_partial,
+            override_leg_qty=qty_base_total if qty_base_total > 0 else None,
+        )
 
     public_trades = [
         normalize_internal_record_to_public_trade(

@@ -427,8 +427,8 @@ def test_kucoin_bingx_htx_strict_contracts_pagination_status_and_rebates(tmp_pat
     assert bx_card["net_principal_usd"] == 111.00
     assert bx_card["net_pnl_usd"] == 9.00
 
-    assert len(htx_trades) == 2
-    assert len({t["trade_id"] for t in htx_trades}) == 2
+    assert len(htx_trades) == 1
+    assert htx_trades[0]["qty"] == 2.0  # Both colliding match_id=2 fills (id=11 & id=12, 1.0 each) retained and consolidated!
     assert round(sum(t["gross_pnl_usd"] for t in htx_trades), 2) == 10.00  # 5.0 + 5.0 from real_profit (not 7.0 from offset_profitloss)
     assert round(sum(t["total_rebate_usd"] for t in htx_trades), 2) == 0.30  # 0.1 maker + 0.2 type-29 rebate (type-9 delivery excluded)
     assert round(sum(t["net_pnl_usd"] for t in htx_trades), 2) == 9.80  # 10.0 - 0.50 + 0.30 = 9.80

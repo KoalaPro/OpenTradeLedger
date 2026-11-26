@@ -252,7 +252,21 @@ def build_okx_venue_ledger(
         rt["entry_leg"].setdefault("settled_at", "")
         rt["exit_leg"]["time_str"] = fmt_ms(rt["exit_leg"]["time_ms"], "%m-%d %H:%M")
         rt["exit_leg"].setdefault("settled_at", "")
-        j = journals.get(rt["trade_id"]) or {}
+        legacy_ids = rt.pop("_legacy_trade_ids", ()) or ()
+        if rt["trade_id"] in journals:
+            j = journals.get(rt["trade_id"]) or {}
+        else:
+            m_tags: list[str] = []
+            m_notes: list[str] = []
+            for lid in legacy_ids:
+                lj = journals.get(lid) or {}
+                for tg in lj.get("tags") or ():
+                    if tg and tg not in m_tags:
+                        m_tags.append(str(tg))
+                nt = str(lj.get("note") or "").strip()
+                if nt and nt not in m_notes:
+                    m_notes.append(nt)
+            j = {"tags": m_tags, "note": "\n".join(m_notes)} if (m_tags or m_notes) else {}
         rt["tags"] = list(j.get("tags") or [])
         rt["note"] = str(j.get("note") or "")
         trades.append(rt)

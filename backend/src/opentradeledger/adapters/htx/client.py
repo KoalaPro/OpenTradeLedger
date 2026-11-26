@@ -732,8 +732,158 @@ def normalize_htx_closed_trades(
         key=lambda r: (int(r.get("create_date") or r.get("ts") or 0), htx_match_unique_key(r)),
     )
 
-    open_lots: dict[tuple[str, str], dict[str, float]] = {}
+    open_lots: dict[tuple[str, str], dict[str, Any]] = {}
     records: list[dict[str, Any]] = []
+
+    def _emit_htx_record(
+        *,
+        sym: str,
+        trade_side: str,
+        qty: float,
+        contract_count: float | None,
+        open_ms: int,
+        close_ms: int,
+        en_px: float,
+        ex_px: float,
+        en_notional: float,
+        ex_notional: float,
+        en_fee: float,
+        ex_fee: float,
+        en_reb: float,
+        ex_reb: float,
+        en_known: bool,
+        en_makers: bool,
+        en_takers: bool,
+        ex_makers: bool,
+        ex_takers: bool,
+        offset_pl: float,
+        mid_id: str,
+        is_partial: bool,
+    ) -> None:
+        funding_pnl = 0.0
+        for fl in funding_by_sym.get(sym, []):
+            if fl["_id"] in consumed_fund:
+                continue
+            if open_ms - 5_000 <= fl["ts"] <= close_ms + 5_000:
+                consumed_fund.add(fl["_id"])
+                funding_pnl += float(fl["amt"])
+
+        total_fee = round(en_fee + ex_fee, 6)
+        total_rebate = round(en_reb + ex_reb, 6)
+        book_pnl = round(offset_pl - total_fee + funding_pnl, 6)
+        net_pnl = round(book_pnl + total_rebate, 6)
+        settled_str = _fmt_bj_ms(close_ms) if total_rebate > 0 else ""
+        en_maker = en_makers and not en_takers
+        ex_maker = ex_makers and not ex_takers
+        en_mode = "MIXED" if (en_makers and en_takers) else ("LIMIT_MAKER" if en_makers else "MARKET_TAKER")
+        ex_mode = "MIXED" if (ex_makers and ex_takers) else ("LIMIT_MAKER" if ex_makers else "MARKET_TAKER")
+
+        records.append(
+            {
+                "trade_id": f"htx_{mid_id}_{close_ms}",
+                "venue_id": "htx",
+                "venue_name": "HTX",
+                "venue_name_zh": "火币 HTX",
+                "symbol": sym,
+                "side": trade_side,
+                "qty": round(qty, 6),
+                "contract_count": contract_count,
+                "open_time_ms": open_ms,
+                "close_time_ms": close_ms,
+                "gross_pnl_usd": round(offset_pl, 4),
+                "funding_pnl_usd": round(funding_pnl, 4),
+                "book_pnl_usd": round(book_pnl, 4),
+                "total_fee_usd": round(total_fee, 4),
+                "total_rebate_usd": round(total_rebate, 4),
+                "total_discount_saved_usd": 0.0,
+                "net_fee_usd": round(max(0.0, total_fee - total_rebate), 4),
+                "net_pnl_usd": round(net_pnl, 4),
+                "rebate_status": "SETTLED",
+                "is_partial_close": is_partial,
+                "entry_leg": {
+                    "role": ("MAKER" if en_maker else "TAKER") if en_known else "UNKNOWN",
+                    "mode_code": en_mode if en_known else "UNKNOWN",
+                    "fee_known": en_known,
+                    "fee_bps": round((en_fee / en_notional) * 10_000, 2) if (en_known and en_notional > 0) else None,
+                    "time_ms": open_ms,
+                    "avg_price": round(en_px, 6),
+                    "notional_usd": round(en_notional, 2),
+                    "gross_fee_usd": round(en_fee, 4),
+                    "discount_saved_usd": 0.0,
+                    "discount_asset": "",
+                    "rebate_usd": round(en_reb, 4),
+                    "rebate_pct": round((en_reb / en_fee) * 100.0, 2) if en_fee > 0 else (100.0 if en_reb > 0 else 0.0),
+                    "net_fee_usd": round(max(0.0, en_fee - en_reb), 4),
+                    "rebate_status": "SETTLED",
+                    "settled_at": settled_str,
+                },
+                "exit_leg": {
+                    "role": "MAKER" if ex_maker else "TAKER",
+                    "mode_code": ex_mode,
+                    "fee_known": True,
+                    "fee_bps": round((ex_fee / ex_notional) * 10_000, 2) if ex_notional > 0 else 0.0,
+                    "time_ms": close_ms,
+                    "avg_price": round(ex_px, 6),
+                    "notional_usd": round(ex_notional, 2),
+                    "gross_fee_usd": round(ex_fee, 4),
+                    "discount_saved_usd": 0.0,
+                    "discount_asset": "",
+                    "rebate_usd": round(ex_reb, 4),
+                    "rebate_pct": round((ex_reb / ex_fee) * 100.0, 2) if ex_fee > 0 else (100.0 if ex_reb > 0 else 0.0),
+                    "net_fee_usd": round(max(0.0, ex_fee - ex_reb), 4),
+                    "rebate_status": "SETTLED",
+                    "settled_at": settled_str,
+                },
+            }
+        )
+
+    def _flush_htx_lot(sym: str, trade_side: str, lot: dict[str, Any], *, full_close: bool) -> None:
+        exits = lot.get("exits") or []
+        if not exits:
+            return
+        closed_q = sum(float(x["qty"]) for x in exits)
+        open_q = float(lot["qty"])
+        ratio = 1.0 if (full_close or open_q <= 1e-12) else min(1.0, closed_q / open_q)
+        open_ms = int(lot["open_ms"])
+        close_ms = max(int(x["ts"]) for x in exits)
+        en_notional = float(lot["notional"]) * ratio
+        en_px = (float(lot["notional"]) / open_q) if open_q > 0 else float(exits[0]["px"])
+        en_fee = float(lot["fee"]) * ratio
+        en_reb = float(lot["rebate"]) * ratio + (en_fee * rebate_ratio)
+        ex_notional = sum(float(x["notional"]) for x in exits)
+        ex_px = (ex_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
+        ex_fee = sum(float(x["fee_paid"]) for x in exits)
+        ex_reb = sum(float(x["maker_rebate"]) for x in exits) + (ex_fee * rebate_ratio)
+        offset_pl_sum = sum(float(x["offset_pl"]) for x in exits)
+        has_turnover_all = all(x["has_turnover"] for x in exits)
+        c_cnt = sum(float(x["vol"]) for x in exits) if has_turnover_all else None
+        distinct_oids = {str(x["oid"]) for x in exits if x.get("oid")}
+        distinct_ts = {int(x["ts"]) for x in exits}
+        is_partial = (not full_close) or len(distinct_oids) > 1 or (len(exits) > 1 and len(distinct_ts) > 1)
+        _emit_htx_record(
+            sym=sym,
+            trade_side=trade_side,
+            qty=closed_q,
+            contract_count=c_cnt,
+            open_ms=open_ms,
+            close_ms=close_ms,
+            en_px=en_px,
+            ex_px=ex_px,
+            en_notional=en_notional,
+            ex_notional=ex_notional,
+            en_fee=en_fee,
+            ex_fee=ex_fee,
+            en_reb=en_reb,
+            ex_reb=ex_reb,
+            en_known=True,
+            en_makers=bool(lot["maker_notional"] > 0),
+            en_takers=bool(lot["taker_notional"] > 0),
+            ex_makers=any(bool(x["is_maker"]) for x in exits),
+            ex_takers=any(not bool(x["is_maker"]) for x in exits),
+            offset_pl=offset_pl_sum,
+            mid_id=str(exits[-1]["mid_id"]),
+            is_partial=is_partial,
+        )
 
     for idx, m in enumerate(sorted_matches):
         sym = normalize_htx_symbol(str(m.get("contract_code") or m.get("symbol") or ""))
@@ -755,15 +905,27 @@ def normalize_htx_closed_trades(
         offset = str(m.get("offset") or "").lower()
         direction = str(m.get("direction") or "").lower()
         offset_pl = htx_match_realized_pnl(m)
+        oid_str = str(m.get("order_id") or m.get("order_id_str") or "").strip()
+        mid_id = htx_match_unique_key(m, fallback_idx=idx)
 
         is_open = offset == "open" and abs(offset_pl) <= 1e-9
         if is_open:
             trade_side = "LONG" if direction == "buy" else "SHORT"
             lot = open_lots.setdefault(
                 (sym, trade_side),
-                {"qty": 0.0, "notional": 0.0, "fee": 0.0, "rebate": 0.0, "open_ms": float(ts), "maker_notional": 0.0},
+                {
+                    "qty": 0.0,
+                    "closed_qty": 0.0,
+                    "notional": 0.0,
+                    "fee": 0.0,
+                    "rebate": 0.0,
+                    "open_ms": float(ts),
+                    "maker_notional": 0.0,
+                    "taker_notional": 0.0,
+                    "exits": [],
+                },
             )
-            if lot["qty"] <= 1e-12:
+            if (lot["qty"] - lot["closed_qty"]) <= 1e-12 and not lot["exits"]:
                 lot["open_ms"] = float(ts)
             notional_m = turnover if turnover > 0 else (px * qty)
             lot["qty"] += qty
@@ -772,112 +934,68 @@ def normalize_htx_closed_trades(
             lot["rebate"] += maker_rebate
             if is_maker:
                 lot["maker_notional"] += notional_m
+            else:
+                lot["taker_notional"] += notional_m
             continue
 
         # Closing leg: closing a LONG sells ("sell"), closing a SHORT buys ("buy")
         trade_side = "LONG" if direction == "sell" else "SHORT"
         lot = open_lots.get((sym, trade_side))
-        if lot and lot["qty"] > 1e-12:
-            ratio = min(1.0, qty / lot["qty"])
-            open_ms = int(lot["open_ms"])
-            en_notional = lot["notional"] * ratio
-            en_px = lot["notional"] / lot["qty"]
-            en_fee = lot["fee"] * ratio
-            en_reb = lot["rebate"] * ratio + (en_fee * rebate_ratio)
-            en_maker = lot["maker_notional"] >= (lot["notional"] * 0.5)
-            lot["qty"] = max(0.0, lot["qty"] - qty)
-            lot["notional"] = max(0.0, lot["notional"] - en_notional)
-            lot["fee"] = max(0.0, lot["fee"] - en_fee)
-            lot["rebate"] = max(0.0, lot["rebate"] * (1.0 - ratio))
-            lot["maker_notional"] = max(0.0, lot["maker_notional"] * (1.0 - ratio))
-            en_known = True
+        rem_open_q = (float(lot["qty"]) - float(lot["closed_qty"])) if lot else 0.0
+        ex_notional = turnover if turnover > 0 else (px * qty)
+        if lot and rem_open_q > 1e-12:
+            lot["exits"].append(
+                {
+                    "qty": min(qty, rem_open_q) if qty > rem_open_q + 1e-9 else qty,
+                    "px": px,
+                    "notional": ex_notional * (rem_open_q / qty) if qty > rem_open_q + 1e-9 else ex_notional,
+                    "fee_paid": fee_paid * (rem_open_q / qty) if qty > rem_open_q + 1e-9 else fee_paid,
+                    "maker_rebate": maker_rebate * (rem_open_q / qty) if qty > rem_open_q + 1e-9 else maker_rebate,
+                    "offset_pl": offset_pl,
+                    "vol": vol * (rem_open_q / qty) if qty > rem_open_q + 1e-9 else vol,
+                    "has_turnover": turnover > 0,
+                    "is_maker": is_maker,
+                    "ts": ts,
+                    "oid": oid_str,
+                    "mid_id": mid_id,
+                }
+            )
+            lot["closed_qty"] += min(qty, rem_open_q)
+            if float(lot["qty"]) - float(lot["closed_qty"]) <= 1e-9:
+                _flush_htx_lot(sym, trade_side, lot, full_close=True)
+                open_lots.pop((sym, trade_side), None)
         else:
-            open_ms = ts
             en_px = (px - offset_pl / qty) if trade_side == "LONG" else (px + offset_pl / qty)
             if en_px <= 0:
                 en_px = px
-            en_notional = en_px * qty
-            en_fee = 0.0
-            en_reb = 0.0
-            en_maker = False
-            en_known = False
+            _emit_htx_record(
+                sym=sym,
+                trade_side=trade_side,
+                qty=qty,
+                contract_count=vol if turnover > 0 else None,
+                open_ms=ts,
+                close_ms=ts,
+                en_px=en_px,
+                ex_px=px,
+                en_notional=en_px * qty,
+                ex_notional=ex_notional,
+                en_fee=0.0,
+                ex_fee=fee_paid,
+                en_reb=0.0,
+                ex_reb=maker_rebate + (fee_paid * rebate_ratio),
+                en_known=False,
+                en_makers=False,
+                en_takers=False,
+                ex_makers=is_maker,
+                ex_takers=not is_maker,
+                offset_pl=offset_pl,
+                mid_id=mid_id,
+                is_partial=False,
+            )
 
-        ex_notional = turnover if turnover > 0 else (px * qty)
-        ex_fee = fee_paid
-        ex_reb = maker_rebate + (ex_fee * rebate_ratio)
+    for (sym_rem, side_rem), lot_rem in list(open_lots.items()):
+        if lot_rem.get("exits"):
+            _flush_htx_lot(sym_rem, side_rem, lot_rem, full_close=False)
 
-        funding_pnl = 0.0
-        for fl in funding_by_sym.get(sym, []):
-            if fl["_id"] in consumed_fund:
-                continue
-            if open_ms - 5_000 <= fl["ts"] <= ts + 5_000:
-                consumed_fund.add(fl["_id"])
-                funding_pnl += float(fl["amt"])
-
-        total_fee = round(en_fee + ex_fee, 6)
-        total_rebate = round(en_reb + ex_reb, 6)
-        book_pnl = round(offset_pl - total_fee + funding_pnl, 6)
-        net_pnl = round(book_pnl + total_rebate, 6)
-        mid_id = htx_match_unique_key(m, fallback_idx=idx)
-        settled_str = _fmt_bj_ms(ts) if total_rebate > 0 else ""
-
-        records.append(
-            {
-                "trade_id": f"htx_{mid_id}_{ts}",
-                "venue_id": "htx",
-                "venue_name": "HTX",
-                "venue_name_zh": "火币 HTX",
-                "symbol": sym,
-                "side": trade_side,
-                "qty": round(qty, 6),
-                "contract_count": vol if turnover > 0 else None,
-                "open_time_ms": open_ms,
-                "close_time_ms": ts,
-                "gross_pnl_usd": round(offset_pl, 4),
-                "funding_pnl_usd": round(funding_pnl, 4),
-                "book_pnl_usd": round(book_pnl, 4),
-                "total_fee_usd": round(total_fee, 4),
-                "total_rebate_usd": round(total_rebate, 4),
-                "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(max(0.0, total_fee - total_rebate), 4),
-                "net_pnl_usd": round(net_pnl, 4),
-                "rebate_status": "SETTLED",
-                "is_partial_close": bool(lot and lot["qty"] > 1e-9),
-                "entry_leg": {
-                    "role": ("MAKER" if en_maker else "TAKER") if en_known else "UNKNOWN",
-                    "mode_code": ("LIMIT_MAKER" if en_maker else "MARKET_TAKER") if en_known else "UNKNOWN",
-                    "fee_known": en_known,
-                    "fee_bps": round((en_fee / en_notional) * 10_000, 2) if (en_known and en_notional > 0) else None,
-                    "time_ms": open_ms,
-                    "avg_price": round(en_px, 6),
-                    "notional_usd": round(en_notional, 2),
-                    "gross_fee_usd": round(en_fee, 4),
-                    "discount_saved_usd": 0.0,
-                    "discount_asset": "",
-                    "rebate_usd": round(en_reb, 4),
-                    "rebate_pct": round((en_reb / en_fee) * 100.0, 2) if en_fee > 0 else (100.0 if en_reb > 0 else 0.0),
-                    "net_fee_usd": round(max(0.0, en_fee - en_reb), 4),
-                    "rebate_status": "SETTLED",
-                    "settled_at": settled_str,
-                },
-                "exit_leg": {
-                    "role": "MAKER" if is_maker else "TAKER",
-                    "mode_code": "LIMIT_MAKER" if is_maker else "MARKET_TAKER",
-                    "fee_known": True,
-                    "fee_bps": round((ex_fee / ex_notional) * 10_000, 2) if ex_notional > 0 else 0.0,
-                    "time_ms": ts,
-                    "avg_price": round(px, 6),
-                    "notional_usd": round(ex_notional, 2),
-                    "gross_fee_usd": round(ex_fee, 4),
-                    "discount_saved_usd": 0.0,
-                    "discount_asset": "",
-                    "rebate_usd": round(ex_reb, 4),
-                    "rebate_pct": round((ex_reb / ex_fee) * 100.0, 2) if ex_fee > 0 else (100.0 if ex_reb > 0 else 0.0),
-                    "net_fee_usd": round(max(0.0, ex_fee - ex_reb), 4),
-                    "rebate_status": "SETTLED",
-                    "settled_at": settled_str,
-                },
-            }
-        )
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)
     return records

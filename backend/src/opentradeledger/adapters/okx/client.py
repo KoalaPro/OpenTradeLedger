@@ -567,9 +567,42 @@ def normalize_okx_closed_trades(
         rebate_bills_by_inst.setdefault(inst, []).append({**b, "_bid": bid, "_amt": amt})
 
     records: list[dict[str, Any]] = []
+    # Deduplicate intermediate partial snapshots superseded by a newer cumulative update of the same (instId, posId, cTime)
+    dedup_pos_groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    passthrough_positions: list[dict[str, Any]] = []
+    for raw_p in positions_history:
+        inst_k = str(raw_p.get("instId") or "").upper()
+        pid_k = str(raw_p.get("posId") or "").strip()
+        ctime_k = int(raw_p.get("cTime") or 0)
+        if inst_k and pid_k and ctime_k > 0:
+            dedup_pos_groups.setdefault((inst_k, pid_k, ctime_k), []).append(raw_p)
+        else:
+            passthrough_positions.append(dict(raw_p))
+
+    effective_positions: list[dict[str, Any]] = list(passthrough_positions)
+    for (inst_k, pid_k, _), p_grp in dedup_pos_groups.items():
+        if len(p_grp) == 1:
+            effective_positions.append(dict(p_grp[0]))
+            continue
+        p_grp_sorted = sorted(
+            p_grp,
+            key=lambda p: (
+                int(p.get("uTime") or 0),
+                abs(float(p.get("closeTotalPos") or p.get("openMaxPos") or 0.0)),
+            ),
+        )
+        latest_p = dict(p_grp_sorted[-1])
+        latest_p["_had_partial"] = True
+        sym_k = inst_k.replace("-SWAP", "").replace("-", "_")
+        latest_p["_legacy_trade_ids"] = [
+            f"okx_{p.get('posId') or sym_k}_{int(p.get('uTime') or int(p.get('cTime') or 0))}"
+            for p in p_grp_sorted[:-1]
+        ]
+        effective_positions.append(latest_p)
+
     # Process chronologically so per-instrument rebate bills bind cleanly to their corresponding trade
     sorted_positions = sorted(
-        positions_history,
+        effective_positions,
         key=lambda p: (int(p.get("uTime") or 0), int(p.get("cTime") or 0)),
     )
 
@@ -586,13 +619,29 @@ def normalize_okx_closed_trades(
         qty = contract_quantity(spec, contracts, close_px)
         direction = str(pos.get("direction") or pos.get("posSide") or "long").upper()
         side = "SHORT" if "SHORT" in direction else "LONG"
-        is_partial = str(pos.get("type") or "") == "2"
 
         entry_side = "buy" if side == "LONG" else "sell"
         entry_fills = [f for f in inst_fills if str(f.get("side") or "").lower() == entry_side]
         exit_fills = [f for f in inst_fills if str(f.get("side") or "").lower() != entry_side]
+        distinct_exit_oids = {
+            str(f.get("ordId") or f.get("clOrdId") or "").strip()
+            for f in exit_fills
+            if str(f.get("ordId") or f.get("clOrdId") or "").strip()
+        }
+        is_partial = (
+            str(pos.get("type") or "") == "2"
+            or bool(pos.get("_had_partial"))
+            or len(distinct_exit_oids) > 1
+        )
 
-        entry = build_fill_leg(entry_fills, spec, inst, open_ms, open_px, okb_usd_price)
+        entry_contracts = sum(positive_number(f.get("fillSz")) for f in entry_fills)
+        entry_scale = (
+            (contracts / entry_contracts)
+            if (contracts > 0 and entry_contracts > contracts + 1e-9)
+            else 1.0
+        )
+
+        entry = build_fill_leg(entry_fills, spec, inst, open_ms, open_px, okb_usd_price, scale=entry_scale)
         exit_leg = build_fill_leg(exit_fills, spec, inst, close_ms, close_px, okb_usd_price)
         legs = (entry, exit_leg)
         total_fee = sum(leg["gross_fee_usd"] for leg in legs)
@@ -609,8 +658,13 @@ def normalize_okx_closed_trades(
             if settlement == inst.split("-")[0]:
                 # Compare the same currency at the same price before valuing any
                 # missing fees. Known base-currency fills use their execution prices.
-                observed = sum((finite_number(f.get("fee")) or 0) * close_px for f in inst_fills
-                               if str(f.get("feeCcy") or settlement).upper() == settlement)
+                observed = sum(
+                    (finite_number(f.get("fee")) or 0)
+                    * close_px
+                    * (entry_scale if str(f.get("side") or "").lower() == entry_side else 1.0)
+                    for f in inst_fills
+                    if str(f.get("feeCcy") or settlement).upper() == settlement
+                )
             else:
                 observed = embedded_rebate - total_fee
             remainder = position_fee - observed
@@ -680,6 +734,7 @@ def normalize_okx_closed_trades(
                 "is_partial_close": is_partial,
                 "entry_leg": entry,
                 "exit_leg": exit_leg,
+                **({"_legacy_trade_ids": list(pos["_legacy_trade_ids"])} if pos.get("_legacy_trade_ids") else {}),
             }
         )
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)

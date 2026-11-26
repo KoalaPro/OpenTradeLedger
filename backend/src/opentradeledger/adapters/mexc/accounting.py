@@ -29,6 +29,7 @@ from opentradeledger.core.venue_primitives import (
     fmt_bj,
     fmt_pct_clean,
     format_duration_zh,
+    merge_legacy_journal_entries,
     norm_ms,
     norm_sec,
     normalize_contract_symbol,
@@ -395,143 +396,112 @@ def _build_mexc_closed_records(
             tot_close_vol = sum((x["vol"] for x in close_items_all), Decimal("0"))
             pos_hold_fee = dec(hp.get("holdFee"))
 
-            cur_entries: list[dict[str, Any]] = []
-            pos_q = Decimal("0")
-            pending_close: list[dict[str, Any]] = []
-            pending_oid = ""
-
-            def _emit_mx_group(exit_grp: list[dict[str, Any]]) -> None:
-                nonlocal pos_q, total_mx_burned_qty, total_mx_saved_usd, total_mx_paid_fees_usd, total_mxpoint_relief_usd
-                if not exit_grp:
-                    return
-                c_vol = sum((x["vol"] for x in exit_grp), Decimal("0"))
-                share = Decimal("1") if (pos_q <= Decimal("1e-9") or c_vol >= pos_q - Decimal("1e-9")) else (c_vol / pos_q)
-                sliced_entries: list[dict[str, Any]] = []
-                rem_factor = Decimal("1") - share
-                for en_it in cur_entries:
-                    if en_it["vol"] <= Decimal("1e-12"):
-                        continue
-                    sliced_entries.append(
-                        {
-                            **en_it,
-                            "vol": en_it["vol"] * share,
-                            "notional": en_it["notional"] * share,
-                            "fee_usd": en_it["fee_usd"] * share,
-                            "reb_usd": en_it["reb_usd"] * share,
-                            "mx_saved": en_it["mx_saved"] * share,
-                            "mx_qty": en_it["mx_qty"] * share,
-                        }
-                    )
-                    en_it["vol"] *= rem_factor
-                    en_it["notional"] *= rem_factor
-                    en_it["fee_usd"] *= rem_factor
-                    en_it["reb_usd"] *= rem_factor
-                    en_it["mx_saved"] *= rem_factor
-                    en_it["mx_qty"] *= rem_factor
-                pos_q = max(Decimal("0"), pos_q - c_vol)
-
-                pos_share = (c_vol / tot_close_vol) if tot_close_vol > 0 else Decimal("1")
-                gpnl = sum((x["profit"] for x in exit_grp), Decimal("0"))
-                if gpnl == 0 and dec(hp.get("closeProfitLoss")) != 0 and len(distinct_close_oids) <= 1:
-                    gpnl = dec(hp.get("closeProfitLoss")) * pos_share
-                fund_u = pos_hold_fee * pos_share
-
-                en_leg = _build_mx_leg(sliced_entries, is_exit=False, is_win_hint=(gpnl > 0))
-                ex_leg = _build_mx_leg(exit_grp, is_exit=True, is_win_hint=(gpnl > 0))
-
-                all_legs = sliced_entries + exit_grp
-                tot_fee = sum((x["fee_usd"] for x in all_legs), Decimal("0"))
-                s_reb = sum((x["reb_usd"] for x in all_legs), Decimal("0"))
-                mx_s_rec = sum((x["mx_saved"] for x in all_legs), Decimal("0"))
-                mx_q_rec = sum((x["mx_qty"] for x in all_legs), Decimal("0"))
-
-                if mx_q_rec > 0:
-                    total_mx_burned_qty += mx_q_rec
-                    total_mx_saved_usd += mx_s_rec
-                    total_mx_paid_fees_usd += sum((x["fee_usd"] for x in all_legs if x["fee_asset"] == "MX"), Decimal("0"))
-                if s_reb > 0:
-                    total_mxpoint_relief_usd += s_reb
-
-                book_pnl = gpnl + fund_u - tot_fee
-                real_net = book_pnl + s_reb
-                t_open_ms = min((x["ts_ms"] for x in sliced_entries if x["ts_ms"] > 0), default=p_open_ms)
-                t_close_ms = max((x["ts_ms"] for x in exit_grp if x["ts_ms"] > 0), default=p_close_ms)
-                t_open_s = norm_sec(t_open_ms)
-                t_close_s = norm_sec(t_close_ms)
-                hold_s = max(0, int(t_close_s - t_open_s))
-                qty_b = c_vol * mult
-
-                assets_rec = {x["fee_asset"] for x in all_legs if x["fee_usd"] > 0}
-                rec_asset = "MX" if assets_rec == {"MX"} else ("MXPOINT" if assets_rec == {"MXPOINT"} else ("MIXED" if ("MX" in assets_rec or "MXPOINT" in assets_rec) else "USDT"))
-
-                c_oid = exit_grp[-1]["order_id"] or str(len(records))
-                base_rk = f"mx_fut_{sym}_{pid}" if not is_partial_pos else f"mx_fut_{sym}_{pid}_{c_oid}"
-                rk = base_rk if base_rk not in used_record_keys else f"{base_rk}_{c_oid}_{len(records)}"
-                used_record_keys.add(rk)
-                j_entry = journals.get(rk) or journals.get(f"mx_fut_{sym}_{pid}") or {}
-
-                records.append(
+            entry_items_raw = [dict(x) for x in enriched if x["side_code"] in (1, 3)]
+            tot_entry_vol = sum((x["vol"] for x in entry_items_raw), Decimal("0"))
+            en_share = (
+                (tot_close_vol / tot_entry_vol)
+                if (tot_close_vol > 0 and tot_entry_vol > tot_close_vol + Decimal("1e-9"))
+                else Decimal("1")
+            )
+            if en_share < Decimal("1") - Decimal("1e-11"):
+                sliced_entries = [
                     {
-                        "record_key": rk,
-                        "exchange": "MEXC",
-                        "exchange_zh": "MEXC",
-                        "contract": sym,
-                        "side": side_str,
-                        "is_partial_close": is_partial_pos,
-                        "qty_base": f2(qty_b, 6),
-                        "open_time_sec": int(t_open_s),
-                        "close_time_sec": int(t_close_s),
-                        "open_time_ms": int(t_open_ms),
-                        "close_time_ms": int(t_close_ms),
-                        "open_datetime_bj": fmt_bj(t_open_s, "%Y-%m-%d %H:%M:%S"),
-                        "close_datetime_bj": fmt_bj(t_close_s, "%Y-%m-%d %H:%M:%S"),
-                        "close_date_bj": fmt_bj(t_close_s, "%Y-%m-%d"),
-                        "holding_seconds": hold_s,
-                        "holding_zh": format_duration_zh(hold_s),
-                        "entry_leg": en_leg,
-                        "exit_leg": ex_leg,
-                        "gross_pnl_usd": f2(gpnl, 4),
-                        "funding_pnl_usd": f2(fund_u, 4),
-                        "total_fee_usd": f2(tot_fee, 4),
-                        "fee_asset": rec_asset,
-                        "bnb_fee_qty": f2(mx_q_rec, 6),
-                        "bnb_discount_saved_usd": f2(mx_s_rec, 4),
-                        "settled_rebate_usd": f2(s_reb, 4),
-                        "pending_rebate_usd": 0.0,
-                        "net_fee_usd": f2(max(Decimal("0"), tot_fee - s_reb), 4),
-                        "effective_rebate_pct": f2((s_reb / tot_fee * Decimal("100")), 2) if tot_fee > 0 else 0.0,
-                        "rebate_state": "SETTLED",
-                        "gate_book_pnl_usd": f2(book_pnl, 4),
-                        "realized_net_pnl_usd": f2(real_net, 4),
-                        "expected_net_pnl_usd": f2(real_net, 4),
-                        "_raw_realized_net": real_net,
-                        "_raw_book_pnl": book_pnl,
-                        "_raw_settled_rebate": s_reb,
-                        "tags": list(j_entry.get("tags") or []),
-                        "note": str(j_entry.get("note") or ""),
+                        **en_it,
+                        "vol": en_it["vol"] * en_share,
+                        "notional": en_it["notional"] * en_share,
+                        "fee_usd": en_it["fee_usd"] * en_share,
+                        "reb_usd": en_it["reb_usd"] * en_share,
+                        "mx_saved": en_it["mx_saved"] * en_share,
+                        "mx_qty": en_it["mx_qty"] * en_share,
                     }
-                )
+                    for en_it in entry_items_raw
+                    if en_it["vol"] > Decimal("1e-12")
+                ]
+            else:
+                sliced_entries = [en_it for en_it in entry_items_raw if en_it["vol"] > Decimal("1e-12")]
 
-            for it in enriched:
-                if it["side_code"] in (1, 3):
-                    if pending_close:
-                        _emit_mx_group(pending_close)
-                        pending_close = []
-                        pending_oid = ""
-                    cur_entries.append(dict(it))
-                    pos_q += it["vol"]
-                elif it["side_code"] in (2, 4):
-                    if pending_close and it["order_id"] and it["order_id"] != pending_oid:
-                        _emit_mx_group(pending_close)
-                        pending_close = []
-                    pending_close.append(it)
-                    pending_oid = it["order_id"]
-                    if sum((x["vol"] for x in pending_close), Decimal("0")) >= pos_q - Decimal("1e-9"):
-                        _emit_mx_group(pending_close)
-                        pending_close = []
-                        pending_oid = ""
-            if pending_close:
-                _emit_mx_group(pending_close)
+            exit_grp = close_items_all
+            gpnl = sum((x["profit"] for x in exit_grp), Decimal("0"))
+            if gpnl == 0 and dec(hp.get("closeProfitLoss")) != 0:
+                gpnl = dec(hp.get("closeProfitLoss"))
+            fund_u = pos_hold_fee
+
+            en_leg = _build_mx_leg(sliced_entries, is_exit=False, is_win_hint=(gpnl > 0))
+            ex_leg = _build_mx_leg(exit_grp, is_exit=True, is_win_hint=(gpnl > 0))
+
+            all_legs = sliced_entries + exit_grp
+            tot_fee = sum((x["fee_usd"] for x in all_legs), Decimal("0"))
+            s_reb = sum((x["reb_usd"] for x in all_legs), Decimal("0"))
+            mx_s_rec = sum((x["mx_saved"] for x in all_legs), Decimal("0"))
+            mx_q_rec = sum((x["mx_qty"] for x in all_legs), Decimal("0"))
+
+            if mx_q_rec > 0:
+                total_mx_burned_qty += mx_q_rec
+                total_mx_saved_usd += mx_s_rec
+                total_mx_paid_fees_usd += sum((x["fee_usd"] for x in all_legs if x["fee_asset"] == "MX"), Decimal("0"))
+            if s_reb > 0:
+                total_mxpoint_relief_usd += s_reb
+
+            book_pnl = gpnl + fund_u - tot_fee
+            real_net = book_pnl + s_reb
+            t_open_ms = min((x["ts_ms"] for x in sliced_entries if x["ts_ms"] > 0), default=p_open_ms)
+            t_close_ms = max((x["ts_ms"] for x in exit_grp if x["ts_ms"] > 0), default=p_close_ms)
+            t_open_s = norm_sec(t_open_ms)
+            t_close_s = norm_sec(t_close_ms)
+            hold_s = max(0, int(t_close_s - t_open_s))
+            qty_b = tot_close_vol * mult
+
+            assets_rec = {x["fee_asset"] for x in all_legs if x["fee_usd"] > 0}
+            rec_asset = "MX" if assets_rec == {"MX"} else ("MXPOINT" if assets_rec == {"MXPOINT"} else ("MIXED" if ("MX" in assets_rec or "MXPOINT" in assets_rec) else "USDT"))
+
+            c_oid = exit_grp[-1]["order_id"] or str(len(records))
+            base_rk = f"mx_fut_{sym}_{pid or c_oid}"
+            rk = base_rk if base_rk not in used_record_keys else f"{base_rk}_{c_oid}_{len(records)}"
+            used_record_keys.add(rk)
+            legacy_mx_keys = [f"mx_fut_{sym}_{pid}", *[f"mx_fut_{sym}_{pid}_{oid}" for oid in sorted(distinct_close_oids)]]
+            j_entry = merge_legacy_journal_entries(journals, rk, legacy_mx_keys)
+
+            records.append(
+                {
+                    "record_key": rk,
+                    "exchange": "MEXC",
+                    "exchange_zh": "MEXC",
+                    "contract": sym,
+                    "side": side_str,
+                    "is_partial_close": is_partial_pos,
+                    "qty_base": f2(qty_b, 6),
+                    "open_time_sec": int(t_open_s),
+                    "close_time_sec": int(t_close_s),
+                    "open_time_ms": int(t_open_ms),
+                    "close_time_ms": int(t_close_ms),
+                    "open_datetime_bj": fmt_bj(t_open_s, "%Y-%m-%d %H:%M:%S"),
+                    "close_datetime_bj": fmt_bj(t_close_s, "%Y-%m-%d %H:%M:%S"),
+                    "close_date_bj": fmt_bj(t_close_s, "%Y-%m-%d"),
+                    "holding_seconds": hold_s,
+                    "holding_zh": format_duration_zh(hold_s),
+                    "entry_leg": en_leg,
+                    "exit_leg": ex_leg,
+                    "gross_pnl_usd": f2(gpnl, 4),
+                    "funding_pnl_usd": f2(fund_u, 4),
+                    "total_fee_usd": f2(tot_fee, 4),
+                    "fee_asset": rec_asset,
+                    "bnb_fee_qty": f2(mx_q_rec, 6),
+                    "bnb_discount_saved_usd": f2(mx_s_rec, 4),
+                    "settled_rebate_usd": f2(s_reb, 4),
+                    "pending_rebate_usd": 0.0,
+                    "net_fee_usd": f2(max(Decimal("0"), tot_fee - s_reb), 4),
+                    "effective_rebate_pct": f2((s_reb / tot_fee * Decimal("100")), 2) if tot_fee > 0 else 0.0,
+                    "rebate_state": "SETTLED",
+                    "gate_book_pnl_usd": f2(book_pnl, 4),
+                    "realized_net_pnl_usd": f2(real_net, 4),
+                    "expected_net_pnl_usd": f2(real_net, 4),
+                    "_raw_realized_net": real_net,
+                    "_raw_book_pnl": book_pnl,
+                    "_raw_settled_rebate": s_reb,
+                    "tags": list(j_entry.get("tags") or []),
+                    "note": str(j_entry.get("note") or ""),
+                }
+            )
         else:
             c_vol = abs(dec(hp.get("closeVol")))
             qty_b = c_vol * mult

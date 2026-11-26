@@ -30,6 +30,7 @@ function modeLabel(code: string, t: (k: MessageKey) => string): string {
     STOP_MARKET: 'mode_STOP_MARKET',
     TP_MARKET: 'mode_TP_MARKET',
     REVERSE_MARKET: 'mode_REVERSE_MARKET',
+    MIXED: 'mode_MIXED',
     UNKNOWN: 'mode_UNKNOWN',
   }
   return known[code] ? t(known[code]) : code

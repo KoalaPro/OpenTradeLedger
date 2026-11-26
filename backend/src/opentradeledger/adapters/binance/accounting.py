@@ -30,6 +30,7 @@ from opentradeledger.core.venue_primitives import (
     fmt_bj,
     fmt_pct_clean,
     format_duration_zh,
+    merge_legacy_journal_entries,
     norm_ms,
     norm_sec,
     normalize_contract_symbol,
@@ -518,7 +519,15 @@ def _build_binance_closed_records(
         record_key = base_rk if base_rk not in used_record_keys else f"{base_rk}_{close_oid or len(records)}"
         used_record_keys.add(record_key)
 
-        j_entry = journals.get(record_key) or journals.get(base_rk) or {}
+        legacy_bn_keys: list[str] = [base_rk]
+        for ex_it in exit_items:
+            ex_t_i = int(float(ex_it["ts_sec"]))
+            ex_oid_i = str(ex_it.get("order_id") or "").strip()
+            rk_i = f"bn_fut_{contract}_{int(t_open)}_{ex_t_i}_{side_str.lower()}"
+            legacy_bn_keys.append(rk_i)
+            if ex_oid_i:
+                legacy_bn_keys.append(f"{rk_i}_{ex_oid_i}")
+        j_entry = merge_legacy_journal_entries(journals, record_key, legacy_bn_keys)
         records.append(
             {
                 "record_key": record_key,
@@ -568,45 +577,52 @@ def _build_binance_closed_records(
         )
         cur_entries: list[dict[str, Any]] = []
         pending_exit_group: list[dict[str, Any]] = []
-        pending_exit_oid = ""
         pos_q = Decimal("0")
         cur_side = pside if pside in ("LONG", "SHORT") else "LONG"
 
         def _flush_exit_group(side_emit: str) -> None:
-            nonlocal pos_q, pending_exit_group, pending_exit_oid
+            nonlocal pos_q, pending_exit_group
             if not pending_exit_group:
                 return
             ex_q = sum((x["qty"] for x in pending_exit_group), Decimal("0"))
+            distinct_oids = {
+                str(x.get("order_id") or "").strip()
+                for x in pending_exit_group
+                if str(x.get("order_id") or "").strip()
+            }
             if pos_q <= Decimal("1e-9") or ex_q >= pos_q - Decimal("1e-9"):
                 alloc_en = _slice_entries(cur_entries, Decimal("1"))
                 pos_q = Decimal("0")
-                _emit_close_order(sym_u, side_emit, alloc_en, pending_exit_group, is_partial_close=False)
+                _emit_close_order(
+                    sym_u,
+                    side_emit,
+                    alloc_en,
+                    pending_exit_group,
+                    is_partial_close=len(distinct_oids) > 1,
+                )
             else:
                 share = ex_q / pos_q
                 alloc_en = _slice_entries(cur_entries, share)
                 pos_q = max(Decimal("0"), pos_q - ex_q)
                 _emit_close_order(sym_u, side_emit, alloc_en, pending_exit_group, is_partial_close=True)
             pending_exit_group = []
-            pending_exit_oid = ""
 
         for rf in sorted_fills:
             f_side = str(rf.get("side") or "BUY").strip().upper()
             q_abs = abs(dec(rf.get("qty")))
             if q_abs <= 0:
                 continue
-            oid_cur = str(rf.get("orderId") or "").strip()
 
             if pside in ("LONG", "SHORT"):
                 is_entry = (pside == "LONG" and f_side == "BUY") or (pside == "SHORT" and f_side == "SELL")
                 if is_entry:
-                    _flush_exit_group(pside)
+                    rem_open = pos_q - sum((x["qty"] for x in pending_exit_group), Decimal("0"))
+                    if pending_exit_group and rem_open <= Decimal("1e-9"):
+                        _flush_exit_group(pside)
                     cur_entries.append(_enrich_fill(rf, sym_u))
                     pos_q += q_abs
                 else:
-                    if pending_exit_group and oid_cur and oid_cur != pending_exit_oid:
-                        _flush_exit_group(pside)
                     pending_exit_group.append(_enrich_fill(rf, sym_u))
-                    pending_exit_oid = oid_cur
                     if sum((x["qty"] for x in pending_exit_group), Decimal("0")) >= pos_q - Decimal("1e-9"):
                         _flush_exit_group(pside)
             else:
@@ -615,16 +631,15 @@ def _build_binance_closed_records(
                     cur_entries.append(_enrich_fill(rf, sym_u))
                     pos_q = q_abs
                 elif (cur_side == "LONG" and f_side == "BUY") or (cur_side == "SHORT" and f_side == "SELL"):
-                    _flush_exit_group(cur_side)
+                    rem_open = pos_q - sum((x["qty"] for x in pending_exit_group), Decimal("0"))
+                    if pending_exit_group and rem_open <= Decimal("1e-9"):
+                        _flush_exit_group(cur_side)
                     cur_entries.append(_enrich_fill(rf, sym_u))
                     pos_q += q_abs
                 else:
-                    if pending_exit_group and oid_cur and oid_cur != pending_exit_oid:
-                        _flush_exit_group(cur_side)
                     rem_after_prev = pos_q - sum((x["qty"] for x in pending_exit_group), Decimal("0"))
                     if q_abs <= rem_after_prev + Decimal("1e-9"):
                         pending_exit_group.append(_enrich_fill(rf, sym_u))
-                        pending_exit_oid = oid_cur
                         if sum((x["qty"] for x in pending_exit_group), Decimal("0")) >= pos_q - Decimal("1e-9"):
                             _flush_exit_group(cur_side)
                     else:

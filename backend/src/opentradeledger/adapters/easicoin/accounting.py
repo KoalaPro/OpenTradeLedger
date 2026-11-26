@@ -28,6 +28,7 @@ from opentradeledger.core.venue_primitives import (
     f2,
     fmt_bj,
     format_duration_zh,
+    merge_legacy_journal_entries,
     norm_ms,
     norm_sec,
     normalize_contract_symbol,
@@ -142,7 +143,10 @@ def _build_easicoin_closed_records(
             return max(norm_sec(ef.get("exec_time")) for ef in efs)
         return norm_sec(row.get("created_at"))
 
-    claimed_unlinked: set[int] = set()
+    unlinked_pool_by_sym: dict[str, list[list[Any]]] = {
+        sym_k: [[u_idx, uf, Decimal("1")] for u_idx, uf in sym_list]
+        for sym_k, sym_list in unlinked_entries_by_sym.items()
+    }
     out: list[dict[str, Any]] = []
 
     for c_row in sorted(closed_pnl_rows, key=_effective_close_sec):
@@ -176,6 +180,7 @@ def _build_easicoin_closed_records(
         entry_roles: set[str] = set()
         entry_fill_count = 0
         t_open = t_close
+        unlinked_anchor = ""
 
         if pz_id and entry_fills_by_pz.get(pz_id):
             pz_entries = entry_fills_by_pz[pz_id]
@@ -196,27 +201,42 @@ def _build_easicoin_closed_records(
                     entry_taker_notional += f_val
         else:
             want_entry_side = "Sell" if pos_side == "short" else "Buy"
-            matched_unlinked: list[Mapping[str, Any]] = []
-            acc_qty = Decimal("0")
-            for u_idx, uf in unlinked_entries_by_sym.get(raw_sym, []):
-                if u_idx in claimed_unlinked:
+            matched_slices: list[tuple[Mapping[str, Any], Decimal]] = []
+            rem_need = qty_base
+            anchor_ids: list[str] = []
+            for slot in unlinked_pool_by_sym.get(raw_sym, []):
+                u_idx, uf, rem_sh = slot[0], slot[1], slot[2]
+                if rem_sh <= Decimal("1e-9"):
                     continue
                 uf_sec = norm_sec(uf.get("exec_time"))
                 if uf_sec > t_close + 5.0:
                     continue
                 if str(uf.get("side") or "").capitalize() != want_entry_side:
                     continue
-                claimed_unlinked.add(u_idx)
-                matched_unlinked.append(uf)
-                acc_qty += abs(dec(uf.get("exec_qty")))
-                if acc_qty >= qty_base - Decimal("1e-8"):
+                raw_q = abs(dec(uf.get("exec_qty")))
+                avail_q = raw_q * rem_sh
+                if avail_q <= Decimal("1e-12"):
+                    slot[2] = Decimal("0")
+                    continue
+                if rem_need > 0 and avail_q > rem_need + Decimal("1e-8"):
+                    take_sh = rem_sh * (rem_need / avail_q)
+                    slot[2] = max(Decimal("0"), rem_sh - take_sh)
+                    rem_need = Decimal("0")
+                else:
+                    take_sh = rem_sh
+                    slot[2] = Decimal("0")
+                    rem_need = max(Decimal("0"), rem_need - avail_q)
+                matched_slices.append((uf, take_sh))
+                anchor_ids.append(str(uf.get("order_id") or u_idx))
+                if rem_need <= Decimal("1e-8"):
                     break
-            if matched_unlinked:
-                t_open = min(norm_sec(uf.get("exec_time")) for uf in matched_unlinked)
-                entry_fill_count = len(matched_unlinked)
-                for uf in matched_unlinked:
-                    f_fee = abs(dec(uf.get("exec_fee")))
-                    f_val = abs(dec(uf.get("exec_value"))) or (abs(dec(uf.get("exec_qty"))) * dec(uf.get("exec_price")))
+            if matched_slices:
+                unlinked_anchor = f"ul_{raw_sym}_{anchor_ids[0]}"
+                t_open = min(norm_sec(uf.get("exec_time")) for uf, _ in matched_slices)
+                entry_fill_count = len(matched_slices)
+                for uf, take_sh in matched_slices:
+                    f_fee = abs(dec(uf.get("exec_fee"))) * take_sh
+                    f_val = (abs(dec(uf.get("exec_value"))) or (abs(dec(uf.get("exec_qty"))) * dec(uf.get("exec_price")))) * take_sh
                     liq = str(uf.get("liquidity_type") or "taker").lower()
                     entry_roles.add(liq)
                     entry_gross_fee += f_fee
@@ -341,6 +361,12 @@ def _build_easicoin_closed_records(
                 "side": pos_side.upper(),
                 "is_partial_close": False,
                 "_pz_id": pz_id,
+                "_group_anchor": pz_id or unlinked_anchor,
+                "_raw_qty": qty_base,
+                "_raw_entry_val": cum_entry_val,
+                "_raw_exit_val": cum_exit_val,
+                "_raw_gross_pnl": gross_pnl,
+                "_raw_funding_pnl": funding_pnl,
                 "qty_base": f2(qty_base, 6),
                 "open_time_sec": int(t_open),
                 "close_time_sec": int(t_close),
@@ -375,26 +401,154 @@ def _build_easicoin_closed_records(
             }
         )
 
-    last_idx_by_pz: dict[str, int] = {}
+    groups_by_key: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    ordered_groups: list[list[dict[str, Any]]] = []
     for idx_r, r_ec in enumerate(out):
-        pz_v = str(r_ec.get("_pz_id") or "")
-        if pz_v:
-            last_idx_by_pz[pz_v] = idx_r
-    for idx_r, r_ec in enumerate(out):
-        pz_v = str(r_ec.pop("_pz_id", "") or "")
-        if pz_v and last_idx_by_pz.get(pz_v, idx_r) > idx_r:
-            r_ec["is_partial_close"] = True
+        r_ec.pop("_pz_id", None)
+        anchor = str(r_ec.pop("_group_anchor", "") or "")
+        if anchor:
+            gk = (str(r_ec["contract"]), str(r_ec["side"]), anchor)
+            if gk not in groups_by_key:
+                grp: list[dict[str, Any]] = []
+                groups_by_key[gk] = grp
+                ordered_groups.append(grp)
+            groups_by_key[gk].append(r_ec)
+        else:
+            merged_into_prev = False
+            for existing_grp in ordered_groups:
+                head = existing_grp[0]
+                if (
+                    head["contract"] == r_ec["contract"]
+                    and head["side"] == r_ec["side"]
+                    and abs(dec(head["entry_leg"]["avg_price"]) - dec(r_ec["entry_leg"]["avg_price"])) <= Decimal("1e-6")
+                    and r_ec["open_time_sec"] <= head["close_time_sec"] < r_ec["close_time_sec"]
+                ):
+                    existing_grp.append(r_ec)
+                    merged_into_prev = True
+                    break
+            if not merged_into_prev:
+                ordered_groups.append([r_ec])
+
+    consolidated: list[dict[str, Any]] = []
+    for grp in ordered_groups:
+        if len(grp) == 1:
+            single = grp[0]
+            for tmp_k in ("_raw_qty", "_raw_entry_val", "_raw_exit_val", "_raw_gross_pnl", "_raw_funding_pnl"):
+                single.pop(tmp_k, None)
+            consolidated.append(single)
             continue
-        for j_r in range(idx_r + 1, len(out)):
-            other = out[j_r]
-            if (
-                other["contract"] == r_ec["contract"]
-                and other["side"] == r_ec["side"]
-                and other["open_time_sec"] <= r_ec["close_time_sec"] < other["close_time_sec"]
-            ):
-                r_ec["is_partial_close"] = True
-                break
-    return out
+
+        grp.sort(key=lambda x: (x["close_time_sec"], x["open_time_sec"]))
+        last_rec = grp[-1]
+        primary_rk = str(last_rec["record_key"])
+        legacy_rks = [str(x["record_key"]) for x in grp]
+        j_merged = merge_legacy_journal_entries(journals, primary_rk, legacy_rks)
+
+        tot_q = sum((dec(x.pop("_raw_qty", x["qty_base"])) for x in grp), Decimal("0"))
+        tot_en_val = sum((dec(x.pop("_raw_entry_val", x["entry_leg"]["notional_usd"])) for x in grp), Decimal("0"))
+        tot_ex_val = sum((dec(x.pop("_raw_exit_val", x["exit_leg"]["notional_usd"])) for x in grp), Decimal("0"))
+        tot_gpnl = sum((dec(x.pop("_raw_gross_pnl", x["gross_pnl_usd"])) for x in grp), Decimal("0"))
+        tot_fpnl = sum((dec(x.pop("_raw_funding_pnl", x["funding_pnl_usd"])) for x in grp), Decimal("0"))
+        tot_cpnl = sum((dec(x["_raw_closed_pnl"]) for x in grp), Decimal("0"))
+        tot_fee_g = sum((dec(x["_raw_total_fee"]) for x in grp), Decimal("0"))
+        tot_en_fee = sum((dec(x["_raw_entry_fee"]) for x in grp), Decimal("0"))
+        tot_ex_fee = sum((dec(x["_raw_exit_fee"]) for x in grp), Decimal("0"))
+        tot_en_mf = sum((dec(x["_raw_entry_maker_fee"]) for x in grp), Decimal("0"))
+        tot_ex_mf = sum((dec(x["_raw_exit_maker_fee"]) for x in grp), Decimal("0"))
+
+        open_s = min(int(x["open_time_sec"]) for x in grp)
+        close_s = max(int(x["close_time_sec"]) for x in grp)
+        open_ms_g = min(int(x["open_time_ms"]) for x in grp)
+        close_ms_g = max(int(x["close_time_ms"]) for x in grp)
+        hold_s = max(0, close_s - open_s)
+        en_px_g = (tot_en_val / tot_q) if tot_q > 0 else dec(last_rec["entry_leg"]["avg_price"])
+        ex_px_g = (tot_ex_val / tot_q) if tot_q > 0 else dec(last_rec["exit_leg"]["avg_price"])
+
+        en_m_not = sum((dec(x["entry_leg"]["maker_notional_usd"]) for x in grp), Decimal("0"))
+        en_t_not = sum((dec(x["entry_leg"]["taker_notional_usd"]) for x in grp), Decimal("0"))
+        ex_m_not = sum((dec(x["exit_leg"]["maker_notional_usd"]) for x in grp), Decimal("0"))
+        ex_t_not = sum((dec(x["exit_leg"]["taker_notional_usd"]) for x in grp), Decimal("0"))
+
+        en_modes = {str(x["entry_leg"]["mode"]) for x in grp}
+        ex_modes = {str(x["exit_leg"]["mode"]) for x in grp}
+        en_mode_c = next(iter(en_modes)) if len(en_modes) == 1 else "MIXED"
+        en_mode_z = grp[0]["entry_leg"]["mode_zh"] if len(en_modes) == 1 else "混合成交"
+        ex_mode_c = next(iter(ex_modes)) if len(ex_modes) == 1 else "MIXED"
+        ex_mode_z = last_rec["exit_leg"]["mode_zh"] if len(ex_modes) == 1 else "混合成交"
+
+        en_bps_g = (tot_en_fee / tot_en_val * Decimal("10000")) if tot_en_val > 0 else Decimal("0")
+        ex_bps_g = (tot_ex_fee / tot_ex_val * Decimal("10000")) if tot_ex_val > 0 else Decimal("0")
+
+        merged_en_leg = {
+            **grp[0]["entry_leg"],
+            "mode": en_mode_c,
+            "mode_zh": en_mode_z,
+            "qty_base": f2(tot_q, 6),
+            "avg_price": f2(en_px_g, 6),
+            "notional_usd": f2(tot_en_val, 2),
+            "maker_notional_usd": f2(en_m_not, 2),
+            "taker_notional_usd": f2(en_t_not, 2),
+            "time_sec": open_s,
+            "time_bj": fmt_bj(open_s, "%m-%d %H:%M:%S") if open_s > 0 else "—",
+            "gross_fee_usd": f2(tot_en_fee, 4),
+            "maker_fee_usd": f2(tot_en_mf, 4),
+            "taker_fee_usd": f2(max(Decimal("0"), tot_en_fee - tot_en_mf), 4),
+            "fee_bps": f2(en_bps_g, 2),
+            "net_fee_usd": f2(tot_en_fee, 4),
+        }
+        merged_ex_leg = {
+            **last_rec["exit_leg"],
+            "mode": ex_mode_c,
+            "mode_zh": ex_mode_z,
+            "fill_count": sum(int(x["exit_leg"]["fill_count"]) for x in grp),
+            "qty_base": f2(tot_q, 6),
+            "avg_price": f2(ex_px_g, 6),
+            "notional_usd": f2(tot_ex_val, 2),
+            "maker_notional_usd": f2(ex_m_not, 2),
+            "taker_notional_usd": f2(ex_t_not, 2),
+            "time_sec": close_s,
+            "time_bj": fmt_bj(close_s, "%m-%d %H:%M:%S") if close_s > 0 else "—",
+            "gross_fee_usd": f2(tot_ex_fee, 4),
+            "maker_fee_usd": f2(tot_ex_mf, 4),
+            "taker_fee_usd": f2(max(Decimal("0"), tot_ex_fee - tot_ex_mf), 4),
+            "fee_bps": f2(ex_bps_g, 2),
+            "net_fee_usd": f2(tot_ex_fee, 4),
+        }
+        consolidated.append(
+            {
+                **last_rec,
+                "record_key": primary_rk,
+                "is_partial_close": True,
+                "qty_base": f2(tot_q, 6),
+                "open_time_sec": open_s,
+                "close_time_sec": close_s,
+                "open_time_ms": open_ms_g,
+                "close_time_ms": close_ms_g,
+                "open_datetime_bj": fmt_bj(open_s, "%Y-%m-%d %H:%M:%S"),
+                "close_datetime_bj": fmt_bj(close_s, "%Y-%m-%d %H:%M:%S"),
+                "close_date_bj": fmt_bj(close_s, "%Y-%m-%d"),
+                "holding_seconds": hold_s,
+                "holding_zh": format_duration_zh(hold_s),
+                "entry_leg": merged_en_leg,
+                "exit_leg": merged_ex_leg,
+                "gross_pnl_usd": f2(tot_gpnl, 4),
+                "funding_pnl_usd": f2(tot_fpnl, 4),
+                "total_fee_usd": f2(tot_fee_g, 4),
+                "net_fee_usd": f2(tot_fee_g, 4),
+                "gate_book_pnl_usd": f2(tot_cpnl, 4),
+                "realized_net_pnl_usd": f2(tot_cpnl, 4),
+                "expected_net_pnl_usd": f2(tot_cpnl, 4),
+                "_raw_closed_pnl": tot_cpnl,
+                "_raw_total_fee": tot_fee_g,
+                "_raw_entry_fee": tot_en_fee,
+                "_raw_exit_fee": tot_ex_fee,
+                "_raw_entry_maker_fee": tot_en_mf,
+                "_raw_exit_maker_fee": tot_ex_mf,
+                "tags": list(j_merged.get("tags") or []),
+                "note": str(j_merged.get("note") or ""),
+            }
+        )
+    return consolidated
 
 
 def _reconcile_easicoin_rebates_and_principal(

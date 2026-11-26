@@ -236,6 +236,32 @@ def fmt_pct_clean(v: Decimal) -> str:
     return f"{s}%"
 
 
+def merge_legacy_journal_entries(
+    journals: Mapping[str, Mapping[str, Any]],
+    primary_key: str,
+    legacy_keys: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Return `journals[primary_key]` if saved; otherwise merge tags/notes from legacy split keys."""
+    if primary_key in journals:
+        return dict(journals[primary_key] or {})
+    merged_tags: list[str] = []
+    merged_notes: list[str] = []
+    for k in legacy_keys:
+        if not k or k not in journals:
+            continue
+        entry = journals[k] or {}
+        for tg in entry.get("tags") or ():
+            tg_s = str(tg)
+            if tg_s and tg_s not in merged_tags:
+                merged_tags.append(tg_s)
+        nt = str(entry.get("note") or "").strip()
+        if nt and nt not in merged_notes:
+            merged_notes.append(nt)
+    if not merged_tags and not merged_notes:
+        return {}
+    return {"tags": merged_tags, "note": "\n".join(merged_notes)}
+
+
 def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: int) -> dict[str, Any]:
     gross_fee = round(float(raw.get("gross_fee_usd") or 0.0), 4)
     disc_saved = round(float(raw.get("bnb_discount_saved_usd") or raw.get("discount_saved_usd") or 0.0), 4)
@@ -248,14 +274,22 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
     net_fee = round(max(0.0, gross_fee - rebate), 4)
     mode_zh = str(raw.get("mode_zh") or "")
     raw_mode = str(raw.get("mode_code") or raw.get("mode") or "").upper()
-    is_maker = "挂单" in mode_zh or str(raw.get("role") or "").upper() == "MAKER" or raw_mode == "LIMIT_MAKER"
+    m_not_hint = float(raw.get("maker_notional_usd") or 0.0)
+    t_not_hint = float(raw.get("taker_notional_usd") or 0.0)
+    is_mixed = raw_mode == "MIXED" or "混合" in mode_zh or (m_not_hint > 0.0 and t_not_hint > 0.0)
+    if is_mixed:
+        is_maker = m_not_hint > 0.0 and m_not_hint >= t_not_hint
+    else:
+        is_maker = "挂单" in mode_zh or str(raw.get("role") or "").upper() == "MAKER" or raw_mode == "LIMIT_MAKER"
     if raw.get("mode_code"):
         mode_code = str(raw["mode_code"])
     elif raw_mode == "UNKNOWN":
         mode_code = "UNKNOWN"
-    elif "止损" in mode_zh:
+    elif is_mixed:
+        mode_code = "MIXED"
+    elif raw_mode in {"STOP_MARKET_TAKER", "STOP_MARKET"} or "止损" in mode_zh:
         mode_code = "STOP_MARKET"
-    elif "止盈" in mode_zh:
+    elif raw_mode in {"TP_MARKET_TAKER", "TP_MARKET"} or "止盈" in mode_zh:
         mode_code = "TP_MARKET"
     elif "反手" in mode_zh:
         mode_code = "REVERSE_MARKET"

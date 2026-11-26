@@ -669,14 +669,30 @@ def normalize_bybit_closed_trades(
 ) -> list[dict[str, Any]]:
     """Builds normalized closed trades with per-leg fees, SETTLEMENT funding, REBATE logs, and MNT discounts."""
     execs_by_order: dict[str, list[dict[str, Any]]] = {}
-    execs_by_symbol: dict[str, list[dict[str, Any]]] = {}
-    for ex in executions:
+    open_pool_by_bucket: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    sorted_execs = sorted(
+        executions,
+        key=lambda x: (int(x.get("execTime") or 0), str(x.get("execId") or "")),
+    )
+    for ex_idx, ex in enumerate(sorted_execs):
         oid = str(ex.get("orderId") or "")
         sym = str(ex.get("symbol") or "").upper()
         if oid:
             execs_by_order.setdefault(oid, []).append(ex)
-        if sym:
-            execs_by_symbol.setdefault(sym, []).append(ex)
+        if sym and float(ex.get("closedSize") or 0.0) == 0.0:
+            ex_side = str(ex.get("side") or "").lower()
+            pos_side_ex = "LONG" if ex_side == "buy" else ("SHORT" if ex_side == "sell" else "")
+            if pos_side_ex:
+                ex_q = abs(float(ex.get("execQty") or ex.get("qty") or 0.0))
+                open_pool_by_bucket.setdefault((sym, pos_side_ex), []).append(
+                    {
+                        "ex": ex,
+                        "orig_qty": ex_q,
+                        "rem_share": 1.0,
+                        "ts": int(ex.get("execTime") or 0),
+                        "anchor": oid or str(ex.get("execId") or f"open_{ex_idx}"),
+                    }
+                )
 
     funding_by_sym: dict[str, list[dict[str, Any]]] = {}
     rebates_by_sym: dict[str, list[dict[str, Any]]] = {}
@@ -700,7 +716,7 @@ def normalize_bybit_closed_trades(
         key=lambda r: (int(r.get("updatedTime") or 0), int(r.get("createdTime") or 0)),
     )
 
-    records: list[dict[str, Any]] = []
+    row_drafts: list[dict[str, Any]] = []
     for row in sorted_rows:
         raw_sym = str(row.get("symbol") or "").upper()
         if not raw_sym:
@@ -717,17 +733,45 @@ def normalize_bybit_closed_trades(
         close_ms = int(row.get("updatedTime") or open_ms)
 
         exit_execs = execs_by_order.get(order_id, [])
-        open_side_str = "buy" if side == "LONG" else "sell"
-        entry_execs = [
-            e
-            for e in execs_by_symbol.get(raw_sym, [])
-            if str(e.get("side") or "").lower() == open_side_str
-            and int(e.get("execTime") or 0) <= close_ms
-            and float(e.get("closedSize") or 0.0) == 0.0
-        ]
+        matched_entry_slices: list[tuple[dict[str, Any], float]] = []
+        rem_need = qty
+        cycle_anchor = ""
+        for slot in open_pool_by_bucket.get((raw_sym, side), []):
+            if slot["rem_share"] <= 1e-9 or slot["ts"] > close_ms + 5_000:
+                continue
+            orig_q = float(slot["orig_qty"])
+            rem_sh = float(slot["rem_share"])
+            if orig_q > 0 and qty > 0:
+                avail_q = orig_q * rem_sh
+                if avail_q <= 1e-12:
+                    slot["rem_share"] = 0.0
+                    continue
+                if avail_q > rem_need + 1e-9:
+                    take_sh = rem_sh * (rem_need / avail_q)
+                    slot["rem_share"] = max(0.0, rem_sh - take_sh)
+                    rem_need = 0.0
+                else:
+                    take_sh = rem_sh
+                    slot["rem_share"] = 0.0
+                    rem_need = max(0.0, rem_need - avail_q)
+            else:
+                take_sh = rem_sh
+                slot["rem_share"] = 0.0
+                rem_need = 0.0
+            matched_entry_slices.append((slot["ex"], take_sh))
+            if not cycle_anchor:
+                cycle_anchor = str(slot["anchor"])
+            if rem_need <= 1e-9:
+                break
+
+        entry_execs = [ex for ex, _ in matched_entry_slices]
+        if matched_entry_slices:
+            earliest_en_ts = min(int(ex.get("execTime") or open_ms) for ex in entry_execs)
+            if earliest_en_ts > 0 and (open_ms <= 0 or earliest_en_ts < open_ms):
+                open_ms = earliest_en_ts
 
         exit_gross_fee = sum(abs(float(e.get("execFee") or 0.0)) for e in exit_execs)
-        entry_gross_fee = sum(abs(float(e.get("execFee") or 0.0)) for e in entry_execs)
+        entry_gross_fee = sum(abs(float(e.get("execFee") or 0.0)) * sh for e, sh in matched_entry_slices)
         open_fee_field = abs(float(row.get("openFee") or 0.0))
         close_fee_field = abs(float(row.get("closeFee") or 0.0))
         if open_fee_field > 0:
@@ -735,14 +779,74 @@ def normalize_bybit_closed_trades(
         if close_fee_field > 0:
             exit_gross_fee = close_fee_field
 
+        row_drafts.append(
+            {
+                "raw_sym": raw_sym,
+                "order_id": order_id,
+                "side": side,
+                "qty": qty,
+                "row_qty": abs(float(row.get("qty") or 0.0)),
+                "entry_px": entry_px,
+                "exit_px": exit_px,
+                "entry_notional": entry_notional,
+                "exit_notional": exit_notional,
+                "open_ms": open_ms,
+                "close_ms": close_ms,
+                "entry_execs": entry_execs,
+                "exit_execs": exit_execs,
+                "entry_gross_fee": entry_gross_fee,
+                "exit_gross_fee": exit_gross_fee,
+                "closed_pnl": float(row.get("closedPnl") or 0.0),
+                "cycle_anchor": cycle_anchor,
+            }
+        )
+
+    grouped_drafts: list[list[dict[str, Any]]] = []
+    anchor_map: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for dr in row_drafts:
+        anc = dr["cycle_anchor"]
+        if anc:
+            gk = (dr["raw_sym"], dr["side"], anc)
+            if gk not in anchor_map:
+                grp_list: list[dict[str, Any]] = []
+                anchor_map[gk] = grp_list
+                grouped_drafts.append(grp_list)
+            anchor_map[gk].append(dr)
+        else:
+            grouped_drafts.append([dr])
+
+    records: list[dict[str, Any]] = []
+    for grp in grouped_drafts:
+        last_dr = grp[-1]
+        raw_sym = last_dr["raw_sym"]
+        order_id = last_dr["order_id"]
+        side = last_dr["side"]
+        qty = sum(d["qty"] for d in grp)
+        entry_notional = sum(d["entry_notional"] for d in grp)
+        exit_notional = sum(d["exit_notional"] for d in grp)
+        entry_px = (entry_notional / qty) if qty > 0 else last_dr["entry_px"]
+        exit_px = (exit_notional / qty) if qty > 0 else last_dr["exit_px"]
+        open_ms = min(d["open_ms"] for d in grp)
+        close_ms = max(d["close_ms"] for d in grp)
+        entry_execs = [e for d in grp for e in d["entry_execs"]]
+        exit_execs = [e for d in grp for e in d["exit_execs"]]
+        entry_gross_fee = sum(d["entry_gross_fee"] for d in grp)
+        exit_gross_fee = sum(d["exit_gross_fee"] for d in grp)
+
         # Detect MNT token fee discount (25% UTA fee discount -> saved = paid * (0.25 / 0.75))
         entry_mnt = any(str(e.get("feeCurrency") or "").upper() == "MNT" for e in entry_execs)
         exit_mnt = any(str(e.get("feeCurrency") or "").upper() == "MNT" for e in exit_execs)
         entry_disc = round(entry_gross_fee * (0.25 / 0.75), 6) if entry_mnt and entry_gross_fee > 0 else 0.0
         exit_disc = round(exit_gross_fee * (0.25 / 0.75), 6) if exit_mnt and exit_gross_fee > 0 else 0.0
 
-        entry_is_maker = any(bool(e.get("isMaker")) for e in entry_execs)
-        exit_is_maker = any(bool(e.get("isMaker")) for e in exit_execs)
+        en_makers = any(bool(e.get("isMaker")) for e in entry_execs)
+        en_takers = any(not bool(e.get("isMaker")) for e in entry_execs)
+        ex_makers = any(bool(e.get("isMaker")) for e in exit_execs)
+        ex_takers = any(not bool(e.get("isMaker")) for e in exit_execs)
+        entry_is_maker = en_makers and not en_takers
+        exit_is_maker = ex_makers and not ex_takers
+        entry_mode_code = "MIXED" if (en_makers and en_takers) else ("LIMIT_MAKER" if en_makers else "MARKET_TAKER")
+        exit_mode_code = "MIXED" if (ex_makers and ex_takers) else ("LIMIT_MAKER" if ex_makers else "MARKET_TAKER")
         entry_bps = (entry_gross_fee / entry_notional * 10_000) if entry_notional > 0 else 0.0
         exit_bps = (exit_gross_fee / exit_notional * 10_000) if exit_notional > 0 else 0.0
 
@@ -784,11 +888,12 @@ def normalize_bybit_closed_trades(
         entry_net_fee = round(max(0.0, entry_gross_fee - entry_rebate), 6)
         exit_net_fee = round(max(0.0, exit_gross_fee - exit_rebate), 6)
 
-        raw_closed_pnl = float(row.get("closedPnl") or 0.0)
+        raw_closed_pnl = sum(d["closed_pnl"] for d in grp)
         total_rebate = round(entry_rebate + exit_rebate, 6)
         gross_pnl = round(raw_closed_pnl + total_fee, 6)
         book_pnl = round(raw_closed_pnl + funding_pnl, 6)
         net_pnl = round(book_pnl + total_rebate, 6)
+        is_partial_bb = len(grp) > 1 or any(d["qty"] < d["row_qty"] for d in grp)
 
         sym = _normalize_bybit_symbol(raw_sym)
         records.append(
@@ -799,7 +904,7 @@ def normalize_bybit_closed_trades(
                 "venue_name_zh": "Bybit",
                 "symbol": sym,
                 "side": side,
-                "qty": qty,
+                "qty": round(qty, 6),
                 "open_time_ms": open_ms,
                 "close_time_ms": close_ms,
                 "gross_pnl_usd": round(gross_pnl, 4),
@@ -811,13 +916,13 @@ def normalize_bybit_closed_trades(
                 "net_fee_usd": round(entry_net_fee + exit_net_fee, 4),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
-                "is_partial_close": bool(float(row.get("closedSize") or 0) < float(row.get("qty") or 0)),
+                "is_partial_close": is_partial_bb,
                 "entry_leg": {
                     "role": "MAKER" if entry_is_maker else "TAKER",
-                    "mode_code": "LIMIT_MAKER" if entry_is_maker else "MARKET_TAKER",
+                    "mode_code": entry_mode_code,
                     "fee_bps": round(entry_bps, 2),
                     "time_ms": open_ms,
-                    "avg_price": entry_px,
+                    "avg_price": round(entry_px, 6),
                     "notional_usd": round(entry_notional, 2),
                     "gross_fee_usd": round(entry_gross_fee, 4),
                     "discount_saved_usd": round(entry_disc, 4),
@@ -830,10 +935,10 @@ def normalize_bybit_closed_trades(
                 },
                 "exit_leg": {
                     "role": "MAKER" if exit_is_maker else "TAKER",
-                    "mode_code": "LIMIT_MAKER" if exit_is_maker else "MARKET_TAKER",
+                    "mode_code": exit_mode_code,
                     "fee_bps": round(exit_bps, 2),
                     "time_ms": close_ms,
-                    "avg_price": exit_px,
+                    "avg_price": round(exit_px, 6),
                     "notional_usd": round(exit_notional, 2),
                     "gross_fee_usd": round(exit_gross_fee, 4),
                     "discount_saved_usd": round(exit_disc, 4),

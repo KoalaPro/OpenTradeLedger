@@ -644,8 +644,164 @@ def normalize_hyperliquid_closed_trades(
         fid = str(fr.get("hash") or f"fund_{coin}_{ts}_{idx}")
         funding_by_coin.setdefault(coin, []).append({"_id": fid, "time": ts, "usdc": usdc})
 
-    open_lots: dict[str, dict[str, float]] = {}
+    open_lots: dict[str, dict[str, Any]] = {}
     records: list[dict[str, Any]] = []
+
+    def _emit_hl_record(
+        *,
+        coin_key: str,
+        raw_coin: str,
+        trade_side: str,
+        qty: float,
+        open_ms: int,
+        close_ms: int,
+        entry_px: float,
+        exit_px: float,
+        entry_notional: float,
+        exit_notional: float,
+        entry_gross_fee: float,
+        exit_gross_fee: float,
+        entry_rebate: float,
+        exit_rebate: float,
+        en_known: bool,
+        en_makers: bool,
+        en_takers: bool,
+        ex_makers: bool,
+        ex_takers: bool,
+        closed_pnl: float,
+        tid_str: str,
+        is_partial: bool,
+    ) -> None:
+        funding_pnl = 0.0
+        for fl in funding_by_coin.get(coin_key, []):
+            if fl["_id"] in consumed_funding:
+                continue
+            if open_ms - 5_000 <= fl["time"] <= close_ms + 5_000:
+                consumed_funding.add(fl["_id"])
+                funding_pnl += float(fl["usdc"])
+
+        total_fee = round(entry_gross_fee + exit_gross_fee, 6)
+        total_rebate = round(entry_rebate + exit_rebate, 6)
+        net_fee = round(total_fee - total_rebate, 6)
+        book_pnl = round(closed_pnl - total_fee + funding_pnl, 6)
+        net_pnl = round(book_pnl + total_rebate, 6)
+
+        entry_bps = (entry_gross_fee / entry_notional * 10_000) if entry_notional > 0 else 0.0
+        exit_bps = (exit_gross_fee / exit_notional * 10_000) if exit_notional > 0 else 0.0
+        sym = _norm_hl_symbol(raw_coin)
+        settled_str = _fmt_bj_ms(close_ms) if total_rebate > 0 else ""
+        en_is_maker = en_makers and not en_takers
+        ex_is_maker = ex_makers and not ex_takers
+        en_mode = "MIXED" if (en_makers and en_takers) else ("LIMIT_MAKER" if en_makers else "MARKET_TAKER")
+        ex_mode = "MIXED" if (ex_makers and ex_takers) else ("LIMIT_MAKER" if ex_makers else "MARKET_TAKER")
+
+        records.append(
+            {
+                "trade_id": f"hl_{tid_str}_{close_ms}",
+                "venue_id": "hyperliquid",
+                "venue_name": "Hyperliquid",
+                "venue_name_zh": "Hyperliquid",
+                "symbol": sym,
+                "side": trade_side,
+                "qty": round(qty, 8),
+                "open_time_ms": open_ms,
+                "close_time_ms": close_ms,
+                "gross_pnl_usd": round(closed_pnl, 4),
+                "funding_pnl_usd": round(funding_pnl, 4),
+                "book_pnl_usd": round(book_pnl, 4),
+                "total_fee_usd": round(total_fee, 4),
+                "total_rebate_usd": round(total_rebate, 4),
+                "total_discount_saved_usd": 0.0,
+                "net_fee_usd": round(max(0.0, net_fee), 4),
+                "net_pnl_usd": round(net_pnl, 4),
+                "rebate_status": "SETTLED",
+                "is_partial_close": is_partial,
+                "entry_leg": {
+                    "role": "MAKER" if en_is_maker else "TAKER",
+                    "mode_code": en_mode,
+                    "fee_known": en_known,
+                    "fee_bps": round(entry_bps, 2) if en_known else None,
+                    "time_ms": open_ms,
+                    "avg_price": round(entry_px, 6),
+                    "notional_usd": round(entry_notional, 2),
+                    "gross_fee_usd": round(entry_gross_fee, 4),
+                    "discount_saved_usd": 0.0,
+                    "discount_asset": "",
+                    "rebate_usd": round(entry_rebate, 4),
+                    "rebate_pct": 100.0 if entry_rebate > 0 and entry_gross_fee == 0 else (
+                        round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else 0.0
+                    ),
+                    "net_fee_usd": round(max(0.0, entry_gross_fee - entry_rebate), 4),
+                    "rebate_status": "SETTLED",
+                    "settled_at": settled_str,
+                },
+                "exit_leg": {
+                    "role": "MAKER" if ex_is_maker else "TAKER",
+                    "mode_code": ex_mode,
+                    "fee_known": True,
+                    "fee_bps": round(exit_bps, 2),
+                    "time_ms": close_ms,
+                    "avg_price": round(exit_px, 6),
+                    "notional_usd": round(exit_notional, 2),
+                    "gross_fee_usd": round(exit_gross_fee, 4),
+                    "discount_saved_usd": 0.0,
+                    "discount_asset": "",
+                    "rebate_usd": round(exit_rebate, 4),
+                    "rebate_pct": 100.0 if exit_rebate > 0 and exit_gross_fee == 0 else (
+                        round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else 0.0
+                    ),
+                    "net_fee_usd": round(max(0.0, exit_gross_fee - exit_rebate), 4),
+                    "rebate_status": "SETTLED",
+                    "settled_at": settled_str,
+                },
+            }
+        )
+
+    def _flush_hl_lot(coin_key: str, lot: dict[str, Any], *, full_close: bool) -> None:
+        exits = lot.get("exits") or []
+        if not exits:
+            return
+        closed_q = sum(float(x["sz"]) for x in exits)
+        open_q = float(lot["qty"])
+        alloc_ratio = 1.0 if (full_close or open_q <= 1e-12) else min(1.0, closed_q / open_q)
+        open_ms = int(lot["open_ms"])
+        close_ms = max(int(x["ts"]) for x in exits)
+        entry_notional = float(lot["notional"]) * alloc_ratio
+        entry_px = (float(lot["notional"]) / open_q) if open_q > 0 else float(exits[0]["px"])
+        entry_gross_fee = float(lot["gross_fee"]) * alloc_ratio
+        entry_rebate = float(lot["rebate"]) * alloc_ratio
+        exit_notional = sum(float(x["notional"]) for x in exits)
+        exit_px = (exit_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
+        exit_gross_fee = sum(float(x["fee_paid"]) for x in exits)
+        exit_rebate = sum(float(x["maker_rebate"]) for x in exits)
+        closed_pnl_sum = sum(float(x["closed_pnl"]) for x in exits)
+        distinct_oids = {str(x["oid"]) for x in exits if x.get("oid")}
+        distinct_ts = {int(x["ts"]) for x in exits}
+        is_partial = (not full_close) or len(distinct_oids) > 1 or (len(exits) > 1 and len(distinct_ts) > 1)
+        _emit_hl_record(
+            coin_key=coin_key,
+            raw_coin=str(lot["raw_coin"]),
+            trade_side=str(exits[-1]["trade_side"]),
+            qty=closed_q,
+            open_ms=open_ms,
+            close_ms=close_ms,
+            entry_px=entry_px,
+            exit_px=exit_px,
+            entry_notional=entry_notional,
+            exit_notional=exit_notional,
+            entry_gross_fee=entry_gross_fee,
+            exit_gross_fee=exit_gross_fee,
+            entry_rebate=entry_rebate,
+            exit_rebate=exit_rebate,
+            en_known=True,
+            en_makers=bool(lot["maker_notional"] > 0),
+            en_takers=bool(lot["taker_notional"] > 0),
+            ex_makers=any(bool(x["is_maker"]) for x in exits),
+            ex_takers=any(not bool(x["is_maker"]) for x in exits),
+            closed_pnl=closed_pnl_sum,
+            tid_str=str(exits[-1]["tid_str"]),
+            is_partial=is_partial,
+        )
 
     for idx, fill in enumerate(sorted_fills):
         raw_coin = str(fill.get("coin") or "").strip()
@@ -664,28 +820,37 @@ def normalize_hyperliquid_closed_trades(
         dir_str = str(fill.get("dir") or "").strip()
         closed_pnl = float(fill.get("closedPnl") or 0.0)
         side_tok = str(fill.get("side") or "").upper()
+        tid_str = str(fill.get("tid") or fill.get("oid") or idx)
+        oid_str = str(fill.get("oid") or "").strip()
 
         is_close = ("Close" in dir_str) or (">" in dir_str) or (abs(closed_pnl) > 1e-9)
         if not is_close:
             lot = open_lots.setdefault(
                 coin_key,
                 {
+                    "raw_coin": raw_coin,
                     "qty": 0.0,
+                    "closed_qty": 0.0,
                     "notional": 0.0,
                     "gross_fee": 0.0,
                     "rebate": 0.0,
                     "open_ms": float(ts),
                     "maker_notional": 0.0,
+                    "taker_notional": 0.0,
+                    "exits": [],
                 },
             )
-            if lot["qty"] <= 1e-12:
+            if (lot["qty"] - lot["closed_qty"]) <= 1e-12 and not lot["exits"]:
                 lot["open_ms"] = float(ts)
+            lot["raw_coin"] = raw_coin
             lot["qty"] += sz
             lot["notional"] += px * sz
             lot["gross_fee"] += fee_paid
             lot["rebate"] += maker_rebate
             if not crossed:
                 lot["maker_notional"] += px * sz
+            else:
+                lot["taker_notional"] += px * sz
             continue
 
         # Determine closed trade direction: closing Long sells ("A"), closing Short buys ("B")
@@ -697,119 +862,96 @@ def normalize_hyperliquid_closed_trades(
             trade_side = "LONG" if side_tok in {"A", "SELL"} else "SHORT"
 
         lot = open_lots.get(coin_key)
-        if lot and lot["qty"] > 1e-12:
-            alloc_ratio = min(1.0, sz / lot["qty"])
-            open_ms = int(lot["open_ms"])
-            entry_notional = lot["notional"] * alloc_ratio
-            entry_px = (lot["notional"] / lot["qty"]) if lot["qty"] > 0 else px
-            entry_gross_fee = lot["gross_fee"] * alloc_ratio
-            entry_rebate = lot["rebate"] * alloc_ratio
-            entry_is_maker = lot["maker_notional"] >= (lot["notional"] * 0.5)
-            lot["qty"] = max(0.0, lot["qty"] - sz)
-            lot["notional"] = max(0.0, lot["notional"] - entry_notional)
-            lot["gross_fee"] = max(0.0, lot["gross_fee"] - entry_gross_fee)
-            lot["rebate"] = max(0.0, lot["rebate"] - entry_rebate)
-            lot["maker_notional"] = max(0.0, lot["maker_notional"] * (1.0 - alloc_ratio))
+        rem_open_q = (float(lot["qty"]) - float(lot["closed_qty"])) if lot else 0.0
+        if lot and rem_open_q > 1e-12:
+            if sz <= rem_open_q + 1e-9:
+                lot["exits"].append(
+                    {
+                        "sz": sz,
+                        "px": px,
+                        "notional": px * sz,
+                        "fee_paid": fee_paid,
+                        "maker_rebate": maker_rebate,
+                        "closed_pnl": closed_pnl,
+                        "is_maker": not crossed,
+                        "ts": ts,
+                        "oid": oid_str,
+                        "tid_str": tid_str,
+                        "trade_side": trade_side,
+                    }
+                )
+                lot["closed_qty"] += sz
+                if float(lot["qty"]) - float(lot["closed_qty"]) <= 1e-9:
+                    _flush_hl_lot(coin_key, lot, full_close=True)
+                    open_lots.pop(coin_key, None)
+            else:
+                close_sh = rem_open_q / sz
+                open_sh = 1.0 - close_sh
+                lot["exits"].append(
+                    {
+                        "sz": rem_open_q,
+                        "px": px,
+                        "notional": px * rem_open_q,
+                        "fee_paid": fee_paid * close_sh,
+                        "maker_rebate": maker_rebate * close_sh,
+                        "closed_pnl": closed_pnl,
+                        "is_maker": not crossed,
+                        "ts": ts,
+                        "oid": oid_str,
+                        "tid_str": tid_str,
+                        "trade_side": trade_side,
+                    }
+                )
+                lot["closed_qty"] = float(lot["qty"])
+                _flush_hl_lot(coin_key, lot, full_close=True)
+                rem_sz = sz - rem_open_q
+                open_lots[coin_key] = {
+                    "raw_coin": raw_coin,
+                    "qty": rem_sz,
+                    "closed_qty": 0.0,
+                    "notional": px * rem_sz,
+                    "gross_fee": fee_paid * open_sh,
+                    "rebate": maker_rebate * open_sh,
+                    "open_ms": float(ts),
+                    "maker_notional": (px * rem_sz) if not crossed else 0.0,
+                    "taker_notional": (px * rem_sz) if crossed else 0.0,
+                    "exits": [],
+                }
         else:
-            open_ms = ts
-            # Infer entry price from closedPnl when opening fill predates history window
             if sz > 0:
                 entry_px = (px - closed_pnl / sz) if trade_side == "LONG" else (px + closed_pnl / sz)
                 if entry_px <= 0:
                     entry_px = px
             else:
                 entry_px = px
-            entry_notional = entry_px * sz
-            entry_gross_fee = 0.0
-            entry_rebate = 0.0
-            entry_is_maker = False
+            _emit_hl_record(
+                coin_key=coin_key,
+                raw_coin=raw_coin,
+                trade_side=trade_side,
+                qty=sz,
+                open_ms=ts,
+                close_ms=ts,
+                entry_px=entry_px,
+                exit_px=px,
+                entry_notional=entry_px * sz,
+                exit_notional=px * sz,
+                entry_gross_fee=0.0,
+                exit_gross_fee=fee_paid,
+                entry_rebate=0.0,
+                exit_rebate=maker_rebate,
+                en_known=False,
+                en_makers=False,
+                en_takers=False,
+                ex_makers=not crossed,
+                ex_takers=crossed,
+                closed_pnl=closed_pnl,
+                tid_str=tid_str,
+                is_partial=False,
+            )
 
-        exit_notional = px * sz
-        exit_gross_fee = fee_paid
-        exit_rebate = maker_rebate
-        exit_is_maker = not crossed
-
-        funding_pnl = 0.0
-        for fl in funding_by_coin.get(coin_key, []):
-            if fl["_id"] in consumed_funding:
-                continue
-            if open_ms - 5_000 <= fl["time"] <= ts + 5_000:
-                consumed_funding.add(fl["_id"])
-                funding_pnl += float(fl["usdc"])
-
-        total_fee = round(entry_gross_fee + exit_gross_fee, 6)
-        total_rebate = round(entry_rebate + exit_rebate, 6)
-        net_fee = round(total_fee - total_rebate, 6)
-        book_pnl = round(closed_pnl - total_fee + funding_pnl, 6)
-        net_pnl = round(book_pnl + total_rebate, 6)
-
-        entry_bps = (entry_gross_fee / entry_notional * 10_000) if entry_notional > 0 else 0.0
-        exit_bps = (exit_gross_fee / exit_notional * 10_000) if exit_notional > 0 else 0.0
-        tid_str = str(fill.get("tid") or fill.get("oid") or idx)
-        sym = _norm_hl_symbol(raw_coin)
-        settled_str = _fmt_bj_ms(ts) if total_rebate > 0 else ""
-
-        records.append(
-            {
-                "trade_id": f"hl_{tid_str}_{ts}",
-                "venue_id": "hyperliquid",
-                "venue_name": "Hyperliquid",
-                "venue_name_zh": "Hyperliquid",
-                "symbol": sym,
-                "side": trade_side,
-                "qty": sz,
-                "open_time_ms": open_ms,
-                "close_time_ms": ts,
-                "gross_pnl_usd": round(closed_pnl, 4),
-                "funding_pnl_usd": round(funding_pnl, 4),
-                "book_pnl_usd": round(book_pnl, 4),
-                "total_fee_usd": round(total_fee, 4),
-                "total_rebate_usd": round(total_rebate, 4),
-                "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(max(0.0, net_fee), 4),
-                "net_pnl_usd": round(net_pnl, 4),
-                "rebate_status": "SETTLED",
-                "is_partial_close": bool(lot and lot["qty"] > 1e-9),
-                "entry_leg": {
-                    "role": "MAKER" if entry_is_maker else "TAKER",
-                    "mode_code": "LIMIT_MAKER" if entry_is_maker else "MARKET_TAKER",
-                    "fee_known": lot is not None,
-                    "fee_bps": round(entry_bps, 2) if lot is not None else None,
-                    "time_ms": open_ms,
-                    "avg_price": round(entry_px, 6),
-                    "notional_usd": round(entry_notional, 2),
-                    "gross_fee_usd": round(entry_gross_fee, 4),
-                    "discount_saved_usd": 0.0,
-                    "discount_asset": "",
-                    "rebate_usd": round(entry_rebate, 4),
-                    "rebate_pct": 100.0 if entry_rebate > 0 and entry_gross_fee == 0 else (
-                        round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else 0.0
-                    ),
-                    "net_fee_usd": round(max(0.0, entry_gross_fee - entry_rebate), 4),
-                    "rebate_status": "SETTLED",
-                    "settled_at": settled_str,
-                },
-                "exit_leg": {
-                    "role": "MAKER" if exit_is_maker else "TAKER",
-                    "mode_code": "LIMIT_MAKER" if exit_is_maker else "MARKET_TAKER",
-                    "fee_known": True,
-                    "fee_bps": round(exit_bps, 2),
-                    "time_ms": ts,
-                    "avg_price": round(px, 6),
-                    "notional_usd": round(exit_notional, 2),
-                    "gross_fee_usd": round(exit_gross_fee, 4),
-                    "discount_saved_usd": 0.0,
-                    "discount_asset": "",
-                    "rebate_usd": round(exit_rebate, 4),
-                    "rebate_pct": 100.0 if exit_rebate > 0 and exit_gross_fee == 0 else (
-                        round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else 0.0
-                    ),
-                    "net_fee_usd": round(max(0.0, exit_gross_fee - exit_rebate), 4),
-                    "rebate_status": "SETTLED",
-                    "settled_at": settled_str,
-                },
-            }
-        )
+    for ck_rem, lot_rem in list(open_lots.items()):
+        if lot_rem.get("exits"):
+            _flush_hl_lot(ck_rem, lot_rem, full_close=False)
 
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)
     return records
