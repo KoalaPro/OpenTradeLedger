@@ -29,16 +29,16 @@ OpenTradeLedger/
 ├── backend/
 │   ├── src/opentradeledger/
 │   │   ├── adapters/        # 11 大交易所全独立包（各自含 client.py / sync.py / accounting.py）
-│   │   ├── api/             # FastAPI 路由层（账本聚合、多账号配置、鉴权、公开盯盘、OTA 热更新）
+│   │   ├── api/             # FastAPI 路由层（app.py 核心装配、routes_exchanges.py 多账号路由、schemas.py、http_helpers.py）
 │   │   ├── core/            # 统一领域模型、account_partition 多账号分区代理与同步/聚合服务
 │   │   ├── demo/            # 内置 100% 脱敏模拟数据集
 │   │   ├── security/        # 只读请求拦截器、Fernet 多账号密钥保险箱、scrypt 会话锁
 │   │   ├── services/        # SyncManager、LedgerService、AI 复盘、Bark 通知、公开盯盘、OTA 升级
 │   │   └── storage/         # SQLite 按 venue_id 物理分区存储与自动迁移
-│   └── tests/               # 后端单元测试与隐私/架构 AST 守卫测试
+│   └── tests/               # 按业务领域划分的后端单元测试与隐私/架构 AST 守卫测试
 ├── web/
 │   └── src/
-│       ├── components/      # 细线账本通用组件、常驻快捷顶栏、下划线滑块页签与圆标交易对矢量图库
+│       ├── components/      # 细线账本通用组件、settings/ 设置页独立弹窗与卡片组件、快捷顶栏与交易对圆标图库
 │       ├── pages/           # 总览、合约交易、收益分析、成本与复盘、扩展模块、双章均衡设置页六大页面
 │       ├── styles/          # 曜石暗色 / 深海蓝 / 极简浅色主题令牌、字号标尺与高阻尼桌面微动效
 │       ├── lib/             # API 客户端、7 币种实时汇率换算、聚光涟漪与工具函数
