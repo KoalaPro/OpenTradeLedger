@@ -12,7 +12,11 @@ from opentradeledger.adapters.base import (
     VenueLedgerBundle,
     VenueStockBundle,
 )
-from opentradeledger.adapters.hyperliquid.client import _norm_hl_symbol, normalize_hyperliquid_closed_trades
+from opentradeledger.adapters.hyperliquid.client import (
+    _norm_hl_symbol,
+    normalize_hyperliquid_closed_trades,
+    resolve_hyperliquid_spot_price,
+)
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -30,8 +34,13 @@ if TYPE_CHECKING:
 def extract_hyperliquid_spot_prices(store: "LedgerStore") -> dict[str, float]:
     snap = store.venue_scope("hyperliquid").get_kv("snapshot")
     out: dict[str, float] = {}
-    if isinstance(snap, dict) and isinstance(snap.get("tickers"), dict):
-        for sym, raw_px in (snap.get("tickers") or {}).items():
+    if not isinstance(snap, dict):
+        return out
+    src_key = "spot_tickers" if isinstance(snap.get("spot_tickers"), dict) and (snap.get("has_spot_meta") or snap.get("spot_tickers")) else (
+        "tickers" if not snap.get("has_spot_meta") and not snap.get("has_at_mids") else ""
+    )
+    if src_key and isinstance(snap.get(src_key), dict):
+        for sym, raw_px in (snap.get(src_key) or {}).items():
             try:
                 px = float(raw_px)
                 if px > 0:
@@ -89,13 +98,23 @@ def build_hyperliquid_venue_ledger(
     if not isinstance(snap, dict):
         return None
 
-    px_map = {**(global_spot_prices or {}), **extract_hyperliquid_spot_prices(store)}
+    perp_tickers = snap.get("tickers") if isinstance(snap.get("tickers"), dict) else {}
+    perp_px_map: dict[str, float] = {**(global_spot_prices or {})}
+    for sym, raw_px in perp_tickers.items():
+        try:
+            px_v = float(raw_px)
+            if px_v > 0:
+                perp_px_map[str(sym).strip().upper()] = px_v
+        except (TypeError, ValueError):
+            continue
+
     ch = snap.get("clearinghouse") if isinstance(snap.get("clearinghouse"), dict) else {}
     ms = ch.get("marginSummary") if isinstance(ch.get("marginSummary"), dict) else {}
     perp_equity_usd = float(ms.get("accountValue") or 0.0)
     withdrawable_usd = float(ch.get("withdrawable") or ms.get("withdrawable") or perp_equity_usd)
 
     raw_spot_rows: list[tuple[str, float, float, str]] = []
+    wallet_spot_prices: dict[str, float] = {}
     spot_equity_usd = 0.0
     spot = snap.get("spot") if isinstance(snap.get("spot"), dict) else {}
     for bal in spot.get("balances") or []:
@@ -105,7 +124,14 @@ def build_hyperliquid_venue_ledger(
         qty = float(bal.get("total") or 0.0)
         if not ccy or qty <= 0:
             continue
-        usd_val = qty if ccy in STABLECOINS else (qty * float(px_map.get(ccy, 0.0)))
+        if ccy in STABLECOINS:
+            usd_val = qty
+            wallet_spot_prices[ccy] = 1.0
+        else:
+            unit_px = resolve_hyperliquid_spot_price(bal, snap)
+            usd_val = qty * unit_px
+            if unit_px > 0:
+                wallet_spot_prices[ccy] = unit_px
         spot_equity_usd += usd_val
         raw_spot_rows.append((ccy, qty, usd_val, "SPOT"))
 
@@ -132,7 +158,7 @@ def build_hyperliquid_venue_ledger(
         lev = float(lev_obj.get("value") or 1.0) if isinstance(lev_obj, dict) else float(lev_obj or 1.0)
         entry_px = float(pos.get("entryPx") or 0.0)
         notional = abs(float(pos.get("positionValue") or (abs(szi) * entry_px)))
-        mark_px = (notional / abs(szi)) if abs(szi) > 0 and notional > 0 else float(px_map.get(raw_coin.upper(), entry_px))
+        mark_px = (notional / abs(szi)) if abs(szi) > 0 and notional > 0 else float(perp_px_map.get(raw_coin.upper(), entry_px))
         upnl = round(float(pos.get("unrealizedPnl") or 0.0), 2)
         margin_used = float(pos.get("marginUsed") or (notional / max(1.0, lev)))
         roi_pct = round((upnl / margin_used) * 100.0, 2) if margin_used > 0 else 0.0
@@ -236,7 +262,7 @@ def build_hyperliquid_venue_ledger(
         venue_id="hyperliquid",
         venue_name=meta.display_name,
         color_token=meta.color_token,
-        spot_prices=px_map,
+        spot_prices=wallet_spot_prices,
         excluded_symbols=set(),
     )
     stock_perps = build_venue_stock_perpetuals(

@@ -166,7 +166,7 @@ export const en: Record<MessageKey, string> = {
   st_empty_holdings: 'No spot equity or tokenized stock holdings',
 
   set_ex_title: 'Read-Only Exchange Adapters',
-  set_ex_sub: 'Encrypted locally with Fernet · Strict GET-only guard (no trade or withdrawal access)',
+  set_ex_sub: 'Encrypted locally with Fernet · Strict read-only endpoint guard (no trade or withdrawal access)',
   set_add_btn: 'Add Exchange',
   set_connected: 'Connected',
   set_not_configured: 'Not configured',

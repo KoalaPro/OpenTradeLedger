@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.htx.client import htx_match_realized_pnl, htx_match_unique_key
 from opentradeledger.core.venue_primitives import STABLECOINS
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
 
 HTX_MERGE_SPECS = {
-    "matches": lambda r: str(r.get("match_id") or r.get("id") or f"{r.get('order_id')}_{r.get('create_date')}"),
+    "matches": lambda r: htx_match_unique_key(r),
     "financials": lambda r: str(r.get("id") or f"{r.get('ts')}_{r.get('type')}_{r.get('amount')}"),
     "deposits": lambda r: str(r.get("id") or r.get("tx-hash") or f"{r.get('created-at')}_{r.get('amount')}"),
     "withdrawals": lambda r: str(r.get("id") or r.get("tx-hash") or f"{r.get('created-at')}_{r.get('amount')}"),
@@ -46,7 +47,7 @@ def extract_htx_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, tu
         1
         for m in matches
         if isinstance(m, dict)
-        and (str(m.get("offset") or "").lower() != "open" or abs(float(m.get("offset_profitloss") or 0.0)) > 1e-9)
+        and (str(m.get("offset") or "").lower() != "open" or abs(htx_match_realized_pnl(m)) > 1e-9)
     )
     return round(equity_usd, 4), open_count > 0, (open_count, closed_cnt, len(matches))
 

@@ -8,6 +8,7 @@ Decouples `adapter_id` (exchange protocol, e.g. `'binance'`) from `account_id`
 from __future__ import annotations
 
 from decimal import Decimal
+import hashlib
 import re
 from typing import TYPE_CHECKING, Any, Mapping
 from uuid import uuid4
@@ -54,6 +55,38 @@ def mask_uid(uid: str) -> str:
     return f"{raw[:3]}***{raw[-4:]}"
 
 
+def deterministic_uid_suffix(adapter_id: str, remote_uid: str) -> str:
+    base = parse_adapter_id(adapter_id)
+    clean_uid = (remote_uid or "").strip().lower()
+    if not base or not clean_uid:
+        return ""
+    digest = hashlib.sha256(f"{base}:{clean_uid}".encode("utf-8")).hexdigest()[:8]
+    return digest
+
+
+def scope_journals_for_account(
+    journals: Mapping[str, Mapping[str, Any]] | None,
+    account_id: str,
+) -> dict[str, Mapping[str, Any]]:
+    """Return an isolated journal view containing strictly entries belonging to `account_id`."""
+    if not journals:
+        return {}
+    acct_id = (account_id or "").strip().lower()
+    if is_secondary_account_id(acct_id):
+        pref = f"{acct_id}{ACCOUNT_SEP}"
+        return {
+            str(k)[len(pref) :]: v
+            for k, v in journals.items()
+            if str(k).lower().startswith(pref) and isinstance(v, Mapping)
+        }
+    sec_pref = f"{acct_id}{ACCOUNT_SEP}"
+    return {
+        str(k): v
+        for k, v in journals.items()
+        if not str(k).lower().startswith(sec_pref) and isinstance(v, Mapping)
+    }
+
+
 def mint_account_id(
     adapter_id: str,
     occupied_ids: set[str],
@@ -81,7 +114,7 @@ def mint_account_id(
 
 
 class AccountIdentityError(RuntimeError):
-    """Raised when an account credential duplicates an active UID or mismatches a bound partition."""
+    """Raised when an account credential duplicates an active/archived UID or mismatches a bound partition."""
 
     def __init__(
         self,
@@ -108,6 +141,14 @@ class AccountIdentityError(RuntimeError):
             self.reason_zh = (
                 f"该 {ex_zh} 账号{uid_part_zh}已在账本中接入{lbl_part_zh}，请勿重复添加同一账号以免总净资产重复计算。"
             )
+        elif code == "ARCHIVED_ACCOUNT_UID_EXISTS":
+            self.reason = (
+                f"This {ex_en} account{uid_part_en} already has archived local history{lbl_part_en}. "
+                "Click 'Rebind' on the archived account row instead of adding a duplicate account."
+            )
+            self.reason_zh = (
+                f"该 {ex_zh} 账号{uid_part_zh}的本地历史记录已封存在{lbl_part_zh}中。请在该封存账号行点击「重新绑定」恢复连接，请勿重复添加以免总资产与本金翻倍。"
+            )
         elif code == "DUPLICATE_ACCOUNT_KEY":
             self.reason = (
                 f"This API key / address is already connected under {ex_en}{lbl_part_en}."
@@ -122,6 +163,14 @@ class AccountIdentityError(RuntimeError):
             )
             self.reason_zh = (
                 f"这组凭证属于另一个 {ex_zh} 账号{uid_part_zh}。更新密钥请使用原账号只读 Key；如需接入子账户或另一账号，请点击「+ 添加账号」独立绑定。"
+            )
+        elif code == "ACCOUNT_UID_UNAVAILABLE":
+            self.reason = (
+                f"Could not verify account UID from {ex_en} right now. "
+                f"To prevent mixing accounts, the bound account{uid_part_en} was kept unchanged. Retry when the identity endpoint recovers."
+            )
+            self.reason_zh = (
+                f"当前无法从 {ex_zh} 核验新密钥所属账号 UID。为防止混入其他账号资产与交易流水，原绑定账号{uid_part_zh}保持不变，请待身份接口恢复后重试。"
             )
         elif code == "INVALID_WALLET_ADDRESS":
             self.reason = "Invalid EVM wallet address — enter a 42-character 0x... public address (never enter a private key)."
@@ -227,13 +276,14 @@ def stamp_bundle_for_account(
     cred: "ExchangeCredentialRecord | None",
     remote_uid: str = "",
     account_role: str = "",
+    custom_label: str = "",
     sibling_count: int = 1,
     ordinal: int = 1,
     journals: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> "VenueLedgerBundle":
     acct_id = account_id.strip().lower()
     adapter_id = meta.venue_id.lower()
-    custom_lbl = (cred.label if cred else "") or ""
+    custom_lbl = (custom_label or (cred.label if cred else "") or "").strip()
     m_uid = mask_uid(remote_uid)
     eff_role = (account_role or (cred.account_role if cred else "") or "").strip().lower()
 
@@ -272,13 +322,16 @@ def stamp_bundle_for_account(
         if is_sec:
             orig_tid = str(tr.get("trade_id") or "")
             pref = f"{acct_id}__"
-            if orig_tid and not orig_tid.startswith(pref):
-                new_tid = f"{pref}{orig_tid}"
+            new_tid = orig_tid if orig_tid.startswith(pref) else (f"{pref}{orig_tid}" if orig_tid else "")
+            if new_tid:
                 tr["trade_id"] = new_tid
                 j_entry = j_map.get(new_tid)
                 if isinstance(j_entry, Mapping):
                     tr["tags"] = list(j_entry.get("tags") or [])
                     tr["note"] = str(j_entry.get("note") or "")
+                else:
+                    tr["tags"] = []
+                    tr["note"] = ""
 
     for pos in bundle.open_positions:
         pos["venue_id"] = acct_id

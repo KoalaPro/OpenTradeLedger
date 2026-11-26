@@ -513,7 +513,33 @@ export default function App() {
                   </div>
                 </AnimatedCollapse>
 
-                {(!preferencesReady || !data || data.range_key !== rangeKey) && (
+                {!data && visibleError && (
+                  <div
+                    role="alert"
+                    data-testid="dashboard-load-error-state"
+                    className="py-16 text-center space-y-3"
+                  >
+                    <p className="m-0 text-[13px] text-[var(--fg-2)]">
+                      {settings.locale === 'en'
+                        ? 'Could not load ledger dashboard right now.'
+                        : '当前暂时无法加载账本数据。'}
+                    </p>
+                    <button
+                      type="button"
+                      data-testid="dashboard-retry-btn"
+                      onClick={() => {
+                        setError('')
+                        setDashboardError('')
+                        void loadAll()
+                      }}
+                      className="otl-btn otl-btn-primary"
+                    >
+                      {settings.locale === 'en' ? 'Retry' : '重试'}
+                    </button>
+                  </div>
+                )}
+
+                {(!preferencesReady || !data || data.range_key !== rangeKey) && !(!data && visibleError) && (
                   <div role="status" className="py-20 text-center text-[13px] text-[var(--fg-3)]">
                     {settings.locale === 'en' ? 'Loading…' : '加载中…'}
                   </div>
@@ -638,6 +664,9 @@ export default function App() {
                           if (syncRes.committed === undefined) await api.upsertExchange(syncBody)
                           await loadAll()
                           onStep?.('done')
+                          if (syncRes.failed_subaccounts && syncRes.failed_subaccounts.length > 0) {
+                            return { failedSubaccounts: syncRes.failed_subaccounts }
+                          }
                         }}
                         onDeleteExchange={async (vid, keepData = false, expectedRevision) => {
                           await api.deleteExchange(vid, keepData, expectedRevision)

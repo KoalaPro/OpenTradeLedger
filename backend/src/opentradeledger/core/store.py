@@ -490,10 +490,18 @@ class LedgerStore:
         vid = venue_id.strip().lower()
         now_ms = int(time.time() * 1000)
         final_payload = dict(payload)
+        failed_fields = [
+            str(x)
+            for x in (final_payload.pop("_failed_fields", None) or ())
+            if x
+        ]
 
         if merge_history:
             existing = self.venue_scope(vid).get_kv("snapshot")
             if isinstance(existing, dict):
+                for failed_key in failed_fields:
+                    if failed_key in existing and existing[failed_key]:
+                        final_payload[failed_key] = existing[failed_key]
                 specs = dict(merge_specs) if merge_specs is not None else self._default_snapshot_merge_specs(vid)
                 for field, kfn in specs.items():
                     old_rows = existing.get(field) if isinstance(existing.get(field), list) else []
@@ -554,7 +562,10 @@ class LedgerStore:
             }
         if base_vid == "kucoin":
             return {
-                "history_positions": lambda r: str(r.get("closeId") or f"{r.get('positionId')}_{r.get('closeTimestamp')}_{r.get('symbol')}"),
+                "history_positions": lambda r: str(
+                    r.get("closeId")
+                    or f"{r.get('positionId')}_{r.get('closeTime') or r.get('closeTimestamp') or r.get('updatedAt')}_{r.get('symbol')}"
+                ),
                 "fills": lambda r: str(r.get("tradeId") or f"{r.get('orderId')}_{r.get('createdAt')}"),
                 "tx_history": lambda r: str(r.get("offset") or f"{r.get('time')}_{r.get('type')}_{r.get('amount')}"),
                 "deposits": lambda r: str(r.get("walletTxId") or f"{r.get('createdAt')}_{r.get('amount')}"),
@@ -569,7 +580,11 @@ class LedgerStore:
             }
         if base_vid == "htx":
             return {
-                "matches": lambda r: str(r.get("match_id") or r.get("id") or f"{r.get('order_id')}_{r.get('create_date')}"),
+                "matches": lambda r: (
+                    f"{r.get('id') or r.get('query_id')}_{r.get('match_id')}"
+                    if (r.get("id") or r.get("query_id")) and r.get("match_id")
+                    else str(r.get("id") or r.get("query_id") or r.get("match_id") or f"{r.get('order_id')}_{r.get('create_date')}")
+                ),
                 "financials": lambda r: str(r.get("id") or f"{r.get('ts')}_{r.get('type')}_{r.get('amount')}"),
                 "deposits": lambda r: str(r.get("id") or r.get("tx-hash") or f"{r.get('created-at')}_{r.get('amount')}"),
                 "withdrawals": lambda r: str(r.get("id") or r.get("tx-hash") or f"{r.get('created-at')}_{r.get('amount')}"),

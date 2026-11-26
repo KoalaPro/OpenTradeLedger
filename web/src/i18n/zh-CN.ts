@@ -164,7 +164,7 @@ export const zhCN = {
   st_empty_holdings: '当前无正股或股票代币持仓',
 
   set_ex_title: '交易所只读适配器',
-  set_ex_sub: '密钥本地 Fernet 加密存储 · 强制纯 GET 只读拦截，不具备下单或提币权限',
+  set_ex_sub: '密钥本地 Fernet 加密存储 · 本地严格只读白名单拦截，不具备下单或提币权限',
   set_add_btn: '添加交易所',
   set_connected: '已连接',
   set_not_configured: '未配置',

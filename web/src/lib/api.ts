@@ -220,6 +220,7 @@ export const api = {
     adapter_id?: string
     subaccounts?: DiscoveredSubaccount[]
     added_subaccounts?: string[]
+    failed_subaccounts?: Array<{ address: string; name: string; error?: string; error_zh?: string }>
     auth_status?: AuthStatusPayload
     venues?: Record<
       string,

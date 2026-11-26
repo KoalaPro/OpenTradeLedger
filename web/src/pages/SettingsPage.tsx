@@ -46,7 +46,9 @@ interface SettingsPageProps {
   onUpsertExchange: (
     body: ExchangeUpsertPayload,
     onStep?: (step: 'verifying' | 'syncing' | 'done') => void,
-  ) => Promise<void>
+  ) => Promise<{
+    failedSubaccounts?: Array<{ address: string; name: string; error?: string; error_zh?: string }>
+  } | void>
   onDeleteExchange: (venueId: string, keepData?: boolean, expectedRevision?: string) => Promise<void>
   onTestExchange: (venueId: string, isRetry?: boolean) => Promise<void>
   onToggleDemo: (enabled: boolean) => Promise<void>
@@ -214,7 +216,7 @@ export function SettingsPage({
           : `${ad.display_name} #${nextNum}`,
       )
     } else {
-      setLabel(acct?.credential?.label || ad.display_name)
+      setLabel(acct?.credential?.label || acct?.label || ad.display_name)
     }
     setApiKey('')
     setApiSecret('')
@@ -277,7 +279,7 @@ export function SettingsPage({
             .filter(s => selectedSubs[s.address])
             .map(s => ({ name: s.name, address: s.address }))
         : undefined
-      await onUpsertExchange(
+      const upsertOut = await onUpsertExchange(
         {
           venue_id: addingVenue,
           ...(isCreateNew
@@ -296,16 +298,31 @@ export function SettingsPage({
         step => setSubmitStep(step),
       )
       setSubmitStep('done')
-      flashOk(
-        isWalletMode
-          ? isZh
-            ? '链上地址验证通过，已完成本地保存与账单同步'
-            : 'Wallet address verified & ledger synced successfully'
-          : isZh
-            ? 'API 验证通过，已完成加密保存与数据同步'
-            : 'API verified, encrypted & synced successfully',
-        4000,
-      )
+      const failedSubs = upsertOut && typeof upsertOut === 'object' ? upsertOut.failedSubaccounts : undefined
+      if (failedSubs && failedSubs.length > 0) {
+        const failedSummary = failedSubs
+          .map(f => {
+            const shortA = `${f.address.slice(0, 6)}...${f.address.slice(-4)}`
+            return `${f.name} (${shortA})`
+          })
+          .join(', ')
+        setErrorMsg(
+          isZh
+            ? `主钱包已保存，但 ${failedSubs.length} 个子账户同步失败未能导入：${failedSummary}。请待接口恢复后通过「添加账号」单独接入。`
+            : `Main wallet saved, but ${failedSubs.length} sub-account(s) failed to sync and were not imported: ${failedSummary}. Retry via Add Account once upstream recovers.`,
+        )
+      } else {
+        flashOk(
+          isWalletMode
+            ? isZh
+              ? '链上地址验证通过，已完成本地保存与账单同步'
+              : 'Wallet address verified & ledger synced successfully'
+            : isZh
+              ? 'API 验证通过，已完成加密保存与数据同步'
+              : 'API verified, encrypted & synced successfully',
+          4000,
+        )
+      }
       const reduced =
         typeof window !== 'undefined' &&
         typeof window.matchMedia === 'function' &&
@@ -345,8 +362,10 @@ export function SettingsPage({
       const identityConflict =
         err instanceof ApiError &&
         (err.errorCode === 'DUPLICATE_ACCOUNT_UID' ||
+          err.errorCode === 'ARCHIVED_ACCOUNT_UID_EXISTS' ||
           err.errorCode === 'DUPLICATE_ACCOUNT_KEY' ||
-          err.errorCode === 'ACCOUNT_UID_MISMATCH')
+          err.errorCode === 'ACCOUNT_UID_MISMATCH' ||
+          err.errorCode === 'ACCOUNT_UID_UNAVAILABLE')
       const historyFailed =
         rolledBack && err.status !== 409 && err.errorCode !== 'LOCAL_SAVE_FAILED'
       const phase = historyFailed ? (isZh ? '历史同步失败。' : 'Historical sync failed.') : ''
@@ -560,11 +579,17 @@ export function SettingsPage({
               const passLabel =
                 ad.auth_mode === 'wallet_address'
                   ? isZh
-                    ? '免密钥 0x 地址只读'
-                    : 'Keyless 0x Read-Only'
-                  : ad.requires_passphrase
-                    ? t('set_passphrase_req')
-                    : 'GET-Only Signed API'
+                    ? '公开 /info 零密钥只读'
+                    : 'Public /info Keyless Read-Only'
+                  : ad.venue_id === 'htx'
+                    ? isZh
+                      ? '只读签名查询 API'
+                      : 'Read-Only Signed API'
+                    : ad.requires_passphrase
+                      ? t('set_passphrase_req')
+                      : isZh
+                        ? '纯 GET 只读签名 API'
+                        : 'GET-Only Signed API'
 
               if (accounts.length === 0) {
                 return (
@@ -602,12 +627,13 @@ export function SettingsPage({
                 const vStatus = getAccountVisualStatus(acct)
                 const roleBadge = formatRoleLabel(acct.account_role || acct.credential?.account_role, isZh)
                 const uidTag = acct.masked_uid || acct.credential?.masked_uid || ''
+                const rawSingleLbl = (acct.credential?.label || acct.label || '').trim()
                 const customLbl =
-                  acct.credential?.label &&
-                  acct.credential.label.toLowerCase() !== ad.display_name.toLowerCase() &&
-                  acct.credential.label.toLowerCase() !== (ad.display_name_zh || '').toLowerCase() &&
-                  acct.credential.label.toLowerCase() !== ad.venue_id.toLowerCase()
-                    ? acct.credential.label
+                  rawSingleLbl &&
+                  rawSingleLbl.toLowerCase() !== ad.display_name.toLowerCase() &&
+                  rawSingleLbl.toLowerCase() !== (ad.display_name_zh || '').toLowerCase() &&
+                  rawSingleLbl.toLowerCase() !== ad.venue_id.toLowerCase()
+                    ? rawSingleLbl
                     : ''
                 const maskedKey = acct.configured && acct.credential ? acct.credential.masked_api_key : ''
                 const errReason = isZh
@@ -716,7 +742,7 @@ export function SettingsPage({
                       const vStatus = getAccountVisualStatus(acct)
                       const roleBadge = formatRoleLabel(acct.account_role || acct.credential?.account_role, isZh)
                       const uidTag = acct.masked_uid || acct.credential?.masked_uid || ''
-                      const credLbl = (acct.credential?.label || '').trim()
+                      const credLbl = (acct.credential?.label || acct.label || '').trim()
                       const isDefaultCredLbl =
                         !credLbl ||
                         credLbl.toLowerCase() === ad.venue_id.toLowerCase() ||
@@ -1326,7 +1352,7 @@ export function SettingsPage({
                                 <span className="font-mono text-[var(--fg-3)]">{shortAddr}</span>
                               </span>
                               {sub.equity_usd && (
-                                <span className="font-mono text-[var(--fg-2)] whitespace-nowrap">
+                                <span className="font-mono text-[var(--fg-2)] whitespace-nowrap sensitive">
                                   {Number(sub.equity_usd).toFixed(2)} U
                                 </span>
                               )}

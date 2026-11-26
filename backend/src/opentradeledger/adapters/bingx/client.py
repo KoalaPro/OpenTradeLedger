@@ -35,11 +35,41 @@ BINGX_ALLOWED_GET_PATHS: tuple[str, ...] = (
     "/openApi/spot/v1/ticker/price",
     "/openApi/wallets/v1/capital/deposit/hisrec",
     "/openApi/wallets/v1/capital/withdraw/history",
+    "/openApi/api/v3/capital/deposit/hisrec",
+    "/openApi/api/v3/capital/withdraw/history",
 )
 
 
 class BingxApiError(RuntimeError):
     """Raised when BingX OpenAPI returns code != 0 or an HTTP error."""
+
+
+def parse_bingx_ts_ms(raw: Any) -> int:
+    if raw in (None, ""):
+        return 0
+    if isinstance(raw, (int, float)):
+        val = float(raw)
+        if val <= 0:
+            return 0
+        return int(val) if val > 1e10 else int(round(val * 1000.0))
+    s = str(raw).strip()
+    if not s:
+        return 0
+    try:
+        val = float(s)
+        if val <= 0:
+            return 0
+        return int(val) if val > 1e10 else int(round(val * 1000.0))
+    except ValueError:
+        pass
+    iso_s = f"{s[:-1]}+00:00" if s.endswith(("Z", "z")) else s
+    try:
+        dt = datetime.fromisoformat(iso_s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, int(round(dt.timestamp() * 1000.0)))
+    except ValueError:
+        return 0
 
 
 def _fmt_bj_ms(ms: int) -> str:
@@ -151,13 +181,49 @@ class BingxReadOnlyClient:
         return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
 
     async def get_fills(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": 500}
-        if since_ms > 0:
-            params["startTs"] = since_ms
-        res = await self.request_readonly("GET", "/openApi/swap/v2/trade/allFillOrders", params)
-        if isinstance(res, dict) and isinstance(res.get("fill_orders"), list):
-            return [r for r in res["fill_orders"] if isinstance(r, dict)]
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+        now_ms = self._clock_ms()
+        seven_days_ms = 7 * 86_400_000 - 60_000
+        merged: dict[str, dict[str, Any]] = {}
+        w_end = now_ms
+        max_windows = 1 if (since_ms > 0 and (now_ms - since_ms) <= seven_days_ms) else 4
+        for _ in range(max_windows):
+            if since_ms > 0 and w_end < since_ms:
+                break
+            w_start = max(since_ms, w_end - seven_days_ms) if since_ms > 0 else max(0, w_end - seven_days_ms)
+            params: dict[str, Any] = {
+                "tradingUnit": "COIN",
+                "startTs": w_start,
+                "endTs": w_end,
+                "limit": 500,
+            }
+            res = await self.request_readonly("GET", "/openApi/swap/v2/trade/allFillOrders", params)
+            rows = (
+                res.get("fill_orders")
+                if isinstance(res, dict) and isinstance(res.get("fill_orders"), list)
+                else (res if isinstance(res, list) else [])
+            )
+            valid_rows = [r for r in rows if isinstance(r, dict)]
+            if not valid_rows:
+                if since_ms == 0 and w_start > 0:
+                    w_end = w_start - 1
+                    continue
+                break
+            new_cnt = 0
+            in_bounds = False
+            for r in valid_rows:
+                fk = str(r.get("tradeId") or f"{r.get('orderId')}_{r.get('filledTm') or r.get('time')}")
+                if fk not in merged:
+                    merged[fk] = r
+                    new_cnt += 1
+                rts = parse_bingx_ts_ms(r.get("filledTm") or r.get("time") or r.get("updateTime"))
+                if w_start - 86_400_000 <= rts <= w_end + 86_400_000:
+                    in_bounds = True
+            if new_cnt == 0 and not in_bounds:
+                break
+            if w_start <= 0:
+                break
+            w_end = w_start - 1
+        return list(merged.values())
 
     async def get_spot_balances(self) -> list[dict[str, Any]]:
         res = await self.request_readonly("GET", "/openApi/spot/v1/account/balance")
@@ -192,11 +258,23 @@ class BingxReadOnlyClient:
         return prices
 
     async def get_deposits(self) -> list[dict[str, Any]]:
-        res = await self.request_readonly("GET", "/openApi/wallets/v1/capital/deposit/hisrec", {"limit": 200})
+        try:
+            res = await self.request_readonly("GET", "/openApi/wallets/v1/capital/deposit/hisrec", {"limit": 200})
+        except BingxApiError as exc:
+            if "http 404" in str(exc).lower():
+                res = await self.request_readonly("GET", "/openApi/api/v3/capital/deposit/hisrec", {"limit": 200})
+            else:
+                raise
         return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
 
     async def get_withdrawals(self) -> list[dict[str, Any]]:
-        res = await self.request_readonly("GET", "/openApi/wallets/v1/capital/withdraw/history", {"limit": 200})
+        try:
+            res = await self.request_readonly("GET", "/openApi/wallets/v1/capital/withdraw/history", {"limit": 200})
+        except BingxApiError as exc:
+            if "http 404" in str(exc).lower():
+                res = await self.request_readonly("GET", "/openApi/api/v3/capital/withdraw/history", {"limit": 200})
+            else:
+                raise
         return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
 
     async def get_commission_rate(self) -> dict[str, Any]:
@@ -207,13 +285,27 @@ class BingxReadOnlyClient:
 
     async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
         warnings: list[str] = []
+        failed_fields: list[str] = []
         swap_balances = await self.get_swap_balance()
+
+        def _is_fatal(exc: Exception) -> bool:
+            msg_low = str(exc).lower()
+            return (
+                isinstance(exc, httpx.TransportError)
+                or "http 5" in msg_low
+                or "http 429" in msg_low
+                or "code=100400" in msg_low
+                or "parameter" in msg_low
+            )
 
         async def _opt(name: str, coro: Any, default: Any) -> Any:
             try:
                 return await coro
             except Exception as exc:
+                if _is_fatal(exc):
+                    raise
                 warnings.append(f"{name}: {exc}")
+                failed_fields.append(name)
                 return default
 
         positions = await _opt("positions", self.get_positions(), [])
@@ -225,7 +317,7 @@ class BingxReadOnlyClient:
         withdrawals = await _opt("withdrawals", self.get_withdrawals(), [])
         commission = await _opt("commission", self.get_commission_rate(), {})
 
-        return {
+        out_snap: dict[str, Any] = {
             "venue_id": "bingx",
             "swap_balances": swap_balances,
             "positions": positions,
@@ -238,6 +330,9 @@ class BingxReadOnlyClient:
             "commission": commission,
             "warnings": warnings,
         }
+        if failed_fields:
+            out_snap["_failed_fields"] = failed_fields
+        return out_snap
 
 
 def normalize_bingx_closed_trades(
@@ -261,13 +356,13 @@ def normalize_bingx_closed_trades(
             continue
         if str(inc.get("incomeType") or "").upper() == "FUNDING_FEE":
             sym = normalize_bingx_symbol(str(inc.get("symbol") or ""))
-            ts = int(inc.get("time") or 0)
+            ts = parse_bingx_ts_ms(inc.get("time"))
             fid = str(inc.get("tranId") or f"bf_{sym}_{ts}_{idx}")
             funding_by_sym.setdefault(sym, []).append({"_id": fid, "time": ts, "val": float(inc.get("income") or 0.0)})
 
     sorted_fills = sorted(
         (f for f in fills if isinstance(f, dict)),
-        key=lambda r: int(r.get("filledTm") or r.get("time") or r.get("updateTime") or 0),
+        key=lambda r: parse_bingx_ts_ms(r.get("filledTm") or r.get("time") or r.get("updateTime")),
     )
 
     open_lots: dict[tuple[str, str], dict[str, float]] = {}
@@ -277,7 +372,7 @@ def normalize_bingx_closed_trades(
         sym = normalize_bingx_symbol(str(f.get("symbol") or ""))
         if not sym:
             continue
-        ts = int(f.get("filledTm") or f.get("time") or f.get("updateTime") or 0)
+        ts = parse_bingx_ts_ms(f.get("filledTm") or f.get("time") or f.get("updateTime"))
         px = float(f.get("price") or f.get("avgPrice") or 0.0)
         qty = abs(float(f.get("qty") or f.get("executedQty") or f.get("volume") or 0.0))
         if px <= 0 or qty <= 0:

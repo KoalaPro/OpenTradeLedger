@@ -111,22 +111,31 @@ class HyperliquidReadOnlyClient:
             out.append({"name": name, "address": addr, "equity_usd": eq_str})
         return out
 
-    async def get_all_mids(self) -> dict[str, float]:
+    async def get_raw_all_mids(self) -> dict[str, float]:
         res = await self.request_info({"type": "allMids"})
         if not isinstance(res, dict):
             return {}
-        mids: dict[str, float] = {}
+        out: dict[str, float] = {}
         for k, v in res.items():
-            sym = str(k or "").strip().upper()
-            if not sym or sym.startswith("@"):
+            raw_k = str(k or "").strip()
+            if not raw_k:
                 continue
+            norm_k = raw_k if raw_k.startswith("@") else raw_k.upper()
             try:
                 px = float(v)
                 if px > 0:
-                    mids[sym] = px
+                    out[norm_k] = px
             except (TypeError, ValueError):
                 continue
-        return mids
+        return out
+
+    async def get_all_mids(self) -> dict[str, float]:
+        raw = await self.get_raw_all_mids()
+        return {k: v for k, v in raw.items() if not k.startswith("@") and "/" not in k}
+
+    async def get_spot_meta(self) -> dict[str, Any]:
+        res = await self.request_info({"type": "spotMeta"})
+        return res if isinstance(res, dict) else {}
 
     async def get_user_fills(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
         if since_ms <= 0:
@@ -178,34 +187,153 @@ class HyperliquidReadOnlyClient:
 
     async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
         warnings: list[str] = []
+        failed_fields: list[str] = []
         clearinghouse = await self.get_clearinghouse_state()
+        spot = await self.get_spot_state()
+        raw_mids = await self.get_raw_all_mids()
+        fills = await self.get_user_fills(since_ms=since_ms)
+        funding = await self.get_user_funding(since_ms=since_ms)
+        ledger_updates = await self.get_ledger_updates(since_ms=since_ms)
 
-        async def _opt(name: str, coro: Any, default: Any) -> Any:
+        async def _opt_aux(name: str, coro: Any, default: Any) -> Any:
             try:
                 return await coro
             except Exception as exc:
+                msg_low = str(exc).lower()
+                if isinstance(exc, httpx.TransportError) or "http 5" in msg_low or "http 429" in msg_low:
+                    raise
                 warnings.append(f"{name}: {exc}")
+                failed_fields.append(name)
                 return default
 
-        spot = await _opt("spot", self.get_spot_state(), {})
-        mids = await _opt("mids", self.get_all_mids(), {})
-        fills = await _opt("fills", self.get_user_fills(since_ms=since_ms), [])
-        funding = await _opt("funding", self.get_user_funding(since_ms=since_ms), [])
-        ledger_updates = await _opt("ledger_updates", self.get_ledger_updates(since_ms=since_ms), [])
-        subaccounts = await _opt("subaccounts", self.get_subaccounts(), [])
+        spot_meta = await _opt_aux("spot_meta", self.get_spot_meta(), {})
+        subaccounts = await _opt_aux("subaccounts", self.get_subaccounts(), [])
 
-        return {
+        mids = {k: v for k, v in raw_mids.items() if not k.startswith("@") and "/" not in k}
+        spot_token_prices, spot_tickers, has_spot_meta = build_hyperliquid_spot_prices(raw_mids, spot_meta)
+        has_at_mids = any(k.startswith("@") for k in raw_mids)
+        if "spot_meta" in failed_fields:
+            failed_fields.extend(["spot_tickers", "spot_token_prices", "has_spot_meta"])
+
+        if since_ms <= 0 and len(fills) >= 2000:
+            warnings.append(
+                "userFills reached Hyperliquid Info API 2,000-fill return cap; fills older than the earliest returned row are not exposed via public /info."
+            )
+        if since_ms <= 0 and len(ledger_updates) >= 2000:
+            warnings.append(
+                "userNonFundingLedgerUpdates reached Hyperliquid Info API 2,000-row return cap."
+            )
+
+        out: dict[str, Any] = {
             "venue_id": "hyperliquid",
             "wallet_address": self.wallet_address,
             "clearinghouse": clearinghouse,
             "spot": spot,
             "tickers": mids,
+            "spot_tickers": spot_tickers,
+            "spot_token_prices": spot_token_prices,
+            "has_spot_meta": has_spot_meta,
+            "has_at_mids": has_at_mids,
             "fills": fills,
             "funding_history": funding,
             "ledger_updates": ledger_updates,
             "subaccounts": subaccounts,
             "warnings": warnings,
         }
+        if failed_fields:
+            out["_failed_fields"] = failed_fields
+        return out
+
+
+_HL_QUOTE_STABLES = {"USDC", "USDT", "USDH", "USD"}
+
+
+def build_hyperliquid_spot_prices(
+    raw_mids: dict[str, float],
+    spot_meta: dict[str, Any] | None,
+) -> tuple[dict[str, float], dict[str, float], bool]:
+    spot_by_token: dict[str, float] = {}
+    spot_by_coin: dict[str, float] = {}
+    has_spot_meta = False
+
+    for k, px in raw_mids.items():
+        if "/" in k and px > 0:
+            base_part, quote_part = k.split("/", 1)
+            if base_part.strip() and quote_part.strip().upper() in _HL_QUOTE_STABLES:
+                spot_by_coin[base_part.strip().upper()] = float(px)
+
+    if isinstance(spot_meta, dict):
+        tokens = spot_meta.get("tokens")
+        universe = spot_meta.get("universe")
+        if isinstance(tokens, list) and isinstance(universe, list) and universe:
+            has_spot_meta = True
+            idx_to_name: dict[int, str] = {}
+            stable_quote_indices: set[int] = {0}
+            for tok in tokens:
+                if not isinstance(tok, dict) or tok.get("index") is None:
+                    continue
+                t_idx = int(tok["index"])
+                t_name = str(tok.get("name") or "").strip().upper()
+                if t_name:
+                    idx_to_name[t_idx] = t_name
+                    if t_name in _HL_QUOTE_STABLES:
+                        stable_quote_indices.add(t_idx)
+
+            for pair in universe:
+                if not isinstance(pair, dict):
+                    continue
+                ptoks = pair.get("tokens")
+                if not isinstance(ptoks, list) or len(ptoks) < 2:
+                    continue
+                base_idx, quote_idx = int(ptoks[0]), int(ptoks[1])
+                if quote_idx not in stable_quote_indices:
+                    continue
+                p_name = str(pair.get("name") or "").strip()
+                p_idx = pair.get("index")
+                px = raw_mids.get(p_name) or raw_mids.get(p_name.upper())
+                if px is None and p_idx is not None:
+                    px = raw_mids.get(f"@{p_idx}")
+                if px is None:
+                    b_name = idx_to_name.get(base_idx, "")
+                    if b_name:
+                        px = raw_mids.get(f"{b_name}/USDC")
+                if px is not None and float(px) > 0:
+                    key_tok = str(base_idx)
+                    if key_tok not in spot_by_token or quote_idx == 0:
+                        spot_by_token[key_tok] = float(px)
+                        b_name = idx_to_name.get(base_idx, "")
+                        if b_name:
+                            spot_by_coin[b_name] = float(px)
+
+    return spot_by_token, spot_by_coin, has_spot_meta
+
+
+def resolve_hyperliquid_spot_price(bal: dict[str, Any], snap: dict[str, Any]) -> float:
+    ccy = str(bal.get("coin") or "").strip().upper()
+    if not ccy:
+        return 0.0
+    if ccy in _HL_QUOTE_STABLES:
+        return 1.0
+    spot_tok_px = snap.get("spot_token_prices") if isinstance(snap.get("spot_token_prices"), dict) else {}
+    spot_coin_px = snap.get("spot_tickers") if isinstance(snap.get("spot_tickers"), dict) else {}
+    tok_idx = bal.get("token")
+    if tok_idx is not None and str(tok_idx) in spot_tok_px:
+        try:
+            return max(0.0, float(spot_tok_px[str(tok_idx)] or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    if ccy in spot_coin_px:
+        try:
+            return max(0.0, float(spot_coin_px[ccy] or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    if not snap.get("has_spot_meta") and not snap.get("has_at_mids") and tok_idx is None:
+        tickers = snap.get("tickers") if isinstance(snap.get("tickers"), dict) else {}
+        try:
+            return max(0.0, float(tickers.get(ccy) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
 
 
 def _norm_hl_symbol(raw_coin: str) -> str:

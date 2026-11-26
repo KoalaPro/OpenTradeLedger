@@ -13,6 +13,7 @@ from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.config import UserPreferences
 from opentradeledger.core.account_partition import (
     parse_adapter_id,
+    scope_journals_for_account,
     stamp_bundle_for_account,
     stamp_fee_row_for_account,
 )
@@ -397,9 +398,10 @@ class LedgerService:
         sibling_counts: dict[str, int] = defaultdict(int)
         for adapter, acct_id in account_targets:
             scoped_store = self.store.for_account(acct_id, adapter.meta.venue_id)
+            scoped_journals = scope_journals_for_account(journals, acct_id)
             bundle = adapter.build_venue_ledger(
                 scoped_store,
-                journals=journals,
+                journals=scoped_journals,
                 now_s=now_s,
                 global_spot_prices=global_spot_prices,
             )
@@ -416,6 +418,7 @@ class LedgerService:
             raw_sc = self.store.venue_scope(acct_id)
             saved_uid = str((cred_rec.remote_uid if cred_rec else "") or raw_sc.get_kv("account_uid") or "")
             saved_role = str((cred_rec.account_role if cred_rec else "") or raw_sc.get_kv("account_role") or "")
+            saved_label = str((cred_rec.label if cred_rec else "") or raw_sc.get_kv("account_label") or "")
             stamp_bundle_for_account(
                 bundle,
                 account_id=acct_id,
@@ -423,6 +426,7 @@ class LedgerService:
                 cred=cred_rec,
                 remote_uid=saved_uid,
                 account_role=saved_role,
+                custom_label=saved_label,
                 sibling_count=sibling_counts[ad_id],
                 ordinal=ordinals[ad_id],
                 journals=journals,
@@ -760,8 +764,12 @@ class LedgerService:
         goal_info = None
         goal_target = prefs.goal_target_usd if (prefs.goal_enabled and prefs.goal_target_usd) else None
         if goal_target and goal_target > 0:
-            rem = max(0.0, round(goal_target - total_equity, 2))
-            surp = max(0.0, round(total_equity - goal_target, 2))
+            eq_dec = dec(total_equity)
+            tgt_dec = dec(goal_target)
+            rem = max(0.0, f2(tgt_dec - eq_dec, 2))
+            surp = max(0.0, f2(eq_dec - tgt_dec, 2))
+            prog_dec = min(Decimal("100"), (eq_dec / tgt_dec) * Decimal("100"))
+            need_dec = (dec(rem) / eq_dec * Decimal("100")) if eq_dec > 0 and rem > 0 else Decimal("0")
             goal_info = {
                 "enabled": True,
                 "label": prefs.goal_label or "",
@@ -770,8 +778,8 @@ class LedgerService:
                 "remaining_usd": rem,
                 "surplus_usd": surp,
                 "is_reached": total_equity >= goal_target,
-                "progress_pct": round(min(100.0, (total_equity / goal_target) * 100.0), 2),
-                "needed_gain_pct": round((rem / total_equity) * 100.0, 2) if total_equity > 0 and rem > 0 else 0.0,
+                "progress_pct": f2(prog_dec, 1),
+                "needed_gain_pct": f2(need_dec, 2) if eq_dec > 0 and rem > 0 else 0.0,
                 "today_delta_usd": f2(all_daily_pnl.get(today_bj_str, Decimal("0")), 2),
             }
 

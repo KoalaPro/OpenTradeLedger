@@ -114,7 +114,7 @@ export function VersionUpgradeCard({
               ? `新版本 v${versionStatus.latest_version}`
               : `New v${versionStatus.latest_version}`}
           </span>
-        ) : versionStatus?.error && !versionStatus.checked_sec ? (
+        ) : versionStatus?.error ? (
           <span
             data-testid="version-status-badge"
             className="text-[12px] font-semibold text-[var(--err)] shrink-0"

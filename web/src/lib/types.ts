@@ -551,6 +551,7 @@ export interface DiscoveredSubaccount {
 export interface ExchangeAccountInstance {
   account_id: string
   adapter_id: string
+  label?: string
   configured: boolean
   has_archived_data?: boolean
   masked_uid?: string

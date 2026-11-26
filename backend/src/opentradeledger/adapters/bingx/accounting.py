@@ -27,6 +27,22 @@ if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
 
 
+def _is_completed_bingx_deposit(row: Mapping[str, Any]) -> bool:
+    st = row.get("status")
+    if st is None or str(st).strip() == "":
+        return True
+    norm = str(st).strip().upper()
+    return norm in {"1", "6", "SUCCESS", "COMPLETED", "CREDITED", "CONFIRMED"}
+
+
+def _is_completed_bingx_withdrawal(row: Mapping[str, Any]) -> bool:
+    st = row.get("status")
+    if st is None or str(st).strip() == "":
+        return True
+    norm = str(st).strip().upper()
+    return norm in {"6", "SUCCESS", "COMPLETED", "CONFIRMED"}
+
+
 def extract_bingx_spot_prices(store: "LedgerStore") -> dict[str, float]:
     snap = store.venue_scope("bingx").get_kv("snapshot")
     out: dict[str, float] = {}
@@ -92,10 +108,15 @@ def build_bingx_venue_ledger(
         raw_spot_rows.append((ccy, qty, u_val, "SPOT"))
 
     equity_2dp = round(fut_equity + spot_equity, 2)
-    dep = sum(_coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0)) for x in (snap.get("deposits") or []))
+    dep = sum(
+        _coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0))
+        for x in (snap.get("deposits") or [])
+        if isinstance(x, dict) and _is_completed_bingx_deposit(x)
+    )
     wd = sum(
-        _coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0) + float(x.get("transactionFee") or 0.0))
+        _coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0) + float(x.get("transactionFee") or x.get("fee") or 0.0))
         for x in (snap.get("withdrawals") or [])
+        if isinstance(x, dict) and _is_completed_bingx_withdrawal(x)
     )
     principal_usd = round(dep - wd, 2)
 

@@ -35,6 +35,11 @@ HTX_ALLOWED_SWAP_POST_PATHS: tuple[str, ...] = (
     "/linear-swap-api/v1/swap_position_info",
     "/linear-swap-api/v1/swap_financial_record_exact",
     "/linear-swap-api/v1/swap_financial_record",
+    "/linear-swap-api/v3/swap_financial_record_exact",
+    "/linear-swap-api/v3/swap_financial_record",
+    "/linear-swap-api/v1/swap_cross_matchresults_exact",
+    "/linear-swap-api/v1/swap_cross_matchresults",
+    "/linear-swap-api/v3/swap_cross_matchresults",
     "/linear-swap-api/v1/swap_matchresults_exact",
     "/linear-swap-api/v1/swap_matchresults",
     "/linear-swap-api/v1/swap_fee",
@@ -181,13 +186,14 @@ class HtxReadOnlyClient:
         uid = str(uid_val or "").strip() if uid_val not in (None, "", 0) else ""
         role = ""
         if uid:
-            role = "master"
             try:
                 keys = await self.spot_get("/v2/user/api-key", {"uid": uid})
                 if isinstance(keys, list) and keys and isinstance(keys[0], dict):
                     parent_id = str(keys[0].get("parentId") or "").strip()
                     if parent_id and parent_id != "0" and parent_id != uid:
                         role = "subaccount"
+                    else:
+                        role = "master"
             except Exception:
                 pass
         return {"remote_uid": uid, "account_role": role}
@@ -220,15 +226,25 @@ class HtxReadOnlyClient:
         return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
 
     async def get_swap_matches(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
-        body: dict[str, Any] = {"contract": "ALL", "trade_type": 0, "size": 100}
+        body: dict[str, Any] = {"trade_type": 0, "size": 50}
         if since_ms > 0:
             body["start_time"] = since_ms
-        res = await self.swap_query("/linear-swap-api/v1/swap_matchresults_exact", body)
+        try:
+            res = await self.swap_query("/linear-swap-api/v1/swap_cross_matchresults_exact", body)
+        except HtxApiError as exc:
+            msg_low = str(exc).lower()
+            if "http 404" in msg_low or "not found" in msg_low or "unsupported" in msg_low:
+                res = await self.swap_query(
+                    "/linear-swap-api/v1/swap_cross_matchresults",
+                    {"trade_type": 0, "create_date": 90, "page_index": 1, "page_size": 50},
+                )
+            else:
+                raise
         trades = res.get("trades") if isinstance(res, dict) else (res if isinstance(res, list) else [])
         return [r for r in trades if isinstance(r, dict)] if isinstance(trades, list) else []
 
     async def get_swap_financial_records(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
-        body: dict[str, Any] = {"margin_account": "USDT", "size": 100}
+        body: dict[str, Any] = {"margin_account": "USDT", "size": 50}
         if since_ms > 0:
             body["start_time"] = since_ms
         res = await self.swap_query("/linear-swap-api/v1/swap_financial_record_exact", body)
@@ -260,24 +276,44 @@ class HtxReadOnlyClient:
 
     async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
         warnings: list[str] = []
+        failed_fields: list[str] = []
+
+        def _is_fatal(exc: Exception) -> bool:
+            msg_low = str(exc).lower()
+            return (
+                isinstance(exc, httpx.TransportError)
+                or "http 5" in msg_low
+                or "http 429" in msg_low
+                or "err=1010" in msg_low
+                or "invalid request" in msg_low
+                or "parameter" in msg_low
+            )
+
         swap_accounts: list[dict[str, Any]] = []
         spot_balances: list[dict[str, Any]] = []
         try:
             swap_accounts = await self.get_swap_accounts()
         except Exception as sw_exc:
+            if _is_fatal(sw_exc):
+                raise
             warnings.append(f"swap_accounts: {sw_exc}")
+            failed_fields.append("swap_accounts")
         try:
             spot_balances = await self.get_spot_balances()
         except Exception as sp_exc:
-            if not swap_accounts:
+            if _is_fatal(sp_exc) or "swap_accounts" in failed_fields:
                 raise sp_exc
             warnings.append(f"spot_balances: {sp_exc}")
+            failed_fields.append("spot_balances")
 
         async def _opt(name: str, coro: Any, default: Any) -> Any:
             try:
                 return await coro
             except Exception as exc:
+                if _is_fatal(exc):
+                    raise
                 warnings.append(f"{name}: {exc}")
+                failed_fields.append(name)
                 return default
 
         positions = await _opt("positions", self.get_swap_positions(), [])
@@ -287,7 +323,7 @@ class HtxReadOnlyClient:
         withdrawals = await _opt("withdrawals", self.get_deposit_withdraw("withdraw"), [])
         tickers = await _opt("tickers", self.get_spot_tickers(), {})
 
-        return {
+        out_snap: dict[str, Any] = {
             "venue_id": "htx",
             "swap_accounts": swap_accounts,
             "spot_balances": spot_balances,
@@ -299,13 +335,40 @@ class HtxReadOnlyClient:
             "tickers": tickers,
             "warnings": warnings,
         }
+        if failed_fields:
+            out_snap["_failed_fields"] = failed_fields
+        return out_snap
+
+
+def htx_match_unique_key(r: dict[str, Any], *, fallback_idx: int = 0) -> str:
+    rid = r.get("id") or r.get("query_id")
+    mid = r.get("match_id")
+    if rid not in (None, "") and mid not in (None, ""):
+        return f"{rid}_{mid}"
+    if rid not in (None, ""):
+        return str(rid)
+    if mid not in (None, ""):
+        return str(mid)
+    oid = r.get("order_id")
+    cd = r.get("create_date") or r.get("ts")
+    if oid not in (None, "") or cd not in (None, ""):
+        return f"{oid}_{cd}"
+    return f"m_{fallback_idx}"
+
+
+def htx_match_realized_pnl(m: dict[str, Any]) -> float:
+    if m.get("real_profit") not in (None, ""):
+        return float(m["real_profit"])
+    if m.get("offset_profitloss") not in (None, ""):
+        return float(m["offset_profitloss"])
+    return float(m.get("profit") or 0.0)
 
 
 def normalize_htx_closed_trades(
     matches: list[dict[str, Any]],
     financials: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
-    """Reconstructs closed USDT-M swap trades on HTX from `swap_matchresults` & `swap_financial_record`."""
+    """Reconstructs closed USDT-M swap trades on HTX from `swap_cross_matchresults` & `swap_financial_record`."""
     funding_by_sym: dict[str, list[dict[str, Any]]] = {}
     rebate_sum = 0.0
     consumed_fund: set[str] = set()
@@ -316,19 +379,25 @@ def normalize_htx_closed_trades(
         amt = float(rec.get("amount") or 0.0)
         ts = int(rec.get("ts") or 0)
         sym = normalize_htx_symbol(str(rec.get("contract_code") or ""))
-        # HTX financial_record types: 30/31 = funding fee, 9/10/rebate strings = fee rebate
+        # Official HTX financial_record types: 30/31 = funding fee; 29 = fee rebate (9/10 are delivery settlement, NOT rebates!)
         if tp in {30, 31} and sym:
             fid = str(rec.get("id") or f"hf_{sym}_{ts}_{idx}")
             funding_by_sym.setdefault(sym, []).append({"_id": fid, "ts": ts, "amt": amt})
-        elif tp in {9, 10} and amt > 0:
+        elif tp == 29 and amt > 0:
             rebate_sum += amt
 
-    total_fees_raw = sum(abs(float(m.get("trade_fee") or 0.0)) for m in matches if isinstance(m, dict) and float(m.get("trade_fee") or 0.0) < 0)
+    dedup_matches: dict[str, dict[str, Any]] = {}
+    for idx_m, m_row in enumerate(matches):
+        if isinstance(m_row, dict):
+            dedup_matches[htx_match_unique_key(m_row, fallback_idx=idx_m)] = m_row
+    unique_matches = list(dedup_matches.values())
+
+    total_fees_raw = sum(abs(float(m.get("trade_fee") or 0.0)) for m in unique_matches if float(m.get("trade_fee") or 0.0) < 0)
     rebate_ratio = min(0.95, rebate_sum / total_fees_raw) if total_fees_raw > 0 and rebate_sum > 0 else 0.0
 
     sorted_matches = sorted(
-        (m for m in matches if isinstance(m, dict)),
-        key=lambda r: (int(r.get("create_date") or r.get("ts") or 0), str(r.get("match_id") or r.get("id") or "")),
+        unique_matches,
+        key=lambda r: (int(r.get("create_date") or r.get("ts") or 0), htx_match_unique_key(r)),
     )
 
     open_lots: dict[tuple[str, str], dict[str, float]] = {}
@@ -353,7 +422,7 @@ def normalize_htx_closed_trades(
         is_maker = role_str == "maker"
         offset = str(m.get("offset") or "").lower()
         direction = str(m.get("direction") or "").lower()
-        offset_pl = float(m.get("offset_profitloss") or m.get("profit") or 0.0)
+        offset_pl = htx_match_realized_pnl(m)
 
         is_open = offset == "open" and abs(offset_pl) <= 1e-9
         if is_open:
@@ -417,7 +486,7 @@ def normalize_htx_closed_trades(
         total_rebate = round(en_reb + ex_reb, 6)
         book_pnl = round(offset_pl - total_fee + funding_pnl, 6)
         net_pnl = round(book_pnl + total_rebate, 6)
-        mid_id = str(m.get("match_id") or m.get("id") or idx)
+        mid_id = htx_match_unique_key(m, fallback_idx=idx)
         settled_str = _fmt_bj_ms(ts) if total_rebate > 0 else ""
 
         records.append(

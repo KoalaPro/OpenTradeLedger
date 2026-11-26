@@ -329,6 +329,7 @@ class BybitReadOnlyClient:
     async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
         """Collects read-only Unified/Contract account snapshot with multi-page history and graceful degradation."""
         warnings: list[str] = []
+        failed_fields: list[str] = []
         try:
             wallet = await self.get_wallet_balance("UNIFIED")
         except Exception as unified_exc:
@@ -342,7 +343,11 @@ class BybitReadOnlyClient:
             try:
                 return await coro
             except Exception as exc:
+                msg_low = str(exc).lower()
+                if isinstance(exc, httpx.TransportError) or "http 5" in msg_low or "http 429" in msg_low:
+                    raise
                 warnings.append(f"{name}: {exc}")
+                failed_fields.append(name)
                 return default
 
         funding = await _opt("funding", self.get_funding_balance(), {})
@@ -373,7 +378,9 @@ class BybitReadOnlyClient:
             min(0.95, rebate_sum / gross_fee_sum) if gross_fee_sum > 0 and rebate_sum > 0 else 0.0
         )
 
-        return {
+        if "positions_usdt" in failed_fields and "positions_usdc" in failed_fields:
+            failed_fields.append("positions")
+        out_snap: dict[str, Any] = {
             "venue_id": "bybit",
             "wallet": wallet,
             "funding": funding,
@@ -389,6 +396,9 @@ class BybitReadOnlyClient:
             "observed_rebate_ratio": round(observed_rebate_ratio, 6),
             "warnings": warnings,
         }
+        if failed_fields:
+            out_snap["_failed_fields"] = failed_fields
+        return out_snap
 
 
 def _is_bybit_rebate_log(tx: dict[str, Any]) -> bool:

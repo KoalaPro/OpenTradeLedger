@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.hyperliquid.client import resolve_hyperliquid_spot_price
 from opentradeledger.core.venue_primitives import STABLECOINS
 
 if TYPE_CHECKING:
@@ -22,7 +23,6 @@ def extract_hyperliquid_snapshot_activity(snap: dict[str, Any]) -> tuple[float, 
     ms = ch.get("marginSummary") if isinstance(ch.get("marginSummary"), dict) else {}
     perp_eq = float(ms.get("accountValue") or 0.0)
 
-    tickers = snap.get("tickers") if isinstance(snap.get("tickers"), dict) else {}
     spot_eq = 0.0
     spot = snap.get("spot") if isinstance(snap.get("spot"), dict) else {}
     for bal in spot.get("balances") or []:
@@ -35,7 +35,7 @@ def extract_hyperliquid_snapshot_activity(snap: dict[str, Any]) -> tuple[float, 
         if coin in STABLECOINS:
             spot_eq += total_amt
         else:
-            spot_eq += total_amt * float(tickers.get(coin) or 0.0)
+            spot_eq += total_amt * resolve_hyperliquid_spot_price(bal, snap)
 
     open_count = 0
     for ap in ch.get("assetPositions") or []:

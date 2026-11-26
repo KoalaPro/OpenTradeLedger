@@ -501,13 +501,25 @@ export function FeesAiPage({
         onClose={() => setShowAiUnconfiguredModal(false)}
         testId="ai-unconfigured-modal"
         maxWidthClass="max-w-[460px]"
-        title={isZh ? '尚未配置 AI 大模型' : 'AI Model Not Configured'}
+        title={
+          rawAiUrl
+            ? isZh
+              ? '尚未配置 AI API Key'
+              : 'AI API Key Missing'
+            : isZh
+              ? '尚未配置 AI 大模型'
+              : 'AI Model Not Configured'
+        }
       >
         <div className="p-6 space-y-4 text-[13px]">
           <p className="m-0 text-[var(--fg-2)] leading-relaxed">
-            {isZh
-              ? `当前尚未配置 AI 接口地址与 API Key，无法调用外部大模型生成深度复盘。你可以前往「设置与连接」接入任意 OpenAI 兼容模型，或选择使用内置本地精算规则生成「${currentPeriodLabel}」基础诊断报告。`
-              : `No AI Base URL or API Key is configured yet. You can configure any OpenAI-compatible model in Settings, or generate a "${currentPeriodLabel}" report using built-in local actuarial rules.`}
+            {rawAiUrl
+              ? isZh
+                ? `已配置 AI 接口地址（${rawAiUrl}），但尚未填写 API Key，无法调用外部远程模型生成深度复盘。你可以前往「设置与连接」补充 API Key，或选择使用内置本地精算规则生成「${currentPeriodLabel}」基础诊断报告。`
+                : `AI Base URL (${rawAiUrl}) is set, but no API Key is configured yet. Add an API Key in Settings, or generate a "${currentPeriodLabel}" report using built-in local actuarial rules.`
+              : isZh
+                ? `当前尚未配置 AI 接口地址与 API Key，无法调用外部大模型生成深度复盘。你可以前往「设置与连接」接入任意 OpenAI 兼容模型，或选择使用内置本地精算规则生成「${currentPeriodLabel}」基础诊断报告。`
+                : `No AI Base URL or API Key is configured yet. You can configure any OpenAI-compatible model in Settings, or generate a "${currentPeriodLabel}" report using built-in local actuarial rules.`}
           </p>
           <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
             <button

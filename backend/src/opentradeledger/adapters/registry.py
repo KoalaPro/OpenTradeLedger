@@ -107,6 +107,7 @@ class BinanceAdapter(BaseExchangeAdapter):
         display_name="Binance",
         display_name_zh="币安",
         color_token="binance",
+        identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=True, tokenized_stocks=True
@@ -179,6 +180,7 @@ class OkxAdapter(BaseExchangeAdapter):
         display_name="OKX",
         display_name_zh="OKX",
         color_token="okx",
+        identity_mode="probe",
         requires_passphrase=True,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=True, tokenized_stocks=True
@@ -235,6 +237,7 @@ class BybitAdapter(BaseExchangeAdapter):
         display_name="Bybit",
         display_name_zh="Bybit",
         color_token="bybit",
+        identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=True, tokenized_stocks=True
@@ -299,6 +302,7 @@ class GateAdapter(BaseExchangeAdapter):
         display_name="Gate",
         display_name_zh="Gate",
         color_token="gate",
+        identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=False, copy_trading=True, stocks=True, tokenized_stocks=True
@@ -357,6 +361,7 @@ class BitgetAdapter(BaseExchangeAdapter):
         display_name="Bitget",
         display_name_zh="Bitget",
         color_token="bitget",
+        identity_mode="probe",
         requires_passphrase=True,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=True, tokenized_stocks=True
@@ -418,6 +423,7 @@ class MexcAdapter(BaseExchangeAdapter):
         display_name="MEXC",
         display_name_zh="MEXC",
         color_token="mexc",
+        identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=True, tokenized_stocks=True
@@ -464,6 +470,7 @@ class EasiCoinAdapter(BaseExchangeAdapter):
         display_name="EasiCoin",
         display_name_zh="易币",
         color_token="easicoin",
+        identity_mode="sync_bound",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=False, copy_trading=True, stocks=False, tokenized_stocks=True
@@ -510,6 +517,7 @@ class HyperliquidAdapter(BaseExchangeAdapter):
         display_name_zh="Hyperliquid",
         color_token="hyperliquid",
         auth_mode="wallet_address",
+        identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=False, copy_trading=False, stocks=True, tokenized_stocks=True
@@ -565,6 +573,7 @@ class KucoinAdapter(BaseExchangeAdapter):
         display_name="KuCoin",
         display_name_zh="KuCoin",
         color_token="kucoin",
+        identity_mode="probe",
         requires_passphrase=True,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=True, copy_trading=False, stocks=False, tokenized_stocks=False
@@ -582,18 +591,47 @@ class KucoinAdapter(BaseExchangeAdapter):
             try:
                 ov = await client.get_futures_overview("USDT")
                 has_eq = ov.get("accountEquity") is not None
-            except Exception:
+            except Exception as fut_exc:
+                if "http 5" in str(fut_exc).lower() or "http 429" in str(fut_exc).lower():
+                    raise
                 accts = await client.get_spot_accounts()
                 has_eq = isinstance(accts, list)
             out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "has_balance": has_eq}
+            key_info: dict[str, Any] = {}
             try:
-                uinfo = await client.get_user_info()
-                if isinstance(uinfo, dict) and uinfo.get("uid") not in (None, "", 0):
-                    out["remote_uid"] = str(uinfo["uid"]).strip()
-                    is_sub = bool(uinfo.get("isSub") or uinfo.get("parentUid"))
-                    out["account_role"] = "subaccount" if is_sub else "master"
+                key_info = await client.get_api_key_info()
             except Exception:
                 pass
+            uinfo: dict[str, Any] = {}
+            try:
+                uinfo = await client.get_user_info()
+            except Exception:
+                pass
+            raw_uid = (
+                key_info.get("uid")
+                or key_info.get("userId")
+                or uinfo.get("uid")
+                or uinfo.get("userId")
+            )
+            if raw_uid not in (None, "", 0):
+                out["remote_uid"] = str(raw_uid).strip()
+                if isinstance(key_info.get("isMaster"), bool):
+                    out["account_role"] = "master" if key_info["isMaster"] else "subaccount"
+                elif key_info.get("subName") or uinfo.get("isSub") or uinfo.get("parentUid"):
+                    out["account_role"] = "subaccount"
+                else:
+                    out["account_role"] = "master"
+            perms = str(key_info.get("permission") or "")
+            if any(tok in perms for tok in ("Trade", "Transfer", "Withdraw", "Earn")):
+                out["read_only"] = False
+                out["permission_warning"] = (
+                    f"API key has write permissions enabled ({perms}); "
+                    "OpenTradeLedger enforces GET-only locally, but restricting to General/Read-Only on KuCoin is recommended."
+                )
+                out["permission_warning_zh"] = (
+                    f"检测到该 KuCoin API Key 含非只读权限（{perms}）。"
+                    "虽然本程序本地强制拦截一切非 GET 请求，仍建议仅保留 General 查询权限。"
+                )
             return out
         finally:
             await client.aclose()
@@ -620,6 +658,7 @@ class BingxAdapter(BaseExchangeAdapter):
         display_name="BingX",
         display_name_zh="BingX",
         color_token="bingx",
+        identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=False, copy_trading=True, stocks=True, tokenized_stocks=False
@@ -668,6 +707,7 @@ class HtxAdapter(BaseExchangeAdapter):
         display_name="HTX",
         display_name_zh="火币 HTX",
         color_token="htx",
+        identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
             futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=False, tokenized_stocks=False

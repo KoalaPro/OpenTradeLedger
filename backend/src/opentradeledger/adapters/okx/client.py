@@ -328,12 +328,17 @@ class OkxReadOnlyClient:
         """Collects read-only unified account snapshot with multi-page history and graceful degradation."""
         balances = await self.get_account_balance()
         warnings: list[str] = []
+        failed_fields: list[str] = []
 
         async def _opt(name: str, coro: Any, default: Any = None) -> Any:
             try:
                 return await coro
             except Exception as exc:
+                msg_low = str(exc).lower()
+                if isinstance(exc, httpx.TransportError) or "http 5" in msg_low or "http 429" in msg_low:
+                    raise
                 warnings.append(f"{name}: {exc}")
+                failed_fields.append(name)
                 return [] if default is None else default
 
         funding = await _opt("funding", self.get_funding_balances())
@@ -368,7 +373,7 @@ class OkxReadOnlyClient:
             min(0.95, rebate_sum / gross_fee_sum) if gross_fee_sum > 0 and rebate_sum > 0 else 0.0
         )
 
-        return {
+        out_snap: dict[str, Any] = {
             "venue_id": "okx",
             "balances": balances,
             "funding": funding,
@@ -387,6 +392,9 @@ class OkxReadOnlyClient:
             "observed_rebate_ratio": round(observed_rebate_ratio, 6),
             "warnings": warnings,
         }
+        if failed_fields:
+            out_snap["_failed_fields"] = failed_fields
+        return out_snap
 
 
 def okx_fill_credit_ids(fills: list[dict[str, Any]]) -> set[str]:

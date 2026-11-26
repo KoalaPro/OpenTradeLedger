@@ -31,6 +31,7 @@ class AdapterMeta(BaseModel):
     display_name_zh: str
     color_token: str
     auth_mode: str = "api_key"  # "api_key" | "wallet_address"
+    identity_mode: str = "none"  # "none" | "probe" | "sync_bound"
     requires_passphrase: bool = False
     capabilities: ExchangeCapabilities = ExchangeCapabilities()
     docs_url: str = ""

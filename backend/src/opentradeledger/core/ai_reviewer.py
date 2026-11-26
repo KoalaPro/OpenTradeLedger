@@ -505,7 +505,7 @@ async def generate_ai_review(
             "context_preview": None,
         }
 
-    if base and (api_key or "127.0.0.1" in base or "localhost" in base):
+    if base and (api_key or is_local_ai_host(base)):
         data_transmitted = True
         lang_hint = "简体中文" if prefs.locale == "zh-CN" else "English"
         prompt = (

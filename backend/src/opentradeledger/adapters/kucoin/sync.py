@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.kucoin.client import kucoin_position_unique_key
 from opentradeledger.core.venue_primitives import STABLECOINS
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
 
 KUCOIN_MERGE_SPECS = {
-    "history_positions": lambda r: str(r.get("closeId") or f"{r.get('positionId')}_{r.get('closeTimestamp')}_{r.get('symbol')}"),
+    "history_positions": lambda r: kucoin_position_unique_key(r),
     "fills": lambda r: str(r.get("tradeId") or f"{r.get('orderId')}_{r.get('createdAt')}"),
     "tx_history": lambda r: str(r.get("offset") or f"{r.get('time')}_{r.get('type')}_{r.get('amount')}"),
     "deposits": lambda r: str(r.get("walletTxId") or f"{r.get('createdAt')}_{r.get('amount')}"),

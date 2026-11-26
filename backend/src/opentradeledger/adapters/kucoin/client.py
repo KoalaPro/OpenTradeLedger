@@ -24,6 +24,8 @@ from opentradeledger.security.readonly_guard import assert_readonly_request
 TZ_UTC8 = timezone(timedelta(hours=8))
 
 KUCOIN_ALLOWED_GET_PATHS: tuple[str, ...] = (
+    "/api/v1/user/api-key",
+    "/api/v1/user-info",
     "/api/v2/user-info",
     "/api/v1/sub/user",
     "/api/v1/accounts",
@@ -90,6 +92,7 @@ class KucoinReadOnlyClient:
         passphrase: str,
         spot_base_url: str = "https://api.kucoin.com",
         futures_base_url: str = "https://api-futures.kucoin.com",
+        key_version: str = "2",
         client: Optional[httpx.AsyncClient] = None,
         timeout_sec: float = 12.0,
         clock_ms: Optional[Callable[[], int]] = None,
@@ -97,6 +100,7 @@ class KucoinReadOnlyClient:
         self.api_key = api_key
         self.api_secret = api_secret
         self.passphrase = passphrase
+        self.key_version = str(key_version or "2")
         self.spot_base_url = spot_base_url.rstrip("/")
         self.futures_base_url = futures_base_url.rstrip("/")
         self._owns_client = client is None
@@ -107,14 +111,21 @@ class KucoinReadOnlyClient:
         if self._owns_client:
             await self._client.aclose()
 
-    def build_headers(self, path_with_query: str, timestamp_ms: Optional[str] = None) -> dict[str, str]:
+    def build_headers(
+        self,
+        path_with_query: str,
+        timestamp_ms: Optional[str] = None,
+        *,
+        key_version: Optional[str] = None,
+    ) -> dict[str, str]:
         ts = timestamp_ms or str(self._clock_ms())
+        ver = str(key_version or self.key_version or "2")
         return {
             "KC-API-KEY": self.api_key,
             "KC-API-SIGN": sign_kucoin_get(ts, path_with_query, self.api_secret),
             "KC-API-TIMESTAMP": ts,
             "KC-API-PASSPHRASE": sign_kucoin_passphrase(self.passphrase, self.api_secret),
-            "KC-API-KEY-VERSION": "2",
+            "KC-API-KEY-VERSION": ver,
             "Content-Type": "application/json",
         }
 
@@ -137,9 +148,27 @@ class KucoinReadOnlyClient:
         if resp.status_code >= 400:
             raise KucoinApiError(f"KuCoin GET {path} HTTP {resp.status_code}: {resp.text[:240]}")
         payload = resp.json()
-        if str(payload.get("code") or "") != "200000":
+        code_str = str(payload.get("code") or "")
+        if signed and code_str == "400009":
+            alt_ver = "3" if self.key_version == "2" else "2"
+            alt_headers = self.build_headers(path_with_query, key_version=alt_ver)
+            resp2 = await self._client.get(f"{base}{path_with_query}", headers=alt_headers)
+            if resp2.status_code < 400:
+                payload2 = resp2.json()
+                if str(payload2.get("code") or "") == "200000":
+                    self.key_version = alt_ver
+                    return payload2.get("data")
+        if code_str != "200000":
             raise KucoinApiError(f"KuCoin GET {path} code={payload.get('code')}: {payload.get('msg', '')}")
         return payload.get("data")
+
+    async def get_api_key_info(self) -> dict[str, Any]:
+        res = await self.request_readonly("GET", "/api/v1/user/api-key", futures=False)
+        if isinstance(res, dict):
+            return res
+        if isinstance(res, list) and res and isinstance(res[0], dict):
+            return res[0]
+        return {}
 
     async def get_user_info(self) -> dict[str, Any]:
         res = await self.request_readonly("GET", "/api/v2/user-info", futures=False)
@@ -157,23 +186,34 @@ class KucoinReadOnlyClient:
         res = await self.request_readonly("GET", "/api/v1/positions", futures=True)
         return res if isinstance(res, list) else []
 
-    async def get_history_positions(self, *, page_limit: int = 5) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+    async def get_history_positions(self, *, page_limit: int = 25) -> list[dict[str, Any]]:
+        dedup: dict[str, dict[str, Any]] = {}
         for page in range(1, page_limit + 1):
             res = await self.request_readonly(
                 "GET",
                 "/api/v1/history-positions",
-                {"currentPage": page, "pageSize": 50},
+                {"pageId": page, "limit": 50, "currentPage": page, "pageSize": 50},
                 futures=True,
             )
             items = res.get("items") if isinstance(res, dict) else (res if isinstance(res, list) else [])
             if not isinstance(items, list) or not items:
                 break
-            rows.extend(r for r in items if isinstance(r, dict))
-            total_page = int(res.get("totalPage") or 1) if isinstance(res, dict) else 1
-            if page >= total_page:
+            new_cnt = 0
+            for idx, r in enumerate(items):
+                if not isinstance(r, dict):
+                    continue
+                pk = kucoin_position_unique_key(r, fallback_idx=idx)
+                if pk not in dedup:
+                    dedup[pk] = r
+                    new_cnt += 1
+            if new_cnt == 0:
                 break
-        return rows
+            if isinstance(res, dict):
+                if res.get("hasMore") is False:
+                    break
+                if res.get("totalPage") is not None and page >= int(res.get("totalPage") or 1):
+                    break
+        return list(dedup.values())
 
     async def get_futures_fills(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"pageSize": 100, "currentPage": 1}
@@ -227,24 +267,43 @@ class KucoinReadOnlyClient:
 
     async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
         warnings: list[str] = []
+        failed_fields: list[str] = []
+
+        def _is_fatal(exc: Exception) -> bool:
+            msg_low = str(exc).lower()
+            return (
+                isinstance(exc, httpx.TransportError)
+                or "http 5" in msg_low
+                or "http 429" in msg_low
+                or "code=400009" in msg_low
+                or "parameter" in msg_low
+            )
+
         spot_accounts: list[dict[str, Any]] = []
         futures_overview: dict[str, Any] = {}
         try:
             spot_accounts = await self.get_spot_accounts()
         except Exception as spot_exc:
+            if _is_fatal(spot_exc):
+                raise
             warnings.append(f"spot_accounts: {spot_exc}")
+            failed_fields.append("spot_accounts")
         try:
             futures_overview = await self.get_futures_overview("USDT")
         except Exception as fut_exc:
-            if not spot_accounts:
+            if _is_fatal(fut_exc) or "spot_accounts" in failed_fields:
                 raise fut_exc
             warnings.append(f"futures_overview: {fut_exc}")
+            failed_fields.append("futures_overview")
 
         async def _opt(name: str, coro: Any, default: Any) -> Any:
             try:
                 return await coro
             except Exception as exc:
+                if _is_fatal(exc):
+                    raise
                 warnings.append(f"{name}: {exc}")
+                failed_fields.append(name)
                 return default
 
         positions = await _opt("positions", self.get_positions(), [])
@@ -256,7 +315,7 @@ class KucoinReadOnlyClient:
         tickers = await _opt("tickers", self.get_spot_tickers(), {})
         base_fee = await _opt("base_fee", self.get_base_fee(), {})
 
-        return {
+        out_snap: dict[str, Any] = {
             "venue_id": "kucoin",
             "spot_accounts": spot_accounts,
             "futures_overview": futures_overview,
@@ -270,6 +329,38 @@ class KucoinReadOnlyClient:
             "base_fee": base_fee,
             "warnings": warnings,
         }
+        if failed_fields:
+            out_snap["_failed_fields"] = failed_fields
+        return out_snap
+
+
+def _kucoin_ts_ms(raw: Any) -> int:
+    if raw in (None, ""):
+        return 0
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 0
+    if val <= 0:
+        return 0
+    if val > 1e15:
+        return int(val // 1_000_000)
+    if val > 1e10:
+        return int(val)
+    return int(round(val * 1000.0))
+
+
+def kucoin_position_unique_key(r: dict[str, Any], *, fallback_idx: int = 0) -> str:
+    cid = r.get("closeId") or r.get("id")
+    if cid not in (None, ""):
+        return str(cid)
+    ct = r.get("closeTime") or r.get("closeTimestamp") or r.get("updatedAt")
+    ot = r.get("openTime") or r.get("openTimestamp") or r.get("createdAt")
+    pid = r.get("positionId") or ""
+    sym = r.get("symbol") or ""
+    if pid or ct or ot:
+        return f"{pid}_{ct}_{ot}_{sym}"
+    return f"pos_{sym}_{fallback_idx}"
 
 
 def normalize_kucoin_closed_trades(
@@ -285,46 +376,89 @@ def normalize_kucoin_closed_trades(
             if s:
                 fills_by_sym.setdefault(s, []).append(f)
 
+    dedup_pos_map: dict[str, dict[str, Any]] = {}
+    for idx_p, p in enumerate(history_positions):
+        if isinstance(p, dict):
+            pk = kucoin_position_unique_key(p, fallback_idx=idx_p)
+            dedup_pos_map[pk] = p
+    unique_positions = list(dedup_pos_map.values())
+
     rebate_sum = sum(
         max(0.0, float(tx.get("amount") or 0.0))
         for tx in (tx_history or [])
         if isinstance(tx, dict) and "REBATE" in str(tx.get("type") or "").upper()
     )
-    total_pos_fees = sum(abs(float(p.get("tradeFee") or p.get("fee") or 0.0)) for p in history_positions if isinstance(p, dict))
+    total_pos_fees = sum(abs(float(p.get("tradeFee") or p.get("fee") or 0.0)) for p in unique_positions)
     rebate_ratio = min(0.95, rebate_sum / total_pos_fees) if total_pos_fees > 0 and rebate_sum > 0 else 0.0
 
     records: list[dict[str, Any]] = []
     sorted_pos = sorted(
-        (p for p in history_positions if isinstance(p, dict)),
-        key=lambda r: int(r.get("closeTimestamp") or r.get("updatedAt") or 0),
+        unique_positions,
+        key=lambda r: _kucoin_ts_ms(r.get("closeTime") or r.get("closeTimestamp") or r.get("updatedAt")),
     )
 
     for idx, row in enumerate(sorted_pos):
         raw_sym = str(row.get("symbol") or "").upper()
         if not raw_sym:
             continue
-        open_ms = int(row.get("openTimestamp") or row.get("createdAt") or 0)
-        close_ms = int(row.get("closeTimestamp") or row.get("updatedAt") or open_ms)
-        side_raw = str(row.get("side") or row.get("type") or "long").lower()
-        side = "SHORT" if "short" in side_raw or side_raw == "sell" else "LONG"
-        qty = abs(float(row.get("closeSize") or row.get("size") or row.get("qty") or 0.0))
+        open_ms = _kucoin_ts_ms(row.get("openTime") or row.get("openTimestamp") or row.get("createdAt"))
+        close_ms = _kucoin_ts_ms(row.get("closeTime") or row.get("closeTimestamp") or row.get("updatedAt")) or open_ms
         entry_px = float(row.get("openPrice") or row.get("avgEntryPrice") or 0.0)
         exit_px = float(row.get("closePrice") or row.get("avgClosePrice") or 0.0)
+
+        pos_total_fee = abs(float(row.get("tradeFee") or row.get("fee") or 0.0))
+        funding_pnl = float(row.get("fundingFee") or 0.0)
+
+        has_explicit_net = row.get("pnl") is not None or row.get("realisedPnl") is not None
+        has_explicit_gross = row.get("realisedGrossPnl") is not None or row.get("grossPnl") is not None
+        if has_explicit_net:
+            realized_net_book = float(row.get("pnl") if row.get("pnl") is not None else row.get("realisedPnl") or 0.0)
+            book_pnl = round(realized_net_book, 6)
+            if has_explicit_gross:
+                gross_pnl = round(
+                    float(row.get("realisedGrossPnl") if row.get("realisedGrossPnl") is not None else row.get("grossPnl") or 0.0),
+                    6,
+                )
+            else:
+                gross_pnl = round(book_pnl + pos_total_fee - funding_pnl, 6)
+        elif has_explicit_gross:
+            gross_pnl = round(
+                float(row.get("realisedGrossPnl") if row.get("realisedGrossPnl") is not None else row.get("grossPnl") or 0.0),
+                6,
+            )
+            book_pnl = round(gross_pnl - pos_total_fee + funding_pnl, 6)
+        else:
+            gross_pnl = 0.0
+            book_pnl = round(-pos_total_fee + funding_pnl, 6)
+
+        side_raw = str(row.get("side") or row.get("type") or "").lower()
+        if "short" in side_raw or side_raw == "sell":
+            side = "SHORT"
+        elif "long" in side_raw or side_raw == "buy":
+            side = "LONG"
+        elif entry_px > 0 and exit_px > 0 and abs(exit_px - entry_px) > 1e-12 and abs(gross_pnl) > 1e-12:
+            side = "LONG" if ((exit_px - entry_px) * gross_pnl > 0) else "SHORT"
+        else:
+            side = "LONG"
+
+        qty = abs(float(row.get("closeSize") or row.get("size") or row.get("qty") or 0.0))
         mult = abs(float(row.get("multiplier") or 1.0))
         eff_coin_qty = qty * mult if mult > 0 and mult != 1.0 else qty
+        if eff_coin_qty <= 0 and entry_px > 0 and exit_px > 0 and abs(exit_px - entry_px) > 1e-12 and abs(gross_pnl) > 1e-12:
+            eff_coin_qty = round(abs(gross_pnl) / abs(exit_px - entry_px), 8)
+
         entry_notional = entry_px * eff_coin_qty if entry_px > 0 and eff_coin_qty > 0 else abs(float(row.get("openValue") or 0.0))
         exit_notional = exit_px * eff_coin_qty if exit_px > 0 and eff_coin_qty > 0 else abs(float(row.get("closeValue") or entry_notional))
 
         win_fills = [
             f
             for f in fills_by_sym.get(raw_sym, [])
-            if open_ms - 5_000 <= int(f.get("createdAt") or f.get("tradeTime") or 0) <= close_ms + 5_000
+            if open_ms > 0 and (open_ms - 5_000 <= _kucoin_ts_ms(f.get("createdAt") or f.get("tradeTime")) <= close_ms + 5_000)
         ]
         open_side_tok = "buy" if side == "LONG" else "sell"
         en_fills = [f for f in win_fills if str(f.get("side") or "").lower() == open_side_tok]
         ex_fills = [f for f in win_fills if str(f.get("side") or "").lower() != open_side_tok]
 
-        pos_total_fee = abs(float(row.get("tradeFee") or row.get("fee") or 0.0))
         if en_fills or ex_fills:
             en_fee = sum(abs(float(f.get("fee") or 0.0)) for f in en_fills)
             ex_fee = sum(abs(float(f.get("fee") or 0.0)) for f in ex_fills)
@@ -347,15 +481,8 @@ def normalize_kucoin_closed_trades(
         ex_reb = round(ex_fee * rebate_ratio, 6)
         total_rebate = round(en_reb + ex_reb, 6)
 
-        funding_pnl = float(row.get("fundingFee") or 0.0)
-        # KuCoin `pnl` / `realisedPnl` on history-positions is net of tradeFee & fundingFee, or gross profit in `profit`
-        if row.get("grossPnl") is not None:
-            gross_pnl = float(row["grossPnl"])
+        if not has_explicit_net and has_explicit_gross:
             book_pnl = round(gross_pnl - total_fee + funding_pnl, 6)
-        else:
-            realized_net_book = float(row.get("pnl") if row.get("pnl") is not None else (row.get("realisedPnl") or 0.0))
-            book_pnl = round(realized_net_book, 6)
-            gross_pnl = round(book_pnl + total_fee - funding_pnl, 6)
 
         net_pnl = round(book_pnl + total_rebate, 6)
         en_bps = (en_fee / entry_notional * 10_000) if (fee_known and entry_notional > 0) else None

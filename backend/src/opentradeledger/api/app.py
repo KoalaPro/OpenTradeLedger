@@ -20,6 +20,7 @@ from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.adapters.registry import AdapterRegistry, build_default_registry
 from opentradeledger.core.account_partition import (
     AccountIdentityError,
+    deterministic_uid_suffix,
     is_secondary_account_id,
     mask_uid,
     mint_account_id,
@@ -572,6 +573,21 @@ def create_app(
 
     async def commit_candidate(cand: ExchangeUpsertRequest, request: Request, *, finish_onboarding: bool) -> Response:
         acct_id, adapter_id, adapter, temp_cred = _prepare_candidate(cand)
+        if cand.create_new and not cand.account_id.strip():
+            disc_uid = temp_cred.remote_uid
+            if not disc_uid:
+                info = await adapter.probe_identity(temp_cred)
+                if isinstance(info, dict):
+                    disc_uid = str(info.get("remote_uid") or "").strip()
+            if disc_uid:
+                det_id = mint_account_id(
+                    adapter_id,
+                    _occupied_account_ids(adapter_id, adapter),
+                    preferred_suffix=deterministic_uid_suffix(adapter_id, disc_uid),
+                    force_secondary=True,
+                )
+                acct_id = det_id
+                temp_cred = temp_cred.model_copy(update={"venue_id": acct_id})
         eff_expected_rev = "absent" if (cand.create_new and not cand.account_id.strip()) else cand.expected_revision
         # Existing users can edit credentials while intentionally viewing the demo.
         # Also finish onboarding for older installations that saved a key before setup.
@@ -617,6 +633,7 @@ def create_app(
         # Optional batch import of selected on-chain sub-accounts (e.g. Hyperliquid subAccounts)
         if res.get("committed") and cand.include_subaccounts and adapter.meta.auth_mode == "wallet_address":
             added_subs: list[str] = []
+            failed_subs: list[dict[str, str]] = []
             for sub in cand.include_subaccounts:
                 sub_addr = normalize_evm_address(str(sub.get("address") or sub.get("subAccountUser") or ""))
                 if not sub_addr or sub_addr == temp_cred.api_key:
@@ -644,10 +661,20 @@ def create_app(
                     if sub_res.get("committed"):
                         added_subs.append(sub_acct_id)
                         res.setdefault("venues", {}).update(sub_res.get("venues") or {})
-                except Exception:
-                    continue
+                except Exception as sub_exc:
+                    sub_diag = humanize_exchange_error(adapter_id, sub_exc)
+                    failed_subs.append(
+                        {
+                            "address": sub_addr,
+                            "name": sub_name,
+                            "error": getattr(sub_exc, "reason", None) or sub_diag["reason"],
+                            "error_zh": getattr(sub_exc, "reason_zh", None) or sub_diag["reason_zh"],
+                        }
+                    )
             if added_subs:
                 res["added_subaccounts"] = added_subs
+            if failed_subs:
+                res["failed_subaccounts"] = failed_subs
 
         if res.get("committed") and enter_live_ledger and ledger_service.demo_mode:
             ledger_service.set_demo_mode(False)
@@ -769,6 +796,7 @@ def create_app(
                 raw_sc = store.venue_scope(acct_id)
                 saved_uid = str((c_item.get("masked_uid") if c_item else "") or mask_uid(str(raw_sc.get_kv("account_uid") or "")))
                 saved_role = str((c_item.get("account_role") if c_item else "") or raw_sc.get_kv("account_role") or "")
+                saved_label = str((c_item.get("label") if c_item else "") or raw_sc.get_kv("account_label") or "")
                 eff_c_item = (
                     {**c_item, "masked_uid": saved_uid, "account_role": saved_role}
                     if c_item is not None
@@ -778,6 +806,7 @@ def create_app(
                     {
                         "account_id": acct_id,
                         "adapter_id": ad_id,
+                        "label": saved_label,
                         "configured": is_c,
                         "has_archived_data": has_d,
                         "masked_uid": saved_uid,
@@ -820,14 +849,36 @@ def create_app(
     async def verify_exchange_before_save(body: ExchangeUpsertRequest) -> Response:
         acct_id, adapter_id, adapter, temp_cred = _prepare_candidate(body)
         existing_cred = vault.get_decrypted(acct_id)
+        has_existing_data = bool(adapter.has_venue_data(store.for_account(acct_id, adapter_id)))
         bound_uid = str(
             (existing_cred.remote_uid if existing_cred else "")
             or store.venue_scope(acct_id).get_kv("account_uid")
             or ""
         ).strip()
+        uses_probe_uid = adapter.meta.identity_mode == "probe"
         try:
+            is_rotating_existing = (
+                uses_probe_uid
+                and existing_cred is not None
+                and (
+                    existing_cred.api_key.strip() != temp_cred.api_key.strip()
+                    or existing_cred.api_secret.strip() != temp_cred.api_secret.strip()
+                )
+            )
+            if not bound_uid and is_rotating_existing and existing_cred is not None:
+                prev_info = await adapter.probe_identity(existing_cred)
+                if isinstance(prev_info, dict) and prev_info.get("remote_uid"):
+                    bound_uid = str(prev_info["remote_uid"]).strip()
+
             res = await adapter.test_connection(temp_cred)
             probed_uid = str((res.get("remote_uid") if isinstance(res, dict) else "") or temp_cred.remote_uid or "").strip()
+            if body.create_new and not body.account_id.strip() and probed_uid:
+                acct_id = mint_account_id(
+                    adapter_id,
+                    _occupied_account_ids(adapter_id, adapter),
+                    preferred_suffix=deterministic_uid_suffix(adapter_id, probed_uid),
+                    force_secondary=True,
+                )
             sync_manager.check_identity_conflicts(
                 account_id=acct_id,
                 adapter_id=adapter_id,
@@ -836,6 +887,8 @@ def create_app(
                 bound_uid=bound_uid,
                 exchange_name=adapter.meta.display_name,
                 exchange_name_zh=adapter.meta.display_name_zh,
+                require_verified_uid=bool(bound_uid and uses_probe_uid),
+                require_uid_for_existing_data=bool(is_rotating_existing and has_existing_data),
             )
             out_payload = {
                 **(res if isinstance(res, dict) else {}),
@@ -902,6 +955,8 @@ def create_app(
                     },
                 )
             masked = vault.upsert(temp_cred)
+            if temp_cred.label:
+                store.venue_scope(acct_id).set_kv("account_label", temp_cred.label)
             health_state = (
                 health_tracker.mark_unverified(acct_id)
                 if body.enabled
@@ -920,6 +975,15 @@ def create_app(
         adapter = reg.get(adapter_id)
         scoped_store = store.for_account(vid, adapter_id)
         async with sync_manager.credential_change(vid, expected_revision):
+            existing_c = vault.get_decrypted(vid)
+            if keep_data and existing_c is not None:
+                raw_sc = store.venue_scope(vid)
+                if existing_c.label:
+                    raw_sc.set_kv("account_label", existing_c.label)
+                if existing_c.remote_uid:
+                    raw_sc.set_kv("account_uid", existing_c.remote_uid)
+                if existing_c.account_role:
+                    raw_sc.set_kv("account_role", existing_c.account_role)
             had_cred = vault.delete(vid)
             had_data = bool(adapter and adapter.has_venue_data(scoped_store))
             if not had_cred and not had_data:

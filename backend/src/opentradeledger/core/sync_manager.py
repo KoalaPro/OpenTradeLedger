@@ -226,23 +226,41 @@ class SyncManager:
         bound_uid: str,
         exchange_name: str = "",
         exchange_name_zh: str = "",
+        require_verified_uid: bool = False,
+        require_uid_for_existing_data: bool = False,
     ) -> None:
         acct_id = account_id.strip().lower()
         ad_id = parse_adapter_id(adapter_id)
         clean_uid = (resolved_uid or "").strip()
         clean_bound = (bound_uid or "").strip()
 
-        if clean_bound and clean_uid and clean_bound.lower() != clean_uid.lower():
+        if clean_bound:
+            if not clean_uid and require_verified_uid:
+                raise AccountIdentityError(
+                    "ACCOUNT_UID_UNAVAILABLE",
+                    masked_uid=mask_uid(clean_bound),
+                    exchange_name=exchange_name,
+                    exchange_name_zh=exchange_name_zh,
+                )
+            if clean_uid and clean_bound.lower() != clean_uid.lower():
+                raise AccountIdentityError(
+                    "ACCOUNT_UID_MISMATCH",
+                    masked_uid=mask_uid(clean_uid),
+                    exchange_name=exchange_name,
+                    exchange_name_zh=exchange_name_zh,
+                )
+        elif require_uid_for_existing_data and not clean_uid:
             raise AccountIdentityError(
-                "ACCOUNT_UID_MISMATCH",
-                masked_uid=mask_uid(clean_uid),
+                "ACCOUNT_UID_UNAVAILABLE",
                 exchange_name=exchange_name,
                 exchange_name_zh=exchange_name_zh,
             )
 
         clean_key = (api_key or "").strip()
+        active_acct_ids: set[str] = set()
         for other in self.vault.list_decrypted():
             other_acct = other.venue_id.strip().lower()
+            active_acct_ids.add(other_acct)
             if other_acct == acct_id or other.effective_adapter_id != ad_id:
                 continue
             other_uid = str(
@@ -263,6 +281,30 @@ class SyncManager:
                     exchange_name=exchange_name,
                     exchange_name_zh=exchange_name_zh,
                 )
+
+        if clean_uid:
+            adapter = self.registry.get(ad_id)
+            candidate_partitions = {ad_id, *self.store.list_partition_account_ids(ad_id)}
+            for other_acct in sorted(candidate_partitions):
+                if other_acct == acct_id or other_acct in active_acct_ids:
+                    continue
+                if adapter is not None and not adapter.has_venue_data(self.store.for_account(other_acct, ad_id)):
+                    continue
+                other_sc = self.store.venue_scope(other_acct)
+                other_uid = str(other_sc.get_kv("account_uid") or "").strip()
+                if not other_uid:
+                    snap_other = other_sc.get_kv("snapshot")
+                    if isinstance(snap_other, dict):
+                        other_uid = str(snap_other.get("wallet_address") or "").strip()
+                if other_uid and clean_uid.lower() == other_uid.lower():
+                    saved_lbl = str(other_sc.get_kv("account_label") or other_acct).strip()
+                    raise AccountIdentityError(
+                        "ARCHIVED_ACCOUNT_UID_EXISTS",
+                        masked_uid=mask_uid(clean_uid),
+                        existing_label=saved_lbl,
+                        exchange_name=exchange_name,
+                        exchange_name_zh=exchange_name_zh,
+                    )
 
     async def start(self) -> None:
         if self._bg_task and not self._bg_task.done():
@@ -377,18 +419,23 @@ class SyncManager:
                         kv_role = str(raw_scope.get_kv("account_role") or "").strip()
                         probed_uid = kv_uid
                         probed_role = kv_role
-                        if (not cred.remote_uid or not cred.account_role) and not raw_scope.get_kv("identity_backfilled_v1"):
+                        need_uid = not (cred.remote_uid or kv_uid)
+                        need_role = not (cred.account_role or kv_role) and not raw_scope.get_kv("identity_backfilled_v1")
+                        if need_uid or need_role:
                             info = await adapter.probe_identity(cred)
-                            raw_scope.set_kv("identity_backfilled_v1", True)
                             if isinstance(info, dict):
                                 probed_uid = str(info.get("remote_uid") or probed_uid or "").strip()
                                 probed_role = str(info.get("account_role") or probed_role or "").strip()
                         eff_uid = cred.remote_uid or probed_uid
                         eff_role = cred.account_role or probed_role
+                        if eff_uid and not raw_scope.get_kv("identity_backfilled_v1"):
+                            raw_scope.set_kv("identity_backfilled_v1", True)
                         if eff_uid and eff_uid != kv_uid:
                             raw_scope.set_kv("account_uid", eff_uid)
                         if eff_role and eff_role != kv_role:
                             raw_scope.set_kv("account_role", eff_role)
+                        if cred.label and cred.label != raw_scope.get_kv("account_label"):
+                            raw_scope.set_kv("account_label", cred.label)
                         if (eff_uid and eff_uid != cred.remote_uid) or (eff_role and eff_role != cred.account_role):
                             self.vault.upsert(
                                 cred.model_copy(update={"remote_uid": eff_uid, "account_role": eff_role})
@@ -460,18 +507,43 @@ class SyncManager:
             base_iv = max(1, int(round(self.poll_interval_sec)))
             existing_cred = self.vault.get_decrypted(acct_id)
             raw_scope = self.store.venue_scope(acct_id)
+            scoped_store = self.store.for_account(acct_id, adapter_id)
+            has_existing_data = bool(adapter.has_venue_data(scoped_store))
             prev_bound_uid = str(
                 (existing_cred.remote_uid if existing_cred else "")
                 or raw_scope.get_kv("account_uid")
                 or ""
             ).strip()
+            id_mode = adapter.meta.identity_mode
+            uses_probe_uid = id_mode == "probe"
+            uses_sync_uid = id_mode == "sync_bound"
             partition_snap = self.store.snapshot_venue_partition(acct_id)
-            scoped_store = self.store.for_account(acct_id, adapter_id)
             self.ledger_service.syncing = True
             client: Any = None
             try:
+                if (
+                    not prev_bound_uid
+                    and existing_cred is not None
+                    and uses_probe_uid
+                    and (
+                        existing_cred.api_key.strip() != cred.api_key.strip()
+                        or existing_cred.api_secret.strip() != cred.api_secret.strip()
+                    )
+                ):
+                    prev_info = await adapter.probe_identity(existing_cred)
+                    if isinstance(prev_info, dict) and prev_info.get("remote_uid"):
+                        prev_bound_uid = str(prev_info["remote_uid"]).strip()
+
                 probed = await adapter.probe_identity(cred)
                 early_uid = str(probed.get("remote_uid") or getattr(cred, "remote_uid", "") or "").strip()
+                is_rotating_existing = (
+                    uses_probe_uid
+                    and existing_cred is not None
+                    and (
+                        existing_cred.api_key.strip() != cred.api_key.strip()
+                        or existing_cred.api_secret.strip() != cred.api_secret.strip()
+                    )
+                )
                 self.check_identity_conflicts(
                     account_id=acct_id,
                     adapter_id=adapter_id,
@@ -480,6 +552,8 @@ class SyncManager:
                     bound_uid=prev_bound_uid,
                     exchange_name=adapter.meta.display_name,
                     exchange_name_zh=adapter.meta.display_name_zh,
+                    require_verified_uid=bool(prev_bound_uid and uses_probe_uid),
+                    require_uid_for_existing_data=bool(is_rotating_existing and has_existing_data),
                 )
 
                 client = adapter.create_client(cred)
@@ -494,16 +568,17 @@ class SyncManager:
                     if isinstance(conn_res, dict):
                         probed = conn_res
 
+                post_sync_kv_uid = str(raw_scope.get_kv("account_uid") or "").strip() if uses_sync_uid else ""
                 resolved_uid = str(
                     probed.get("remote_uid")
                     or getattr(cred, "remote_uid", "")
-                    or raw_scope.get_kv("account_uid")
+                    or post_sync_kv_uid
                     or ""
                 ).strip()
                 resolved_role = str(
                     probed.get("account_role")
                     or getattr(cred, "account_role", "")
-                    or raw_scope.get_kv("account_role")
+                    or (raw_scope.get_kv("account_role") if resolved_uid and resolved_uid == prev_bound_uid else "")
                     or ""
                 ).strip()
                 self.check_identity_conflicts(
@@ -514,12 +589,17 @@ class SyncManager:
                     bound_uid=prev_bound_uid,
                     exchange_name=adapter.meta.display_name,
                     exchange_name_zh=adapter.meta.display_name_zh,
+                    require_verified_uid=bool(prev_bound_uid and uses_probe_uid),
+                    require_uid_for_existing_data=bool(is_rotating_existing and has_existing_data),
                 )
 
                 if resolved_uid:
                     raw_scope.set_kv("account_uid", resolved_uid)
+                    raw_scope.set_kv("identity_backfilled_v1", True)
                 if resolved_role:
                     raw_scope.set_kv("account_role", resolved_role)
+                if cred.label:
+                    raw_scope.set_kv("account_label", cred.label)
 
                 partition_snap["sync_metadata"] = self.store.snapshot_sync_metadata()
                 schedule = self._load_schedule()
