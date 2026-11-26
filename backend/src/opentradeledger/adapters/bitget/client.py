@@ -92,6 +92,37 @@ class BitgetApiError(RuntimeError):
         super().__init__(f"Bitget GET {path} failed ({status_code} / {code}): {detail}")
 
 
+def _is_fatal_bitget_error(exc: BaseException) -> bool:
+    if isinstance(exc, ReadOnlyGuardError):
+        return True
+    if isinstance(exc, (httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, BitgetApiError):
+        if exc.status_code == 0 or exc.status_code == 429 or exc.status_code >= 500:
+            return True
+        if str(exc.code or "").strip() in {"429", "40015", "40010", "50001", "50004", "50011"}:
+            return True
+    low = str(exc).lower()
+    return any(
+        tok in low
+        for tok in (
+            "http 5",
+            "http 429",
+            "rate limit",
+            "too frequent",
+            "too many",
+            "busy",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "system is abnormal",
+            "timed out",
+            "timeout",
+        )
+    )
+
+
 class BitgetReadOnlyClient:
     """Async read-only Bitget client enforcing `GET`-only requests and path whitelisting."""
 
@@ -189,7 +220,7 @@ class BitgetReadOnlyClient:
                 body = {"raw": resp.text[:240]}
             code = str(body.get("code") or "") if isinstance(body, dict) else ""
             if code == "429" and attempt < 3:
-                await asyncio.sleep(0.65 * (attempt + 1))
+                await asyncio.sleep((0.65 * (attempt + 1)) if self._owns_client else 0.01)
                 continue
             if resp.status_code >= 400 or (signed and code and code != "00000"):
                 raise BitgetApiError(resp.status_code, path, code, body)
@@ -213,19 +244,34 @@ class BitgetReadOnlyClient:
         *,
         signed: bool = True,
         default: Any = None,
+        field_name: str = "",
+        failed_fields: Optional[list[str]] = None,
+        warnings: Optional[list[str]] = None,
     ) -> Any:
         try:
             return await self.get(path, params=params, signed=signed)
-        except BitgetApiError as exc:
-            logger.debug("Bitget optional GET %s skipped (%s): %s", path, exc.code, exc.detail)
-            return default
-        except httpx.HTTPError as exc:
-            logger.warning("Bitget HTTP warning on %s: %s", path, exc)
+        except Exception as exc:
+            if _is_fatal_bitget_error(exc):
+                raise
+            logger.debug("Bitget optional GET %s skipped: %s", path, exc)
+            if warnings is not None:
+                warnings.append(f"{field_name or path}: {exc}")
+            if failed_fields is not None and field_name and field_name not in failed_fields:
+                failed_fields.append(field_name)
             return default
 
     async def fetch_live_overview_bundle(self) -> dict[str, Any]:
         """Auto-detect UTA v3 vs Classic v2 and fetch live account assets (UTA + Funding), positions, and quotes."""
-        spot_tickers_raw = await self._safe_get("/api/v2/spot/market/tickers", signed=False, default=[])
+        warnings: list[str] = []
+        failed_fields: list[str] = []
+        spot_tickers_raw = await self._safe_get(
+            "/api/v2/spot/market/tickers",
+            signed=False,
+            default=[],
+            field_name="spot_tickers",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
         spot_tickers: dict[str, str] = {"USDT": "1", "USDC": "1", "FDUSD": "1", "USD1": "1"}
         if isinstance(spot_tickers_raw, list):
             for tk in spot_tickers_raw:
@@ -239,24 +285,63 @@ class BitgetReadOnlyClient:
         try:
             uta_assets = await self.get("/api/v3/account/assets")
             account_mode = "UTA"
-        except BitgetApiError as exc:
-            if exc.code in ("40012", "40009", "400172", "40014"):
+        except Exception as exc:
+            if _is_fatal_bitget_error(exc):
+                raise
+            if isinstance(exc, BitgetApiError) and (
+                exc.status_code == 401
+                or exc.code
+                in (
+                    "40012",
+                    "40009",
+                    "400172",
+                    "40014",
+                    "40001",
+                    "40002",
+                    "40003",
+                    "40004",
+                    "40005",
+                    "40006",
+                    "40007",
+                    "40008",
+                    "40013",
+                    "40037",
+                )
+            ):
                 raise
             uta_assets = None
             account_mode = "CLASSIC"
 
         if account_mode == "UTA":
-            settings = await self._safe_get("/api/v3/account/settings", default={})
-            funding_assets = await self._safe_get("/api/v3/account/funding-assets", default=[])
+            settings = await self._safe_get(
+                "/api/v3/account/settings",
+                default={},
+                field_name="settings",
+                failed_fields=failed_fields,
+                warnings=warnings,
+            )
+            funding_assets = await self._safe_get(
+                "/api/v3/account/funding-assets",
+                default=[],
+                field_name="funding_assets",
+                failed_fields=failed_fields,
+                warnings=warnings,
+            )
             cur_pos = await self._safe_get(
                 "/api/v3/position/current-position",
                 [("category", "USDT-FUTURES")],
                 default={},
+                field_name="futures_positions",
+                failed_fields=failed_fields,
+                warnings=warnings,
             )
             open_ords_res = await self._safe_get(
                 "/api/v3/trade/unfilled-orders",
                 [("category", "USDT-FUTURES")],
                 default={},
+                field_name="futures_open_orders",
+                failed_fields=failed_fields,
+                warnings=warnings,
             )
             open_ords = (
                 (open_ords_res.get("list") or [])
@@ -279,8 +364,10 @@ class BitgetReadOnlyClient:
                 uta_assets=uta_assets,
                 funding_assets=funding_list,
                 classic_balances=[],
+                failed_fields=failed_fields,
+                warnings=warnings,
             )
-            return {
+            out_uta: dict[str, Any] = {
                 "uid": uid_val,
                 "account_mode": "UTA",
                 "settings": dict(settings) if isinstance(settings, dict) else {},
@@ -293,23 +380,49 @@ class BitgetReadOnlyClient:
                 "spot_tickers": spot_tickers,
                 "stock_bundle": stock_bundle,
             }
+            if failed_fields:
+                out_uta["_failed_fields"] = failed_fields
+            if warnings:
+                out_uta["_warnings"] = warnings
+            return out_uta
 
-        info = await self._safe_get("/api/v2/spot/account/info", default={})
-        all_bal = await self._safe_get("/api/v2/account/all-account-balance", default=[])
+        info = await self._safe_get(
+            "/api/v2/spot/account/info",
+            default={},
+            field_name="settings",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        all_bal = await self._safe_get(
+            "/api/v2/account/all-account-balance",
+            default=[],
+            field_name="classic_balances",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
         mix_acc = await self._safe_get(
             "/api/v2/mix/account/accounts",
             [("productType", "USDT-FUTURES")],
             default=[],
+            field_name="futures_accounts",
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
         mix_pos = await self._safe_get(
             "/api/v2/mix/position/all-position",
             [("productType", "USDT-FUTURES"), ("marginCoin", "USDT")],
             default=[],
+            field_name="futures_positions",
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
         mix_open_res = await self._safe_get(
             "/api/v2/mix/order/orders-pending",
             [("productType", "USDT-FUTURES")],
             default={},
+            field_name="futures_open_orders",
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
         mix_open = (
             (mix_open_res.get("entrustedList") or [])
@@ -322,8 +435,10 @@ class BitgetReadOnlyClient:
             uta_assets={},
             funding_assets=[],
             classic_balances=classic_list,
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
-        return {
+        out_classic: dict[str, Any] = {
             "uid": str((info or {}).get("userId") or (info or {}).get("uid") or ""),
             "account_mode": "CLASSIC",
             "settings": dict(info) if isinstance(info, dict) else {},
@@ -336,6 +451,11 @@ class BitgetReadOnlyClient:
             "spot_tickers": spot_tickers,
             "stock_bundle": stock_bundle_classic,
         }
+        if failed_fields:
+            out_classic["_failed_fields"] = failed_fields
+        if warnings:
+            out_classic["_warnings"] = warnings
+        return out_classic
 
     async def _fetch_stock_bundle(
         self,
@@ -344,10 +464,24 @@ class BitgetReadOnlyClient:
         uta_assets: Any,
         funding_assets: Sequence[dict[str, Any]],
         classic_balances: Sequence[dict[str, Any]],
+        failed_fields: Optional[list[str]] = None,
+        warnings: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Fetch Bitget Stock+ real US stock sub-account & Spot rToken fills (graceful degradation if unopened)."""
-        sp_acc = await self._safe_get("/api/v3/stockplus/asset/account", default=None)
-        sp_pos_raw = await self._safe_get("/api/v3/stockplus/asset/stock-position", default=None)
+        sp_acc = await self._safe_get(
+            "/api/v3/stockplus/asset/account",
+            default=None,
+            field_name="stock_bundle",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        sp_pos_raw = await self._safe_get(
+            "/api/v3/stockplus/asset/stock-position",
+            default=None,
+            field_name="stock_bundle",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
         sp_positions = (
             (sp_pos_raw.get("list") or [])
             if isinstance(sp_pos_raw, dict)

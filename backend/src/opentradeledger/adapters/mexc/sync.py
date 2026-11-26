@@ -73,6 +73,14 @@ async def sync_mexc_venue(
             ts_fn=lambda r: float(r.get("_time_ms") or r.get("createTime") or 0),
         )
         scope.set_kv("cashflow_sync_sec", now_s)
+    prev_live = scope.get_kv("live_bundle")
+    live = dict(live) if isinstance(live, dict) else {}
+    failed_fields = [str(x) for x in (live.pop("_failed_fields", None) or ()) if x]
+    warnings = [str(w) for w in (live.get("_warnings") or ()) if w]
+    if isinstance(prev_live, dict) and failed_fields:
+        for fk in failed_fields:
+            if fk in prev_live and prev_live[fk]:
+                live[fk] = prev_live[fk]
     scope.set_kv("live_bundle", live)
 
     syms = (
@@ -122,4 +130,5 @@ async def sync_mexc_venue(
         fp_after=fp_after,
         new_closed_delta=new_closed,
         mode="venue_sync",
+        warnings=warnings,
     )

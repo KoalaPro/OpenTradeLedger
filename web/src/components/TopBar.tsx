@@ -1,7 +1,7 @@
 import { Eye, EyeOff } from 'lucide-react'
 import { useI18n } from '../i18n'
 import { CURRENCY_OPTIONS } from '../lib/currency'
-import type { CurrencyCode, Locale, NavPage, Polarity, Theme } from '../lib/types'
+import type { CurrencyCode, DashboardWarningItem, Locale, NavPage, Polarity, Theme } from '../lib/types'
 import { SegmentedPills } from './SegmentedPills'
 
 interface TopBarProps {
@@ -21,6 +21,7 @@ interface TopBarProps {
   rangeKey: string
   onChangeRange: (rk: string) => void
   exchangeErrorCount?: number
+  activeWarnings?: DashboardWarningItem[]
   onInspectErrors?: () => void
 }
 
@@ -53,10 +54,21 @@ export function TopBar({
   rangeKey,
   onChangeRange,
   exchangeErrorCount = 0,
+  activeWarnings = [],
   onInspectErrors,
 }: TopBarProps) {
   const { t } = useI18n()
   const showRange = page !== 'settings' && page !== 'extensions'
+  const hasWarnings = activeWarnings.length > 0
+  const warningTitle = hasWarnings
+    ? activeWarnings
+        .map(w => {
+          const name = locale === 'en' ? w.display_name : w.display_name_zh || w.display_name
+          const text = locale === 'en' ? w.summary || w.summary_zh : w.summary_zh || w.summary
+          return `${name}: ${text}`
+        })
+        .join(' | ')
+    : ''
 
   return (
     <header className="sticky top-0 z-20 min-h-[54px] py-2 px-3 sm:px-8 lg:px-10 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm shrink-0">
@@ -89,7 +101,19 @@ export function TopBar({
               </span>
             </button>
           )}
-          {!demoMode && exchangeErrorCount === 0 && reconciledZero && (
+          {!demoMode && hasWarnings && (
+            <button
+              type="button"
+              data-testid="topbar-partial-sync-badge"
+              title={warningTitle}
+              onClick={onInspectErrors}
+              className="otl-status-warn inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[12px] font-semibold cursor-pointer max-w-full text-left sm:whitespace-nowrap self-center"
+            >
+              <span className="otl-venue-dot" style={{ background: 'var(--warn)' }} />
+              <span>{locale === 'en' ? 'Partial Sync' : '部分同步'}</span>
+            </button>
+          )}
+          {!demoMode && exchangeErrorCount === 0 && !hasWarnings && reconciledZero && (
             <span className="text-[12px] text-[var(--fg-3)] hidden sm:inline whitespace-nowrap">
               {t('kpi_reconciled_zero')}
             </span>

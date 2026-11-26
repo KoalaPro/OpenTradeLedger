@@ -111,12 +111,33 @@ def build_bybit_venue_ledger(
         equity_usd += f_usd if f_usd > 0 else _coin_usd(ccy_f, q_f)
         raw_spot_rows.append((ccy_f, q_f, f_usd, "FUNDING"))
 
-    dep = sum(_coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0)) for x in (snap.get("deposits") or []))
+    def _status_ok(row: Mapping[str, Any], allowed: set[str]) -> bool:
+        raw_st = row.get("status")
+        if raw_st is None:
+            return True
+        st = str(raw_st).strip().lower()
+        if not st:
+            return True
+        return st in allowed
+
+    dep = sum(
+        _coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0))
+        for x in (snap.get("deposits") or [])
+        if _status_ok(x, {"3", "10012", "success", "completed"})
+    )
     int_dep = sum(
         _coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0))
         for x in (snap.get("internal_deposits") or [])
+        if _status_ok(x, {"2", "success", "completed"})
     )
-    wd = sum(_coin_usd(str(x.get("coin") or ""), float(x.get("amount") or 0.0)) for x in (snap.get("withdrawals") or []))
+    wd = sum(
+        _coin_usd(
+            str(x.get("coin") or ""),
+            float(x.get("amount") or 0.0) + max(0.0, float(x.get("withdrawFee") or 0.0)),
+        )
+        for x in (snap.get("withdrawals") or [])
+        if _status_ok(x, {"success", "blockchainconfirmed", "completed"})
+    )
     principal_usd = round(dep + int_dep - wd, 2)
 
     quote = (snap.get("fee_rates") or [{}])[0]

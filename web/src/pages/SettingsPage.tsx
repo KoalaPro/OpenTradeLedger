@@ -22,6 +22,7 @@ import { CURRENCY_OPTIONS, useCurrency } from '../lib/currency'
 import type {
   AuthStatusPayload,
   CurrencyCode,
+  DashboardWarningItem,
   DiscoveredSubaccount,
   ExchangeAccountInstance,
   ExchangeAdapterInfo,
@@ -35,6 +36,7 @@ import type {
 interface SettingsPageProps {
   settings: UserSettings
   adapters: ExchangeAdapterInfo[]
+  dashboardWarnings?: DashboardWarningItem[]
   demoMode: boolean
   previewFallback?: boolean
   authStatus?: AuthStatusPayload
@@ -100,6 +102,7 @@ function formatRoleLabel(role: string | undefined, isZh: boolean): string {
 export function SettingsPage({
   settings,
   adapters,
+  dashboardWarnings = [],
   demoMode,
   previewFallback = false,
   authStatus,
@@ -407,15 +410,42 @@ export function SettingsPage({
   const modalBusy = Boolean(busyVenue && (busyVenue === addingVenue || busyVenue === editingAccountId))
   const ceremonyStage: 'credentials' | 'verifying' | 'syncing' | 'done' = submitStep || 'credentials'
 
-  const renderStatusPill = (acctId: string, vStatus: ReturnType<typeof getAccountVisualStatus>) => (
+  const resolveAccountWarnings = (acct: ExchangeAccountInstance): string[] => {
+    if (!acct.configured || acct.credential?.enabled === false) return []
+    const direct = acct.health?.warnings ?? []
+    const matchedDash = dashboardWarnings.find(
+      w => w.venue_id.toLowerCase() === acct.account_id.toLowerCase(),
+    )
+    const dashList = matchedDash
+      ? matchedDash.warnings.length > 0
+        ? matchedDash.warnings
+        : [isZh ? matchedDash.summary_zh || matchedDash.summary : matchedDash.summary || matchedDash.summary_zh]
+      : []
+    return Array.from(new Set([...direct, ...dashList].map(s => s.trim()).filter(Boolean)))
+  }
+
+  const renderStatusPill = (
+    acctId: string,
+    vStatus: ReturnType<typeof getAccountVisualStatus>,
+    hasWarnings = false,
+  ) => (
     <>
-      {vStatus === 'connected' && (
+      {vStatus === 'connected' && !hasWarnings && (
         <span
           data-testid={`adapter-status-${acctId}`}
           className="inline-flex items-center gap-1.5 text-[12px] text-[var(--ok)]"
         >
           <span className="otl-venue-dot" style={{ background: 'var(--ok)' }} />
           {t('set_connected')}
+        </span>
+      )}
+      {vStatus === 'connected' && hasWarnings && (
+        <span
+          data-testid={`adapter-status-${acctId}`}
+          className="inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--warn)]"
+        >
+          <span className="otl-venue-dot" style={{ background: 'var(--warn)' }} />
+          {isZh ? `${t('set_connected')} · 部分同步` : `${t('set_connected')} · Partial Sync`}
         </span>
       )}
       {vStatus === 'error' && (
@@ -640,6 +670,7 @@ export function SettingsPage({
                   ? acct.health?.error_reason_zh || acct.health?.error_reason || ''
                   : acct.health?.error_reason || acct.health?.error_reason_zh || ''
                 const rawErr = acct.health?.raw_error || ''
+                const acctWarnings = resolveAccountWarnings(acct)
                 const acctDisplayLabel = customLbl ? `${adName} · ${customLbl}` : adName
 
                 return (
@@ -657,7 +688,7 @@ export function SettingsPage({
                               {roleBadge}
                             </span>
                           )}
-                          {renderStatusPill(acct.account_id, vStatus)}
+                          {renderStatusPill(acct.account_id, vStatus, acctWarnings.length > 0)}
                         </div>
 
                         <div className="text-[12px] text-[var(--fg-3)] mt-0.5 truncate">
@@ -665,13 +696,21 @@ export function SettingsPage({
                             <>
                               {customLbl && <span className="text-[var(--fg-2)]">{customLbl} · </span>}
                               {uidTag && ad.auth_mode !== 'wallet_address' && (
-                                <span className="font-mono text-[var(--fg-2)]">UID {uidTag} · </span>
+                                <>
+                                  <span className="font-mono text-[var(--fg-2)] sensitive">UID {uidTag}</span>
+                                  {' · '}
+                                </>
                               )}
-                              <span className="font-mono text-[var(--fg-2)]">{maskedKey}</span> · {passLabel}
+                              <span className="font-mono text-[var(--fg-2)] sensitive">{maskedKey}</span> · {passLabel}
                             </>
                           ) : (
                             <>
-                              {uidTag && <span className="font-mono text-[var(--fg-2)]">UID {uidTag} · </span>}
+                              {uidTag && (
+                                <>
+                                  <span className="font-mono text-[var(--fg-2)] sensitive">UID {uidTag}</span>
+                                  {' · '}
+                                </>
+                              )}
                               {isZh ? '本地历史记录已封存（凭证已解绑）' : 'Local history archived (unbound)'}
                             </>
                           )}
@@ -706,6 +745,20 @@ export function SettingsPage({
                         {rawErr && !errReason.includes(rawErr) && (
                           <div className="opacity-85 font-mono break-all">{rawErr}</div>
                         )}
+                      </div>
+                    )}
+
+                    {acctWarnings.length > 0 && (
+                      <div
+                        data-testid={`adapter-warning-box-${acct.account_id}`}
+                        className="otl-status-warn px-3 py-2 rounded-md text-[12px] space-y-0.5"
+                      >
+                        {acctWarnings.map((w, wi) => (
+                          <div key={wi} className="flex items-start gap-1.5">
+                            <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                            <span>{w}</span>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -754,6 +807,7 @@ export function SettingsPage({
                         ? acct.health?.error_reason_zh || acct.health?.error_reason || ''
                         : acct.health?.error_reason || acct.health?.error_reason_zh || ''
                       const rawErr = acct.health?.raw_error || ''
+                      const acctWarnings = resolveAccountWarnings(acct)
                       const fullDisplayLabel = rawLbl.toLowerCase().startsWith(adName.toLowerCase())
                         ? rawLbl
                         : `${adName} · ${rawLbl}`
@@ -773,19 +827,27 @@ export function SettingsPage({
                                     {roleBadge}
                                   </span>
                                 )}
-                                {renderStatusPill(acct.account_id, vStatus)}
+                                {renderStatusPill(acct.account_id, vStatus, acctWarnings.length > 0)}
                               </div>
                               <div className="text-[12px] text-[var(--fg-3)] mt-0.5 truncate">
                                 {maskedKey ? (
                                   <>
                                     {uidTag && ad.auth_mode !== 'wallet_address' && (
-                                      <span className="font-mono text-[var(--fg-2)]">UID {uidTag} · </span>
+                                      <>
+                                        <span className="font-mono text-[var(--fg-2)] sensitive">UID {uidTag}</span>
+                                        {' · '}
+                                      </>
                                     )}
-                                    <span className="font-mono text-[var(--fg-2)]">{maskedKey}</span>
+                                    <span className="font-mono text-[var(--fg-2)] sensitive">{maskedKey}</span>
                                   </>
                                 ) : (
                                   <>
-                                    {uidTag && <span className="font-mono text-[var(--fg-2)]">UID {uidTag} · </span>}
+                                    {uidTag && (
+                                      <>
+                                        <span className="font-mono text-[var(--fg-2)] sensitive">UID {uidTag}</span>
+                                        {' · '}
+                                      </>
+                                    )}
                                     {isZh ? '本地历史记录已封存' : 'Local history archived'}
                                   </>
                                 )}
@@ -806,6 +868,20 @@ export function SettingsPage({
                               {rawErr && !errReason.includes(rawErr) && (
                                 <div className="opacity-85 font-mono break-all">{rawErr}</div>
                               )}
+                            </div>
+                          )}
+
+                          {acctWarnings.length > 0 && (
+                            <div
+                              data-testid={`adapter-warning-box-${acct.account_id}`}
+                              className="otl-status-warn px-3 py-2 rounded-md text-[12px] space-y-0.5"
+                            >
+                              {acctWarnings.map((w, wi) => (
+                                <div key={wi} className="flex items-start gap-1.5">
+                                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                                  <span>{w}</span>
+                                </div>
+                              ))}
                             </div>
                           )}
                         </div>
@@ -884,8 +960,9 @@ export function SettingsPage({
               </select>
             </div>
             {cur.code !== 'USDT' && cur.code !== 'USD' && (
-              <div className="text-[12px] text-[var(--fg-3)] text-right">
-                {t('set_fx_live')}: 1 USDT ≈ {cur.symbol}
+              <div data-testid="settings-fx-note" className="text-[12px] text-[var(--fg-3)] text-right">
+                {cur.fx.source === 'default' ? t('set_fx_offline') : t('set_fx_live')}: 1 USDT ≈{' '}
+                {cur.symbol}
                 {cur.rate.toFixed(cur.code === 'JPY' ? 2 : 4)}
                 {cur.fx.updated_at ? ` · ${cur.fx.updated_at}` : ''}
               </div>
@@ -989,11 +1066,16 @@ export function SettingsPage({
               <div className="flex items-center gap-2">
                 <input
                   type="number"
+                  data-testid="settings-goal-target-input"
+                  aria-label={isZh ? '目标金额 (固定以 USDT 计价)' : 'Target Equity (Fixed in USDT)'}
                   value={goalInput}
                   onChange={e => setGoalInput(e.target.value)}
                   placeholder={t('set_goal_target')}
-                  className="otl-input flex-1"
+                  className="otl-input flex-1 sensitive"
                 />
+                <span className="text-[12px] font-semibold text-[var(--fg-3)] whitespace-nowrap shrink-0">
+                  USDT
+                </span>
                 <button
                   type="button"
                   onClick={async () => {

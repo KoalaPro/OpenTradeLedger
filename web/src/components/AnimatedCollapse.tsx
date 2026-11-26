@@ -24,7 +24,9 @@ export function AnimatedCollapse({
 }: AnimatedCollapseProps) {
   const [rendered, setRendered] = useState(open)
   const [expanded, setExpanded] = useState(open)
+  const [settled, setSettled] = useState(open)
   const timerRef = useRef<number | null>(null)
+  const settleTimerRef = useRef<number | null>(null)
   const raf1Ref = useRef<number | null>(null)
   const raf2Ref = useRef<number | null>(null)
 
@@ -50,19 +52,34 @@ export function AnimatedCollapse({
         window.clearTimeout(timerRef.current)
         timerRef.current = null
       }
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current)
+        settleTimerRef.current = null
+      }
       setRendered(true)
       if (reduced || typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
         setExpanded(true)
+        setSettled(true)
       } else {
+        setSettled(false)
         cancelRafs()
         raf1Ref.current = window.requestAnimationFrame(() => {
           raf2Ref.current = window.requestAnimationFrame(() => {
             setExpanded(true)
+            settleTimerRef.current = window.setTimeout(() => {
+              setSettled(true)
+              settleTimerRef.current = null
+            }, durationMs)
           })
         })
       }
     } else {
       cancelRafs()
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current)
+        settleTimerRef.current = null
+      }
+      setSettled(false)
       setExpanded(false)
       if (rendered) {
         if (reduced) {
@@ -86,6 +103,9 @@ export function AnimatedCollapse({
       if (timerRef.current !== null) {
         window.clearTimeout(timerRef.current)
       }
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current)
+      }
     }
   }, [])
 
@@ -99,7 +119,9 @@ export function AnimatedCollapse({
     <div
       data-testid={testId}
       data-state={stateLabel}
-      className={`otl-collapse-grid ${isOpenVisual ? 'is-open' : 'is-collapsed'} ${className}`}
+      className={`otl-collapse-grid ${isOpenVisual ? 'is-open' : 'is-collapsed'} ${
+        isOpenVisual && settled ? 'is-settled' : ''
+      } ${className}`}
     >
       <div className="otl-collapse-inner">
         <div className={innerClassName}>{children}</div>

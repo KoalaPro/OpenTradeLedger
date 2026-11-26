@@ -95,6 +95,7 @@ from opentradeledger.adapters.okx.accounting import (
 )
 from opentradeledger.adapters.okx.client import OkxReadOnlyClient
 from opentradeledger.adapters.okx.sync import sync_okx_venue
+from opentradeledger.core.venue_health import IdentityProbeTransientError, is_transient_upstream_error
 from opentradeledger.security.vault import ExchangeCredentialRecord
 
 if TYPE_CHECKING:
@@ -155,7 +156,8 @@ class BinanceAdapter(BaseExchangeAdapter):
                 )
             return out
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_binance_venue(client, store, now_s=now_s, force_full=force_full)
@@ -194,26 +196,31 @@ class OkxAdapter(BaseExchangeAdapter):
 
     async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
         client = self.create_client(cred)
-        balances = await client.get_account_balance()
-        out: dict[str, Any] = {
-            "ok": True,
-            "venue_id": self.meta.venue_id,
-            "read_only": True,
-            "balances_count": len(balances),
-        }
         try:
-            cfg_rows = await client.request_readonly("GET", "/api/v5/account/config")
-            if isinstance(cfg_rows, list) and cfg_rows and isinstance(cfg_rows[0], dict):
-                cfg = cfg_rows[0]
-                uid = str(cfg.get("uid") or "").strip()
-                main_uid = str(cfg.get("mainUid") or "").strip()
-                if uid:
-                    out["remote_uid"] = uid
-                    if main_uid:
-                        out["account_role"] = "subaccount" if uid != main_uid else "master"
-        except Exception:
-            pass
-        return out
+            balances = await client.get_account_balance()
+            out: dict[str, Any] = {
+                "ok": True,
+                "venue_id": self.meta.venue_id,
+                "read_only": True,
+                "balances_count": len(balances),
+            }
+            try:
+                cfg_rows = await client.request_readonly("GET", "/api/v5/account/config")
+                if isinstance(cfg_rows, list) and cfg_rows and isinstance(cfg_rows[0], dict):
+                    cfg = cfg_rows[0]
+                    uid = str(cfg.get("uid") or "").strip()
+                    main_uid = str(cfg.get("mainUid") or "").strip()
+                    if uid:
+                        out["remote_uid"] = uid
+                        if main_uid:
+                            out["account_role"] = "subaccount" if uid != main_uid else "master"
+            except Exception as cfg_exc:
+                if is_transient_upstream_error(cfg_exc):
+                    raise IdentityProbeTransientError(str(cfg_exc)) from cfg_exc
+            return out
+        finally:
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_okx_venue(client, store, now_s=now_s, force_full=force_full)
@@ -251,34 +258,39 @@ class BybitAdapter(BaseExchangeAdapter):
 
     async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
         client = self.create_client(cred)
-        wallet = await client.get_wallet_balance("UNIFIED")
-        out: dict[str, Any] = {
-            "ok": True,
-            "venue_id": self.meta.venue_id,
-            "read_only": True,
-            "accounts": len(wallet.get("list") or []),
-        }
         try:
-            key_info = await client.get_api_key_info()
-            if isinstance(key_info, dict):
-                uid = str(key_info.get("userID") or "").strip()
-                if uid and uid != "0":
-                    out["remote_uid"] = uid
-                is_master = key_info.get("isMaster")
-                if isinstance(is_master, bool):
-                    out["account_role"] = "master" if is_master else "subaccount"
-                if str(key_info.get("readOnly", "1")) == "0":
-                    out["read_only"] = False
-                    out["permission_warning"] = (
-                        "API key has Read-Write permissions on Bybit; "
-                        "OpenTradeLedger enforces GET-only locally, but Read-Only keys are recommended."
-                    )
-                    out["permission_warning_zh"] = (
-                        "检测到该 Bybit API Key 为读写权限。虽然本程序本地强制拦截一切非 GET 请求，仍建议仅开启只读权限。"
-                    )
-        except Exception:
-            pass
-        return out
+            wallet = await client.get_wallet_balance("UNIFIED")
+            out: dict[str, Any] = {
+                "ok": True,
+                "venue_id": self.meta.venue_id,
+                "read_only": True,
+                "accounts": len(wallet.get("list") or []),
+            }
+            try:
+                key_info = await client.get_api_key_info()
+                if isinstance(key_info, dict):
+                    uid = str(key_info.get("userID") or "").strip()
+                    if uid and uid != "0":
+                        out["remote_uid"] = uid
+                    is_master = key_info.get("isMaster")
+                    if isinstance(is_master, bool):
+                        out["account_role"] = "master" if is_master else "subaccount"
+                    if str(key_info.get("readOnly", "1")) == "0":
+                        out["read_only"] = False
+                        out["permission_warning"] = (
+                            "API key has Read-Write permissions on Bybit; "
+                            "OpenTradeLedger enforces GET-only locally, but Read-Only keys are recommended."
+                        )
+                        out["permission_warning_zh"] = (
+                            "检测到该 Bybit API Key 为读写权限。虽然本程序本地强制拦截一切非 GET 请求，仍建议仅开启只读权限。"
+                        )
+            except Exception as key_exc:
+                if is_transient_upstream_error(key_exc):
+                    raise IdentityProbeTransientError(str(key_exc)) from key_exc
+            return out
+        finally:
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_bybit_venue(client, store, now_s=now_s, force_full=force_full)
@@ -324,19 +336,23 @@ class GateAdapter(BaseExchangeAdapter):
                 det = await client.raw_get("/account/detail")
                 if isinstance(det, dict) and det.get("user_id") not in (None, "", 0):
                     out["remote_uid"] = str(det["user_id"]).strip()
-            except Exception:
-                pass
+            except Exception as det_exc:
+                if is_transient_upstream_error(det_exc):
+                    raise IdentityProbeTransientError(str(det_exc)) from det_exc
             try:
                 subs = await client.raw_get("/sub_accounts")
                 if isinstance(subs, list):
                     out["account_role"] = "master"
             except Exception as sub_exc:
+                if is_transient_upstream_error(sub_exc):
+                    raise IdentityProbeTransientError(str(sub_exc)) from sub_exc
                 msg = str(sub_exc).lower()
                 if "sub_account" in msg or "sub-account" in msg or "subaccount" in msg:
                     out["account_role"] = "subaccount"
             return out
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_gate_venue(client, store, now_s=now_s, force_full=force_full)
@@ -381,8 +397,31 @@ class BitgetAdapter(BaseExchangeAdapter):
             try:
                 assets = await client.get("/api/v3/account/assets")
                 mode = "UTA"
-            except Exception:
-                assets = await client.get("/api/v2/spot/account/assets")
+            except Exception as uta_exc:
+                uta_low = str(uta_exc).lower()
+                if is_transient_upstream_error(uta_exc) or any(
+                    tok in uta_low
+                    for tok in (
+                        "40012",
+                        "40009",
+                        "400172",
+                        "40014",
+                        "40002",
+                        "40006",
+                        "40008",
+                        "passphrase",
+                        "signature",
+                        "http 401",
+                    )
+                ):
+                    raise
+                try:
+                    assets = await client.get("/api/v2/spot/account/assets")
+                except Exception as v2_exc:
+                    if "read-only violation" in str(v2_exc).lower():
+                        assets = await client.get("/api/v2/account/all-account-balance")
+                    else:
+                        raise
                 mode = "CLASSIC"
             count = len(assets) if isinstance(assets, list) else (1 if isinstance(assets, dict) else 0)
             out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "account_mode": mode, "assets": count}
@@ -394,11 +433,13 @@ class BitgetAdapter(BaseExchangeAdapter):
                     if uid:
                         out["remote_uid"] = uid
                         out["account_role"] = "subaccount" if (parent_id and parent_id != uid) else "master"
-            except Exception:
-                pass
+            except Exception as info_exc:
+                if is_transient_upstream_error(info_exc):
+                    raise IdentityProbeTransientError(str(info_exc)) from info_exc
             return out
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_bitget_venue(client, store, now_s=now_s, force_full=force_full)
@@ -445,7 +486,8 @@ class MexcAdapter(BaseExchangeAdapter):
                 out["remote_uid"] = str(account["uid"]).strip()
             return out
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_mexc_venue(client, store, now_s=now_s, force_full=force_full)
@@ -488,7 +530,8 @@ class EasiCoinAdapter(BaseExchangeAdapter):
             bal = await client.raw_get("/futures/private/v1/account/balance")
             return {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "status": "ok" if bal is not None else "empty"}
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_easicoin_venue(client, store, now_s=now_s, force_full=force_full)
@@ -537,8 +580,9 @@ class HyperliquidAdapter(BaseExchangeAdapter):
             subs: list[dict[str, str]] = []
             try:
                 subs = await client.get_subaccounts()
-            except Exception:
-                pass
+            except Exception as sub_exc:
+                if is_transient_upstream_error(sub_exc):
+                    raise IdentityProbeTransientError(str(sub_exc)) from sub_exc
             return {
                 "ok": True,
                 "venue_id": self.meta.venue_id,
@@ -549,7 +593,8 @@ class HyperliquidAdapter(BaseExchangeAdapter):
                 "subaccounts": subs,
             }
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_hyperliquid_venue(client, store, now_s=now_s, force_full=force_full)
@@ -592,7 +637,10 @@ class KucoinAdapter(BaseExchangeAdapter):
                 ov = await client.get_futures_overview("USDT")
                 has_eq = ov.get("accountEquity") is not None
             except Exception as fut_exc:
-                if "http 5" in str(fut_exc).lower() or "http 429" in str(fut_exc).lower():
+                fut_low = str(fut_exc).lower()
+                if is_transient_upstream_error(fut_exc) or any(
+                    c in fut_low for c in ("400001", "400003", "400004", "400005", "400006", "400007", "http 401")
+                ):
                     raise
                 accts = await client.get_spot_accounts()
                 has_eq = isinstance(accts, list)
@@ -600,13 +648,15 @@ class KucoinAdapter(BaseExchangeAdapter):
             key_info: dict[str, Any] = {}
             try:
                 key_info = await client.get_api_key_info()
-            except Exception:
-                pass
+            except Exception as k_exc:
+                if is_transient_upstream_error(k_exc):
+                    raise IdentityProbeTransientError(str(k_exc)) from k_exc
             uinfo: dict[str, Any] = {}
             try:
                 uinfo = await client.get_user_info()
-            except Exception:
-                pass
+            except Exception as u_exc:
+                if is_transient_upstream_error(u_exc):
+                    raise IdentityProbeTransientError(str(u_exc)) from u_exc
             raw_uid = (
                 key_info.get("uid")
                 or key_info.get("userId")
@@ -634,7 +684,8 @@ class KucoinAdapter(BaseExchangeAdapter):
                 )
             return out
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_kucoin_venue(client, store, now_s=now_s, force_full=force_full)
@@ -679,11 +730,13 @@ class BingxAdapter(BaseExchangeAdapter):
                 uid = await client.get_uid()
                 if uid:
                     out["remote_uid"] = uid
-            except Exception:
-                pass
+            except Exception as uid_exc:
+                if is_transient_upstream_error(uid_exc):
+                    raise IdentityProbeTransientError(str(uid_exc)) from uid_exc
             return out
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_bingx_venue(client, store, now_s=now_s, force_full=force_full)
@@ -722,17 +775,20 @@ class HtxAdapter(BaseExchangeAdapter):
     async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
         client = self.create_client(cred)
         try:
-            ident: dict[str, str] = {}
-            try:
-                ident = await client.get_identity()
-            except Exception:
-                pass
             try:
                 sw = await client.get_swap_accounts()
                 count = len(sw)
-            except Exception:
+            except Exception as sw_exc:
+                if is_transient_upstream_error(sw_exc):
+                    raise
                 sp = await client.get_spot_balances()
                 count = len(sp)
+            ident: dict[str, str] = {}
+            try:
+                ident = await client.get_identity()
+            except Exception as id_exc:
+                if is_transient_upstream_error(id_exc):
+                    raise IdentityProbeTransientError(str(id_exc)) from id_exc
             out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "accounts": count}
             if ident.get("remote_uid"):
                 out["remote_uid"] = ident["remote_uid"]
@@ -740,7 +796,8 @@ class HtxAdapter(BaseExchangeAdapter):
                 out["account_role"] = ident["account_role"]
             return out
         finally:
-            await client.aclose()
+            if hasattr(client, "aclose"):
+                await client.aclose()
 
     async def sync_venue(self, client: Any, store: "LedgerStore", *, now_s: int, force_full: bool = False) -> VenueSyncOutcome:
         return await sync_htx_venue(client, store, now_s=now_s, force_full=force_full)

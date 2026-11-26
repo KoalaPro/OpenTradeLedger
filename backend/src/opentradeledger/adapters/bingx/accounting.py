@@ -31,16 +31,16 @@ def _is_completed_bingx_deposit(row: Mapping[str, Any]) -> bool:
     st = row.get("status")
     if st is None or str(st).strip() == "":
         return True
-    norm = str(st).strip().upper()
-    return norm in {"1", "6", "SUCCESS", "COMPLETED", "CREDITED", "CONFIRMED"}
+    norm = str(st).strip().lower()
+    return norm in {"6", "completed", "success", "credited"}
 
 
 def _is_completed_bingx_withdrawal(row: Mapping[str, Any]) -> bool:
     st = row.get("status")
     if st is None or str(st).strip() == "":
         return True
-    norm = str(st).strip().upper()
-    return norm in {"6", "SUCCESS", "COMPLETED", "CONFIRMED"}
+    norm = str(st).strip().lower()
+    return norm in {"6", "completed", "success"}
 
 
 def extract_bingx_spot_prices(store: "LedgerStore") -> dict[str, float]:

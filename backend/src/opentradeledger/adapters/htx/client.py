@@ -11,6 +11,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import time
 from typing import Any, Callable, Optional
 from urllib.parse import urlencode, urlsplit
 
@@ -96,6 +97,7 @@ class HtxReadOnlyClient:
         client: Optional[httpx.AsyncClient] = None,
         timeout_sec: float = 12.0,
         clock_utc: Optional[Callable[[], str]] = None,
+        clock_ms: Optional[Callable[[], int]] = None,
     ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
@@ -104,6 +106,7 @@ class HtxReadOnlyClient:
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout_sec, connect=6.0))
         self._clock_utc = clock_utc or _default_htx_utc_ts
+        self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -203,18 +206,24 @@ class HtxReadOnlyClient:
         if not isinstance(accts, list):
             return []
         out: list[dict[str, Any]] = []
+        allowed_acct_types = {"spot", "margin", "super-margin", "otc"}
         for acct in accts:
             if not isinstance(acct, dict):
                 continue
             aid = acct.get("id")
-            atype = str(acct.get("type") or "spot").upper()
-            if not aid or atype not in {"SPOT", "POINT"}:
+            atype_low = str(acct.get("type") or "spot").strip().lower()
+            if not aid or atype_low not in allowed_acct_types:
                 continue
             bal_res = await self.spot_get(f"/v1/account/accounts/{aid}/balance")
             lst = bal_res.get("list") if isinstance(bal_res, dict) else []
             for item in lst or []:
-                if isinstance(item, dict) and float(item.get("balance") or 0.0) > 0:
-                    out.append({**item, "_account_type": atype})
+                if not isinstance(item, dict):
+                    continue
+                item_tp = str(item.get("type") or "").strip().lower()
+                if item_tp and item_tp not in {"trade", "frozen"}:
+                    continue
+                if float(item.get("balance") or 0.0) > 0:
+                    out.append({**item, "_account_type": atype_low.upper()})
         return out
 
     async def get_swap_accounts(self) -> list[dict[str, Any]]:
@@ -225,35 +234,247 @@ class HtxReadOnlyClient:
         res = await self.swap_query("/linear-swap-api/v1/swap_cross_position_info", {})
         return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
 
-    async def get_swap_matches(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
-        body: dict[str, Any] = {"trade_type": 0, "size": 50}
-        if since_ms > 0:
-            body["start_time"] = since_ms
-        try:
-            res = await self.swap_query("/linear-swap-api/v1/swap_cross_matchresults_exact", body)
-        except HtxApiError as exc:
-            msg_low = str(exc).lower()
-            if "http 404" in msg_low or "not found" in msg_low or "unsupported" in msg_low:
-                res = await self.swap_query(
-                    "/linear-swap-api/v1/swap_cross_matchresults",
-                    {"trade_type": 0, "create_date": 90, "page_index": 1, "page_size": 50},
-                )
+    @staticmethod
+    def _build_htx_47h_windows(since_ms: int, now_ms: int) -> list[tuple[Optional[int], Optional[int]]]:
+        if since_ms <= 0:
+            return [(None, None)]
+        eff_now = max(since_ms, now_ms)
+        chunk_ms = 47 * 3600 * 1000
+        if eff_now - since_ms <= chunk_ms:
+            return [(since_ms, eff_now)]
+        windows: list[tuple[Optional[int], Optional[int]]] = []
+        cur = since_ms
+        while cur <= eff_now:
+            w_end = min(eff_now, cur + chunk_ms)
+            windows.append((cur, w_end))
+            if w_end >= eff_now:
+                break
+            cur = w_end + 1
+        return windows
+
+    @staticmethod
+    def _extract_htx_cursor_id(row: dict[str, Any]) -> Optional[int]:
+        for key in ("query_id", "id"):
+            val = row.get(key)
+            if val in (None, ""):
+                continue
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    async def get_swap_matches(
+        self,
+        *,
+        since_ms: int = 0,
+        max_pages: int = 40,
+        warnings_out: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        windows = self._build_htx_47h_windows(since_ms, self._clock_ms())
+        use_legacy_fallback = False
+        truncated = False
+
+        for w_start, w_end in windows:
+            if use_legacy_fallback:
+                break
+            from_id: Optional[int] = None
+            for page_idx in range(max(1, int(max_pages))):
+                body: dict[str, Any] = {"trade_type": 0, "size": 50}
+                if w_start is not None:
+                    body["start_time"] = w_start
+                if w_end is not None:
+                    body["end_time"] = w_end
+                if from_id is not None:
+                    body["from_id"] = from_id
+
+                try:
+                    res = await self.swap_query("/linear-swap-api/v1/swap_cross_matchresults_exact", body)
+                except HtxApiError as exc:
+                    msg_low = str(exc).lower()
+                    if page_idx == 0 and ("http 404" in msg_low or "not found" in msg_low or "unsupported" in msg_low):
+                        use_legacy_fallback = True
+                        for leg_page in range(1, max(1, int(max_pages)) + 1):
+                            leg_res = await self.swap_query(
+                                "/linear-swap-api/v1/swap_cross_matchresults",
+                                {"trade_type": 0, "create_date": 90, "page_index": leg_page, "page_size": 50},
+                            )
+                            leg_trades = leg_res.get("trades") if isinstance(leg_res, dict) else (leg_res if isinstance(leg_res, list) else [])
+                            leg_valid = [r for r in leg_trades if isinstance(r, dict)] if isinstance(leg_trades, list) else []
+                            if not leg_valid:
+                                break
+                            leg_new = 0
+                            for idx_l, r in enumerate(leg_valid):
+                                mk = htx_match_unique_key(r, fallback_idx=idx_l)
+                                if mk not in merged:
+                                    merged[mk] = r
+                                    leg_new += 1
+                            tot_pg = int(leg_res.get("total_page") or 0) if isinstance(leg_res, dict) else 0
+                            if leg_new == 0 or len(leg_valid) < 50 or (tot_pg > 0 and leg_page >= tot_pg):
+                                break
+                        break
+                    raise
+
+                trades = res.get("trades") if isinstance(res, dict) else (res if isinstance(res, list) else [])
+                valid_rows = [r for r in trades if isinstance(r, dict)] if isinstance(trades, list) else []
+                if not valid_rows:
+                    break
+
+                new_cnt = 0
+                cids: list[int] = []
+                ts_list: list[int] = []
+                for idx_r, r in enumerate(valid_rows):
+                    mk = htx_match_unique_key(r, fallback_idx=idx_r)
+                    if mk not in merged:
+                        merged[mk] = r
+                        new_cnt += 1
+                    cid = self._extract_htx_cursor_id(r)
+                    if cid is not None:
+                        cids.append(cid)
+                    rts = int(r.get("create_date") or r.get("ts") or 0)
+                    if rts > 0:
+                        ts_list.append(rts)
+
+                min_ts = min(ts_list) if ts_list else 0
+                if new_cnt == 0 or len(valid_rows) < 50:
+                    break
+                if w_start is not None and min_ts > 0 and min_ts < w_start:
+                    break
+                if since_ms > 0 and min_ts > 0 and min_ts < since_ms:
+                    break
+                if not cids:
+                    break
+                if page_idx == max(1, int(max_pages)) - 1:
+                    truncated = True
+                    break
+
+                min_cid = min(cids)
+                from_id = min_cid if (from_id is None or min_cid < from_id) else (from_id - 1)
+
+        if truncated and warnings_out is not None:
+            warnings_out.append(
+                f"HTX swap_cross_matchresults_exact reached {max_pages}-page pagination cap; older trades may be truncated."
+            )
+        return list(merged.values())
+
+    async def get_swap_financial_records(
+        self,
+        *,
+        since_ms: int = 0,
+        max_pages: int = 40,
+        warnings_out: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        windows = self._build_htx_47h_windows(since_ms, self._clock_ms())
+        truncated = False
+
+        for w_start, w_end in windows:
+            from_id: Optional[int] = None
+            for page_idx in range(max(1, int(max_pages))):
+                body: dict[str, Any] = {"margin_account": "USDT", "size": 50}
+                if w_start is not None:
+                    body["start_time"] = w_start
+                if w_end is not None:
+                    body["end_time"] = w_end
+                if from_id is not None:
+                    body["from_id"] = from_id
+
+                res = await self.swap_query("/linear-swap-api/v1/swap_financial_record_exact", body)
+                rows = res.get("financial_record") if isinstance(res, dict) else (res if isinstance(res, list) else [])
+                valid_rows = [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+                if not valid_rows:
+                    break
+
+                new_cnt = 0
+                cids: list[int] = []
+                ts_list: list[int] = []
+                for r in valid_rows:
+                    fk = str(r.get("id") or r.get("query_id") or f"{r.get('ts')}_{r.get('type')}_{r.get('amount')}_{r.get('contract_code')}")
+                    if fk not in merged:
+                        merged[fk] = r
+                        new_cnt += 1
+                    cid = self._extract_htx_cursor_id(r)
+                    if cid is not None:
+                        cids.append(cid)
+                    rts = int(r.get("ts") or r.get("create_date") or 0)
+                    if rts > 0:
+                        ts_list.append(rts)
+
+                min_ts = min(ts_list) if ts_list else 0
+                if new_cnt == 0 or len(valid_rows) < 50:
+                    break
+                if w_start is not None and min_ts > 0 and min_ts < w_start:
+                    break
+                if since_ms > 0 and min_ts > 0 and min_ts < since_ms:
+                    break
+                if not cids:
+                    break
+                if page_idx == max(1, int(max_pages)) - 1:
+                    truncated = True
+                    break
+
+                min_cid = min(cids)
+                from_id = min_cid if (from_id is None or min_cid < from_id) else (from_id - 1)
+
+        if truncated and warnings_out is not None:
+            warnings_out.append(
+                f"HTX swap_financial_record_exact reached {max_pages}-page pagination cap; older financial records may be truncated."
+            )
+        return list(merged.values())
+
+    async def get_deposit_withdraw(
+        self,
+        kind: str,
+        *,
+        max_pages: int = 20,
+        warnings_out: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        cursor_from: Optional[str] = None
+        for page_idx in range(max(1, int(max_pages))):
+            params: dict[str, Any] = {"type": kind, "size": "200", "direct": "next"}
+            if cursor_from is not None:
+                params["from"] = cursor_from
+            res = await self.spot_get("/v1/query/deposit-withdraw", params)
+            valid_rows = [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+            if not valid_rows:
+                break
+
+            new_cnt = 0
+            num_ids: list[int] = []
+            for r in valid_rows:
+                rk = str(r.get("id") or r.get("tx-hash") or f"{r.get('created-at')}_{r.get('amount')}_{r.get('currency')}")
+                if rk not in merged:
+                    merged[rk] = r
+                    new_cnt += 1
+                cid = self._extract_htx_cursor_id(r)
+                if cid is not None:
+                    num_ids.append(cid)
+
+            if new_cnt == 0 or len(valid_rows) < 200 or not num_ids:
+                break
+            if page_idx == max(1, int(max_pages)) - 1:
+                if warnings_out is not None:
+                    warnings_out.append(f"HTX {kind} history reached {max_pages}-page pagination cap.")
+                break
+
+            first_cid = self._extract_htx_cursor_id(valid_rows[0])
+            last_cid = self._extract_htx_cursor_id(valid_rows[-1])
+            if first_cid is not None and last_cid is not None and first_cid < last_cid:
+                next_val = max(num_ids)
+                if cursor_from is not None and str(next_val) == cursor_from:
+                    next_val += 1
+                cursor_from = str(next_val)
             else:
-                raise
-        trades = res.get("trades") if isinstance(res, dict) else (res if isinstance(res, list) else [])
-        return [r for r in trades if isinstance(r, dict)] if isinstance(trades, list) else []
+                next_val = min(num_ids)
+                if cursor_from is not None and str(next_val) == cursor_from:
+                    next_val -= 1
+                if next_val <= 0:
+                    break
+                cursor_from = str(next_val)
 
-    async def get_swap_financial_records(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
-        body: dict[str, Any] = {"margin_account": "USDT", "size": 50}
-        if since_ms > 0:
-            body["start_time"] = since_ms
-        res = await self.swap_query("/linear-swap-api/v1/swap_financial_record_exact", body)
-        rows = res.get("financial_record") if isinstance(res, dict) else (res if isinstance(res, list) else [])
-        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
-
-    async def get_deposit_withdraw(self, kind: str) -> list[dict[str, Any]]:
-        res = await self.spot_get("/v1/query/deposit-withdraw", {"type": kind, "size": "200", "direct": "next"})
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+        return list(merged.values())
 
     async def get_spot_tickers(self) -> dict[str, float]:
         res = await self.spot_get("/market/tickers", signed=False)
@@ -285,6 +506,15 @@ class HtxReadOnlyClient:
                 or "http 5" in msg_low
                 or "http 429" in msg_low
                 or "err=1010" in msg_low
+                or "err=1056" in msg_low
+                or "err=1066" in msg_low
+                or "1056" in msg_low
+                or "1066" in msg_low
+                or "too many" in msg_low
+                or "rate limit" in msg_low
+                or "system busy" in msg_low
+                or "busy" in msg_low
+                or "timeout" in msg_low
                 or "invalid request" in msg_low
                 or "parameter" in msg_low
             )
@@ -317,10 +547,14 @@ class HtxReadOnlyClient:
                 return default
 
         positions = await _opt("positions", self.get_swap_positions(), [])
-        matches = await _opt("matches", self.get_swap_matches(since_ms=since_ms), [])
-        financials = await _opt("financials", self.get_swap_financial_records(since_ms=since_ms), [])
-        deposits = await _opt("deposits", self.get_deposit_withdraw("deposit"), [])
-        withdrawals = await _opt("withdrawals", self.get_deposit_withdraw("withdraw"), [])
+        matches = await _opt("matches", self.get_swap_matches(since_ms=since_ms, warnings_out=warnings), [])
+        financials = await _opt(
+            "financials",
+            self.get_swap_financial_records(since_ms=since_ms, warnings_out=warnings),
+            [],
+        )
+        deposits = await _opt("deposits", self.get_deposit_withdraw("deposit", warnings_out=warnings), [])
+        withdrawals = await _opt("withdrawals", self.get_deposit_withdraw("withdraw", warnings_out=warnings), [])
         tickers = await _opt("tickers", self.get_spot_tickers(), {})
 
         out_snap: dict[str, Any] = {

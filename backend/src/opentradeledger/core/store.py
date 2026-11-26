@@ -654,6 +654,48 @@ class LedgerStore:
                     snap["snapshots"],
                 )
 
+    def clear_venue_partition_only(self, venue_id: str) -> None:
+        """Clear ONLY `otl_venue_kv`, `otl_venue_records`, and `otl_plugin_snapshots` for `venue_id` (leaving legacy shared tables untouched)."""
+        vid = (venue_id or "").strip().lower()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM otl_venue_kv WHERE venue_id = ?", (vid,))
+            conn.execute("DELETE FROM otl_venue_records WHERE venue_id = ?", (vid,))
+            conn.execute("DELETE FROM otl_plugin_snapshots WHERE venue_id = ?", (vid,))
+
+    def load_partition_records_only(self, venue_id: str) -> dict[str, list[dict[str, Any]]]:
+        """Load records strictly from `otl_venue_records` for `venue_id` without legacy shared-table fallback."""
+        vid = (venue_id or "").strip().lower()
+        out: dict[str, list[dict[str, Any]]] = {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT stream, payload_json FROM otl_venue_records WHERE venue_id = ? ORDER BY stream ASC, sort_ts ASC, record_id ASC",
+                (vid,),
+            ).fetchall()
+        for r in rows:
+            try:
+                out.setdefault(str(r["stream"]), []).append(json.loads(r["payload_json"]))
+            except Exception:
+                continue
+        return out
+
+    def load_partition_kv_only(self, venue_id: str, key: str, default: Any = None) -> Any:
+        """Load a KV entry strictly from `otl_venue_kv` / `otl_plugin_snapshots` without legacy `kv_meta` fallback."""
+        vid = (venue_id or "").strip().lower()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value_json FROM otl_venue_kv WHERE venue_id = ? AND key = ?",
+                (vid, key),
+            ).fetchone()
+        if row is not None:
+            try:
+                return json.loads(row["value_json"])
+            except Exception:
+                return default
+        if key == "snapshot":
+            snap = self.load_plugin_snapshots().get(vid)
+            return snap if snap is not None else default
+        return default
+
     def purge_venue_data(self, venue_id: str) -> None:
         vid = (venue_id or "").strip().lower()
         with self._connect() as conn:

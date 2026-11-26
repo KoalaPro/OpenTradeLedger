@@ -121,7 +121,25 @@ export function AiConfigCard({
           className="otl-input w-full"
         />
       )}
-      <div className="flex justify-end">
+      <div className="flex items-center justify-end gap-2">
+        {settings.ai_api_key_set && (
+          <button
+            type="button"
+            data-testid="clear-ai-key-btn"
+            onClick={async () => {
+              const cleared = await onUpdateSettings({ clear_ai_api_key: true })
+              if (cleared === false) return
+              setAiKey('')
+              flashOk(
+                locale === 'en' ? 'Saved AI API Key cleared' : '已清除保存的 AI API Key',
+                2500,
+              )
+            }}
+            className="otl-btn text-[var(--fg-2)] hover:text-[var(--err)]"
+          >
+            {locale === 'en' ? 'Clear Saved Key' : '清除密钥'}
+          </button>
+        )}
         <button
           type="button"
           onClick={async () => {

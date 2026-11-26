@@ -810,7 +810,7 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                           <span className={`font-semibold ${pos.position_side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                             {isZh ? pos.side_zh : pos.position_side}
                           </span>
-                          <span className="text-[13px] text-[var(--fg)]">{pos.qty}</span>
+                          <span className="text-[13px] text-[var(--fg)] sensitive">{pos.qty}</span>
                           <span className="text-[var(--fg-3)] sensitive">
                             @{fmtPrice(pos.avg_entry_price)} ({cur.money(pos.notional_usd, 0)})
                           </span>
@@ -829,9 +829,14 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                             <span>· {isZh ? '最近动作：' : 'Last: '}</span>
                             <InstrumentMark instrument={item.recent_orders[0].symbol} exchange="BINANCE" />
                             <span>
-                              {isZh
-                                ? `${item.recent_orders[0].time_bj} ${item.recent_orders[0].symbol} ${item.recent_orders[0].action_zh} ${item.recent_orders[0].executed_qty} @ ${fmtPrice(item.recent_orders[0].avg_price)}`
-                                : `${item.recent_orders[0].time_bj} ${item.recent_orders[0].symbol} ${item.recent_orders[0].action_en || item.recent_orders[0].action_zh}`}
+                              {`${item.recent_orders[0].time_bj} ${item.recent_orders[0].symbol} ${
+                                isZh
+                                  ? item.recent_orders[0].action_zh
+                                  : item.recent_orders[0].action_en || item.recent_orders[0].action_zh
+                              } `}
+                              <span className="sensitive">
+                                {`${item.recent_orders[0].executed_qty} @ ${fmtPrice(item.recent_orders[0].avg_price)}`}
+                              </span>
                             </span>
                           </>
                         )}
@@ -911,10 +916,10 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
                             <td className="whitespace-nowrap font-medium">
                               {isZh ? ord.action_zh : ord.action_en || ord.action_zh}
                             </td>
-                            <td className="text-right whitespace-nowrap">{ord.executed_qty}</td>
+                            <td className="text-right whitespace-nowrap sensitive">{ord.executed_qty}</td>
                             <td className="text-right whitespace-nowrap">{fmtPrice(ord.avg_price)}</td>
                             <td
-                              className={`text-right font-semibold whitespace-nowrap ${
+                              className={`text-right font-semibold whitespace-nowrap sensitive ${
                                 Math.abs(ord.realized_pnl) > 0.005 ? pnlTone(ord.realized_pnl) : 'text-[var(--fg-3)]'
                               }`}
                             >

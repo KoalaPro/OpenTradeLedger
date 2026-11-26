@@ -172,6 +172,15 @@ class AccountIdentityError(RuntimeError):
             self.reason_zh = (
                 f"当前无法从 {ex_zh} 核验新密钥所属账号 UID。为防止混入其他账号资产与交易流水，原绑定账号{uid_part_zh}保持不变，请待身份接口恢复后重试。"
             )
+        elif code == "ARCHIVE_OWNER_UNVERIFIED":
+            self.reason = (
+                f"Legacy local {ex_en} ledger has no verified UID binding and its historical records do not match this credential. "
+                "Do not mix keys from another account; use '+ Add Account' to connect a new account or remove old local data first."
+            )
+            self.reason_zh = (
+                f"旧本地{ex_zh}账本缺少 UID 归属证明且新密钥历史记录无法匹配，请勿混入其他账户密钥；"
+                "如需接入新账户请使用「+ 添加账号」或先移除旧数据。"
+            )
         elif code == "INVALID_WALLET_ADDRESS":
             self.reason = "Invalid EVM wallet address — enter a 42-character 0x... public address (never enter a private key)."
             self.reason_zh = "钱包地址格式无效，请输入 0x 开头的 42 位公开钱包地址（切勿输入私钥或助记词）。"
@@ -188,6 +197,8 @@ class AccountScopedStore:
         self._store = store
         self.account_id = account_id.strip().lower()
         self.adapter_id = parse_adapter_id(adapter_id or self.account_id)
+        self._acct_id = self.account_id
+        self._adapter_id = self.adapter_id
 
     def _resolve_vid(self, venue_id: str) -> str:
         vid = (venue_id or "").strip().lower()
@@ -212,6 +223,24 @@ class AccountScopedStore:
             merge_history=merge_history,
             merge_specs=merge_specs,
         )
+
+    def snapshot_venue_partition(self, venue_id: str) -> dict[str, list[tuple[Any, ...]]]:
+        return self._store.snapshot_venue_partition(self._resolve_vid(venue_id))
+
+    def restore_venue_partition(self, venue_id: str, snap: dict[str, list[tuple[Any, ...]]]) -> None:
+        self._store.restore_venue_partition(self._resolve_vid(venue_id), snap)
+
+    def purge_venue_data(self, venue_id: str) -> None:
+        self._store.purge_venue_data(self._resolve_vid(venue_id))
+
+    def clear_venue_partition_only(self, venue_id: str) -> None:
+        self._store.clear_venue_partition_only(self._resolve_vid(venue_id))
+
+    def load_partition_records_only(self, venue_id: str) -> dict[str, list[dict[str, Any]]]:
+        return self._store.load_partition_records_only(self._resolve_vid(venue_id))
+
+    def load_partition_kv_only(self, venue_id: str, key: str, default: Any = None) -> Any:
+        return self._store.load_partition_kv_only(self._resolve_vid(venue_id), key, default)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._store, name)
@@ -330,8 +359,8 @@ def stamp_bundle_for_account(
                     tr["tags"] = list(j_entry.get("tags") or [])
                     tr["note"] = str(j_entry.get("note") or "")
                 else:
-                    tr["tags"] = []
-                    tr["note"] = ""
+                    tr["tags"] = list(tr.get("tags") or [])
+                    tr["note"] = str(tr.get("note") or "")
 
     for pos in bundle.open_positions:
         pos["venue_id"] = acct_id

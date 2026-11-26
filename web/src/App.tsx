@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { AlertTriangle, X } from 'lucide-react'
 import { AnimatedCollapse } from './components/AnimatedCollapse'
 import { AuthGate } from './components/AuthGate'
 import { Sidebar } from './components/Sidebar'
@@ -6,6 +7,7 @@ import { TopBar } from './components/TopBar'
 import { TradeDrilldownDrawer } from './components/TradeDrilldownDrawer'
 import { I18nProvider } from './i18n'
 import { api, ApiError } from './lib/api'
+import { collectActiveWarnings } from './lib/format'
 import { useLedgerSession } from './lib/ledgerSession'
 import { CurrencyProvider, DEFAULT_FX } from './lib/currency'
 import { attachVelvetRippleListener } from './lib/velvetRipple'
@@ -15,6 +17,7 @@ import type {
   ExchangeAdapterInfo,
   ExtensionSubTab,
   FxRatesPayload,
+  Locale,
   NavPage,
   UserSettings,
   VersionCheckPayload,
@@ -82,6 +85,14 @@ function buildHashRoute(page: NavPage, extTab?: ExtensionSubTab): string {
   return `#/${page}`
 }
 
+function normVenue(v?: string): string {
+  return !v || v.toUpperCase() === 'ALL' ? 'ALL' : v.toLowerCase()
+}
+
+function normSymbol(s?: string): string {
+  return !s || s.toUpperCase() === 'ALL' ? 'ALL' : s.toUpperCase()
+}
+
 export default function App() {
   const [hash, setHash] = useState(() => typeof window !== 'undefined' ? window.location.hash : '')
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -115,6 +126,17 @@ export default function App() {
   const [venueFilter, setVenueFilter] = useState('ALL')
   const [symbolFilter, setSymbolFilter] = useState('ALL')
   const [data, setData] = useState<DashboardData | null>(null)
+  const [appliedScope, setAppliedScope] = useState<{
+    rangeKey: string
+    venueFilter: string
+    symbolFilter: string
+  } | null>(null)
+  const [dashboardLoading, setDashboardLoading] = useState(false)
+  const [bootstrapLoading, setBootstrapLoading] = useState(false)
+  const [onboardingWarning, setOnboardingWarning] = useState<
+    Array<{ address: string; name: string; error?: string; error_zh?: string }>
+  >([])
+  const authGateLocaleRef = useRef<Locale | null>(null)
   const [adapters, setAdapters] = useState<ExchangeAdapterInfo[]>([])
   const [exchangeErrorCount, setExchangeErrorCount] = useState(0)
   const [fx, setFx] = useState<FxRatesPayload>(DEFAULT_FX)
@@ -135,6 +157,7 @@ export default function App() {
     document.documentElement.dataset.theme = settings.theme
     document.documentElement.dataset.polarity = settings.polarity
     document.documentElement.dataset.privacy = privacyMode ? 'on' : 'off'
+    document.documentElement.classList.toggle('privacy-active', privacyMode)
     document.title = settings.locale === 'en' ? 'OpenTradeLedger' : '交易账本 · OpenTradeLedger'
   }, [settings.theme, settings.polarity, settings.locale, privacyMode])
 
@@ -193,6 +216,7 @@ export default function App() {
   useLayoutEffect(() => {
     currentQuery.current = { rangeKey, effVenue, effSymbol }
     dashboardRequest.current++
+    setDashboardError('')
   }, [rangeKey, effVenue, effSymbol])
 
   const invalidateDashboard = useCallback(() => {
@@ -214,7 +238,10 @@ export default function App() {
     setManualSyncing(false)
     setGeneratingAi(false)
     setDashboardError('')
+    setDashboardLoading(false)
+    setBootstrapLoading(false)
     setData(null)
+    setAppliedScope(null)
     setDrilldown(null)
     setDrilldownOpen(false)
     setAdapters([])
@@ -228,15 +255,26 @@ export default function App() {
   const loadDashboardOnly = useCallback(async () => {
     if (!allowed.current) return
     const id = ++dashboardRequest.current
-    const query = currentQuery.current
+    const query = { ...currentQuery.current }
+    setDashboardLoading(true)
+    setDashboardError('')
     try {
       const dash = await api.getDashboard(query.rangeKey, query.effVenue, query.effSymbol)
       if (id !== dashboardRequest.current) return
       setData(dash)
+      setAppliedScope({
+        rangeKey: dash.range_key || query.rangeKey,
+        venueFilter: normVenue(dash.venue_filter ?? query.effVenue),
+        symbolFilter: normSymbol(dash.symbol_filter ?? query.effSymbol),
+      })
       setDashboardError('')
     } catch (e) {
       if (id !== dashboardRequest.current || handlePossibleAuthError(e)) return
       setDashboardError(e instanceof Error ? e.message : 'Failed to load data')
+    } finally {
+      if (id === dashboardRequest.current) {
+        setDashboardLoading(false)
+      }
     }
   }, [allowed, handlePossibleAuthError])
 
@@ -245,19 +283,33 @@ export default function App() {
     const epoch = ledgerEpoch.current
     const revision = settingsRevision.current
     const writing = pendingSettingsWrites.current > 0
+    setBootstrapLoading(true)
     try {
       const [, pref, ex] = await Promise.all([loadDashboardOnly(), api.getSettings(), api.listExchanges()])
       if (epoch !== ledgerEpoch.current) return
-      if (!writing && revision === settingsRevision.current) setSettings(pref)
+      const pendingAuthLocale = authGateLocaleRef.current
+      const effectivePref = pendingAuthLocale ? { ...pref, locale: pendingAuthLocale } : pref
+      if (pendingAuthLocale) {
+        authGateLocaleRef.current = null
+        void api.updateSettings({ locale: pendingAuthLocale }).catch(() => {})
+      }
+      if (!writing && revision === settingsRevision.current) setSettings(effectivePref)
       if (!initializedPrivacyRef.current) {
         initializedPrivacyRef.current = true
-        setPrivacyMode(Boolean(pref.privacy_mode))
+        setPrivacyMode(Boolean(effectivePref.privacy_mode))
         setPreferencesReady(true)
       }
       applyExchangeList(ex)
     } catch (e) {
       if (epoch !== ledgerEpoch.current || handlePossibleAuthError(e)) return
+      if (!initializedPrivacyRef.current) {
+        bootstrappedRef.current = false
+      }
       setError(e instanceof Error ? e.message : 'Failed to load settings')
+    } finally {
+      if (epoch === ledgerEpoch.current) {
+        setBootstrapLoading(false)
+      }
     }
   }, [allowed, loadDashboardOnly, handlePossibleAuthError])
 
@@ -368,7 +420,12 @@ export default function App() {
   }
 
   const handleSaveJournal = async (tradeId: string, tags: string[], note: string) => {
-    await api.saveJournal(tradeId, tags, note, data?.demo_mode)
+    try {
+      await api.saveJournal(tradeId, tags, note, data?.demo_mode)
+    } catch (e) {
+      handlePossibleAuthError(e)
+      throw e
+    }
     await loadAll()
   }
 
@@ -392,9 +449,13 @@ export default function App() {
     setDrilldownOpen(true)
   }
 
-  const handleOpenInTrades = (venueId: string, symbol: string) => {
+  const handleOpenInTrades = (venueId: string, symbol: string, targetRangeKey?: string) => {
     setDrilldownOpen(false)
-    if (drilldown?.rangeKey) setRangeKey(drilldown.rangeKey)
+    if (targetRangeKey) {
+      setRangeKey(targetRangeKey)
+    } else if (drilldown?.rangeKey) {
+      setRangeKey(drilldown.rangeKey)
+    }
     setVenueFilter(venueId.toLowerCase())
     setSymbolFilter(symbol)
     navigateTo('trades')
@@ -413,6 +474,71 @@ export default function App() {
 
   const visibleError = error || dashboardError
   const activeCurrency: CurrencyCode = pendingCurrency || settings.display_currency || 'USDT'
+  const activeWarnings = useMemo(() => collectActiveWarnings(data, adapters), [data, adapters])
+  const warningSummaryTitle = useMemo(
+    () =>
+      activeWarnings
+        .map(w => {
+          const name = settings.locale === 'en' ? w.display_name : w.display_name_zh || w.display_name
+          const text = settings.locale === 'en' ? w.summary || w.summary_zh : w.summary_zh || w.summary
+          return `${name}: ${text}`
+        })
+        .join(' | '),
+    [activeWarnings, settings.locale],
+  )
+
+  const isFilterScopeMismatch = Boolean(
+    page !== 'settings' &&
+      data &&
+      (!appliedScope ||
+        appliedScope.venueFilter !== normVenue(effVenue) ||
+        appliedScope.symbolFilter !== normSymbol(effSymbol)),
+  )
+
+  const isRangeScopeMismatch = Boolean(
+    page !== 'settings' &&
+      data &&
+      (!appliedScope || data.range_key !== rangeKey || appliedScope.rangeKey !== rangeKey),
+  )
+
+  const isScopeMismatch = isFilterScopeMismatch || isRangeScopeMismatch
+  const scopeFailureMsg = dashboardError || (!preferencesReady ? error : '')
+
+  const isLoadingAny = dashboardLoading || bootstrapLoading
+  const isWaitingForScope = Boolean(
+    isLoadingAny ||
+      (authChecked && !isAuthLocked && !bootstrappedRef.current && !scopeFailureMsg) ||
+      (isScopeMismatch && !dashboardError),
+  )
+
+  const handleRetryDashboard = useCallback(() => {
+    setError('')
+    setDashboardError('')
+    if (!preferencesReady || !data) {
+      bootstrappedRef.current = true
+      void loadAll()
+    } else {
+      void loadDashboardOnly()
+    }
+  }, [preferencesReady, data, loadAll, loadDashboardOnly])
+
+  const canRenderSettings = page === 'settings' && (preferencesReady || Boolean(visibleError))
+  const showFullPageErrorState =
+    page !== 'settings' &&
+    !(page === 'trades' && preferencesReady && Boolean(data)) &&
+    !isWaitingForScope &&
+    Boolean(scopeFailureMsg) &&
+    (!preferencesReady || !data || isScopeMismatch)
+  const showFullPageLoadingState =
+    page === 'settings'
+      ? !canRenderSettings
+      : !(page === 'trades' && preferencesReady && Boolean(data)) &&
+        !showFullPageErrorState &&
+        (!preferencesReady || !data || isScopeMismatch)
+  const canMountDataPages =
+    preferencesReady &&
+    Boolean(data) &&
+    (page === 'trades' || (!isFilterScopeMismatch && !showFullPageErrorState))
 
   return (
     <I18nProvider locale={settings.locale}>
@@ -427,7 +553,11 @@ export default function App() {
             authChecked={authChecked}
             locale={settings.locale}
             onToggleLocale={() =>
-              setSettings(prev => ({ ...prev, locale: prev.locale === 'zh-CN' ? 'en' : 'zh-CN' }))
+              setSettings(prev => {
+                const nextLocale: Locale = prev.locale === 'zh-CN' ? 'en' : 'zh-CN'
+                authGateLocaleRef.current = nextLocale
+                return { ...prev, locale: nextLocale }
+              })
             }
             lockUnconfirmed={session.lockUnconfirmed}
             onUnlocked={session.unlocked}
@@ -470,6 +600,8 @@ export default function App() {
               lastSyncMs={data?.last_sync_ms ?? 0}
               manualSyncing={manualSyncing}
               syncFailed={lastSyncHadError}
+              syncPartialWarning={!data?.demo_mode && activeWarnings.length > 0}
+              syncWarningTitle={warningSummaryTitle}
               onSync={() => void handleSync()}
               authEnabled={Boolean(authStatus.enabled)}
               onLock={() => void session.lock()}
@@ -500,6 +632,7 @@ export default function App() {
                 rangeKey={rangeKey}
                 onChangeRange={setRangeKey}
                 exchangeErrorCount={exchangeErrorCount}
+                activeWarnings={data?.demo_mode ? [] : activeWarnings}
                 onInspectErrors={() => navigateTo('settings')}
               />
 
@@ -507,13 +640,68 @@ export default function App() {
                 <AnimatedCollapse open={Boolean(visibleError)} innerClassName="pt-4">
                   <div
                     data-testid="global-error-banner"
-                    className="otl-status-err px-4 py-2.5 rounded-lg text-[13px] font-medium"
+                    className="otl-status-err px-4 py-2.5 rounded-lg text-[13px] font-medium flex flex-wrap items-center justify-between gap-2"
                   >
-                    {visibleError}
+                    <span>{visibleError}</span>
+                    {page === 'settings' && (!data || !preferencesReady) && !isLoadingAny && (
+                      <button
+                        type="button"
+                        data-testid="dashboard-retry-btn"
+                        onClick={handleRetryDashboard}
+                        className="otl-btn h-7 px-2.5 shrink-0"
+                      >
+                        {settings.locale === 'en' ? 'Retry' : '重试'}
+                      </button>
+                    )}
                   </div>
                 </AnimatedCollapse>
 
-                {!data && visibleError && (
+                {onboardingWarning.length > 0 && (
+                  <div
+                    role="alert"
+                    data-testid="onboarding-subaccount-warning-banner"
+                    className="otl-status-warn mt-4 px-4 py-3 rounded-lg text-[12.5px] flex items-start justify-between gap-3"
+                  >
+                    <div className="flex items-start gap-2 min-w-0">
+                      <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <div className="font-semibold">
+                          {settings.locale === 'en'
+                            ? `Main wallet connected, but ${onboardingWarning.length} sub-account(s) failed to import:`
+                            : `主钱包已接入，但以下 ${onboardingWarning.length} 个子钱包未能导入：`}
+                        </div>
+                        <ul className="m-0 pl-4 list-disc space-y-0.5">
+                          {onboardingWarning.map(f => {
+                            const shortAddr =
+                              f.address.length > 12
+                                ? `${f.address.slice(0, 6)}...${f.address.slice(-4)}`
+                                : f.address
+                            const reason =
+                              settings.locale === 'en'
+                                ? f.error || f.error_zh || 'Sync failed'
+                                : f.error_zh || f.error || '同步失败'
+                            return (
+                              <li key={f.address}>
+                                <strong>{f.name}</strong> ({shortAddr})：{reason}
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="dismiss-onboarding-warning-btn"
+                      aria-label={settings.locale === 'en' ? 'Dismiss' : '关闭提示'}
+                      onClick={() => setOnboardingWarning([])}
+                      className="otl-btn-ghost h-6 w-6 px-0 justify-center shrink-0"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
+
+                {showFullPageErrorState && (
                   <div
                     role="alert"
                     data-testid="dashboard-load-error-state"
@@ -527,11 +715,7 @@ export default function App() {
                     <button
                       type="button"
                       data-testid="dashboard-retry-btn"
-                      onClick={() => {
-                        setError('')
-                        setDashboardError('')
-                        void loadAll()
-                      }}
+                      onClick={handleRetryDashboard}
                       className="otl-btn otl-btn-primary"
                     >
                       {settings.locale === 'en' ? 'Retry' : '重试'}
@@ -539,27 +723,29 @@ export default function App() {
                   </div>
                 )}
 
-                {(!preferencesReady || !data || data.range_key !== rangeKey) && !(!data && visibleError) && (
+                {showFullPageLoadingState && (
                   <div role="status" className="py-20 text-center text-[13px] text-[var(--fg-3)]">
                     {settings.locale === 'en' ? 'Loading…' : '加载中…'}
                   </div>
                 )}
-                {preferencesReady && data && (
+
+                {canMountDataPages && page !== 'settings' && (
                   <div
-                    key={`${page}-${data.demo_mode ? 'demo' : 'live'}-${stageRevealSeq}`}
-                    hidden={data.range_key !== rangeKey}
+                    key={`${page}-${data?.demo_mode ? 'demo' : 'live'}-${stageRevealSeq}`}
+                    hidden={page !== 'trades' && isRangeScopeMismatch}
                     className="otl-page-enter"
                   >
-                    {page === 'overview' && (
+                    {page === 'overview' && data && (
                       <OverviewPage
                         data={data}
+                        activeWarnings={activeWarnings}
                         enableStockTab={enabledTabs.includes('stock')}
                         enableWatcherTab={enabledTabs.includes('watcher')}
                         onNavigate={navigateTo}
                         onInspectSymbol={handleInspectSymbol}
                       />
                     )}
-                    {page === 'trades' && (
+                    {page === 'trades' && data && (
                       <TradesPage
                         data={data}
                         venueFilter={venueFilter}
@@ -568,9 +754,14 @@ export default function App() {
                         onSymbolChange={setSymbolFilter}
                         onSaveJournal={handleSaveJournal}
                         onInspectSymbol={handleInspectSymbol}
+                        scopeReady={!isScopeMismatch}
+                        scopeLoading={isWaitingForScope}
+                        scopeError={isScopeMismatch && !isWaitingForScope ? dashboardError : ''}
+                        onRetryScope={handleRetryDashboard}
+                        activeWarnings={activeWarnings}
                       />
                     )}
-                    {page === 'analytics' && (
+                    {page === 'analytics' && data && (
                       <AnalyticsPage
                         data={data}
                         rangeKey={rangeKey}
@@ -580,7 +771,7 @@ export default function App() {
                         onUpdateSettings={handleUpdateSettings}
                       />
                     )}
-                    {page === 'fees' && (
+                    {page === 'fees' && data && (
                       <FeesAiPage
                         data={data}
                         settings={settings}
@@ -589,7 +780,7 @@ export default function App() {
                         onGoConfigureAi={() => navigateTo('settings')}
                       />
                     )}
-                    {page === 'extensions' && (
+                    {page === 'extensions' && data && (
                       <ExtensionsPage
                         data={data}
                         enableWatcher={enabledTabs.includes('watcher')}
@@ -609,17 +800,26 @@ export default function App() {
                         }}
                       />
                     )}
-                    {page === 'settings' && (
+                  </div>
+                )}
+
+                {page === 'settings' && canRenderSettings && (
+                  <div
+                    key={`settings-${data?.demo_mode ? 'demo' : 'live'}`}
+                    className="otl-page-enter"
+                  >
                       <SettingsPage
                         settings={pendingCurrency ? { ...settings, display_currency: pendingCurrency } : settings}
                         adapters={adapters}
+                        dashboardWarnings={activeWarnings}
                         demoMode={Boolean(
-                          (data as DashboardData & { explicit_demo_mode?: boolean }).explicit_demo_mode ??
-                            data.demo_mode,
+                          (data as (DashboardData & { explicit_demo_mode?: boolean }) | null)?.explicit_demo_mode ??
+                            authStatus.explicit_demo_mode ??
+                            data?.demo_mode,
                         )}
                         previewFallback={Boolean(
-                          data.demo_mode &&
-                            (data as DashboardData & { explicit_demo_mode?: boolean }).explicit_demo_mode === false,
+                          data?.demo_mode &&
+                            (data as (DashboardData & { explicit_demo_mode?: boolean }) | null)?.explicit_demo_mode === false,
                         )}
                         authStatus={authStatus}
                         onAuthChanged={session.changed}
@@ -634,6 +834,7 @@ export default function App() {
                           }
                         }}
                         onUpsertExchange={async (body, onStep) => {
+                          setOnboardingWarning([])
                           onStep?.('verifying')
                           const verRes = await api.verifyExchange(body)
                           onStep?.('syncing')
@@ -647,10 +848,6 @@ export default function App() {
                               }
                             : body
                           const syncRes = await api.triggerSync(resolvedAccountId, syncBody)
-                          if (syncRes.auth_status) {
-                            session.changed(syncRes.auth_status)
-                            if (syncRes.auth_status.require_setup || syncRes.auth_status.authenticated === false) return
-                          }
                           const finalAccountId = syncRes.account_id || resolvedAccountId
                           const venueRes = syncRes.venues?.[finalAccountId] ?? syncRes.venues?.[body.venue_id]
                           if (syncRes.ok === false || syncRes.committed === false || venueRes?.ok === false) {
@@ -660,6 +857,15 @@ export default function App() {
                                 venueRes?.error ||
                                 (isZh ? '交易所同步失败' : 'Exchange sync failed'),
                             )
+                          }
+                          if (syncRes.failed_subaccounts && syncRes.failed_subaccounts.length > 0) {
+                            setOnboardingWarning(syncRes.failed_subaccounts)
+                          }
+                          if (syncRes.auth_status) {
+                            session.changed(syncRes.auth_status)
+                            if (syncRes.auth_status.require_setup || syncRes.auth_status.authenticated === false) {
+                              return { failedSubaccounts: syncRes.failed_subaccounts }
+                            }
                           }
                           if (syncRes.committed === undefined) await api.upsertExchange(syncBody)
                           await loadAll()
@@ -703,7 +909,6 @@ export default function App() {
                           }
                         }}
                       />
-                    )}
                   </div>
                 )}
               </main>

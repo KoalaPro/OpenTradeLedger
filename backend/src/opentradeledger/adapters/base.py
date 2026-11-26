@@ -4,16 +4,203 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from pydantic import BaseModel
 
 from opentradeledger.core.account_partition import AccountIdentityError
+from opentradeledger.core.venue_health import is_transient_upstream_error
 from opentradeledger.security.vault import ExchangeCredentialRecord
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
+
+_SNAPSHOT_HISTORY_FIELDS: tuple[str, ...] = (
+    "closed_pnl",
+    "positions_history",
+    "history_positions",
+    "executions",
+    "fills",
+    "matches",
+    "deposits",
+    "internal_deposits",
+    "withdrawals",
+    "ledger_updates",
+    "tx_logs",
+    "bills",
+    "asset_bills",
+    "tx_history",
+    "income",
+    "financials",
+    "copy_history",
+)
+
+_ARCHIVE_HISTORY_STREAMS: tuple[str, ...] = (
+    "futures_closes",
+    "futures_trades",
+    "futures_orders",
+    "partner_rebates",
+    "spot_account_book",
+    "stock_orders",
+    "stock_deals",
+    "stock_transactions",
+    "closed_pnl",
+    "fills",
+    "orders",
+    "transfers",
+    "income",
+    "cashflows",
+    "positions_history",
+    "bills",
+    "deals",
+    "funding",
+)
+
+
+def _clean_uid_candidate(val: Any) -> str:
+    if val is None or isinstance(val, bool):
+        return ""
+    s = str(val).strip()
+    if not s or s.lower() in {"0", "null", "none", "nan"}:
+        return ""
+    return s
+
+
+def _norm_fp_val(val: Any) -> str:
+    if val is None or isinstance(val, bool):
+        return ""
+    s = str(val).strip()
+    if not s:
+        return ""
+    try:
+        d = Decimal(s)
+        if d.is_finite():
+            txt = f"{d:f}"
+            if "." in txt:
+                txt = txt.rstrip("0").rstrip(".")
+            return "0" if txt in {"", "-0"} else txt
+    except (InvalidOperation, ValueError):
+        pass
+    return s
+
+
+def _record_fingerprint(source: str, row: Mapping[str, Any]) -> str:
+    id_val = ""
+    for k in (
+        "execId",
+        "tradeId",
+        "tid",
+        "match_id",
+        "billId",
+        "closeId",
+        "subPosId",
+        "depId",
+        "wdId",
+        "withdrawId",
+        "walletTxId",
+        "txID",
+        "txId",
+        "tx-hash",
+        "txid",
+        "hash",
+        "tranId",
+        "cf_key",
+        "_rebate_uid",
+        "ref_id",
+        "posId",
+        "positionId",
+        "orderId",
+        "order_id",
+        "ordId",
+        "oid",
+        "id",
+    ):
+        v = row.get(k)
+        if v not in (None, "") and not isinstance(v, bool):
+            id_val = str(v).strip()
+            if id_val:
+                break
+
+    delta = row.get("delta") if isinstance(row.get("delta"), Mapping) else {}
+    sym_val = str(
+        row.get("symbol")
+        or row.get("instId")
+        or row.get("contract")
+        or row.get("contract_code")
+        or row.get("coin")
+        or row.get("ccy")
+        or row.get("currency")
+        or row.get("asset")
+        or delta.get("coin")
+        or delta.get("type")
+        or ""
+    ).strip().upper()
+
+    ts_val = ""
+    for tk in (
+        "updatedTime",
+        "uTime",
+        "closeTimestamp",
+        "closeTime",
+        "time_ms",
+        "time",
+        "ts",
+        "execTime",
+        "createdAt",
+        "filledTm",
+        "create_date",
+        "create_time",
+        "created_at",
+        "createTime",
+        "insertTime",
+        "successAt",
+        "applyTime",
+        "created-at",
+        "settleTime",
+        "commission_time",
+        "transactionTime",
+    ):
+        v = row.get(tk)
+        if v not in (None, "") and not isinstance(v, bool):
+            ts_val = _norm_fp_val(v)
+            if ts_val and ts_val != "0":
+                break
+
+    amt_val = ""
+    for ak in (
+        "closedPnl",
+        "closed_pnl",
+        "realizedPnl",
+        "netProfit",
+        "closeProfitLoss",
+        "real_profit",
+        "pnl",
+        "amount",
+        "amt",
+        "change",
+        "balChg",
+        "cashFlow",
+        "income",
+        "commission_amount",
+        "qty",
+        "size",
+        "sz",
+        "closeSize",
+        "closeTotalPos",
+        "max_size",
+    ):
+        v = row.get(ak)
+        if v not in (None, "") and not isinstance(v, bool):
+            amt_val = _norm_fp_val(v)
+            if amt_val:
+                break
+    if not amt_val and delta.get("usdc") not in (None, ""):
+        amt_val = _norm_fp_val(delta.get("usdc"))
+
+    if not id_val and not (ts_val and (sym_val or amt_val)):
+        return ""
+    return f"{source}:{id_val}:{sym_val}:{ts_val}:{amt_val}"
 
 
 class ExchangeCapabilities(BaseModel):
@@ -124,15 +311,98 @@ class BaseExchangeAdapter(ABC):
     async def test_connection(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
         """Verify read-only connectivity and optionally report `remote_uid` & `account_role`."""
 
-    async def probe_identity(self, cred: ExchangeCredentialRecord) -> dict[str, Any]:
+    async def probe_identity(
+        self,
+        cred: ExchangeCredentialRecord,
+        *,
+        raise_on_transient: bool = False,
+    ) -> dict[str, Any]:
         """Best-effort read-only identity check (`remote_uid`, `account_role`, `subaccounts`)."""
         try:
             info = await self.test_connection(cred)
             return info if isinstance(info, dict) else {}
         except AccountIdentityError:
             raise
-        except Exception:
+        except Exception as exc:
+            if is_transient_upstream_error(exc):
+                if raise_on_transient:
+                    raise
+                return {"_transient_error": str(exc)}
             return {}
+
+    def extract_cached_account_uid(self, store: "LedgerStore") -> str:
+        """Extract cached UID/address from partition KV, plugin snapshot, or legacy live_bundle."""
+        sc = store.venue_scope(self.meta.venue_id)
+        kv_uid = _clean_uid_candidate(sc.get_kv("account_uid"))
+        if kv_uid:
+            return kv_uid
+        snap = sc.get_kv("snapshot")
+        if isinstance(snap, Mapping):
+            for k in ("account_uid", "wallet_address", "userid", "uid"):
+                cand = _clean_uid_candidate(snap.get(k))
+                if cand:
+                    return cand
+        lb = sc.get_kv("live_bundle")
+        if isinstance(lb, Mapping):
+            for k in ("account_uid", "userid", "uid"):
+                cand = _clean_uid_candidate(lb.get(k))
+                if cand:
+                    return cand
+            det = lb.get("account_detail")
+            if isinstance(det, Mapping):
+                cand = _clean_uid_candidate(det.get("user_id"))
+                if cand:
+                    return cand
+            fut = lb.get("futures_account")
+            if isinstance(fut, Mapping):
+                cand = _clean_uid_candidate(fut.get("user"))
+                if cand:
+                    return cand
+        return ""
+
+    def extract_archive_record_fingerprints(
+        self,
+        store: "LedgerStore",
+        *,
+        include_legacy_fallback: bool = True,
+    ) -> set[str]:
+        """Extract immutable historical trade/cashflow record fingerprints for ownership verification."""
+        fps: set[str] = set()
+        sc = store.venue_scope(self.meta.venue_id)
+        snap = (
+            sc.get_kv("snapshot")
+            if include_legacy_fallback
+            else store.load_partition_kv_only(self.meta.venue_id, "snapshot")
+        )
+        if isinstance(snap, Mapping):
+            for field_name in _SNAPSHOT_HISTORY_FIELDS:
+                rows = snap.get(field_name)
+                if not isinstance(rows, list):
+                    continue
+                for r in rows:
+                    if isinstance(r, Mapping):
+                        fp = _record_fingerprint(f"snap.{field_name}", r)
+                        if fp:
+                            fps.add(fp)
+
+        if include_legacy_fallback:
+            for stream in _ARCHIVE_HISTORY_STREAMS:
+                for r in sc.load_records(stream):
+                    if isinstance(r, Mapping):
+                        fp = _record_fingerprint(f"rec.{stream}", r)
+                        if fp:
+                            fps.add(fp)
+        else:
+            rec_map = store.load_partition_records_only(self.meta.venue_id)
+            for stream, rows in rec_map.items():
+                if stream == "eod_snapshots":
+                    continue
+                for r in rows:
+                    if isinstance(r, Mapping):
+                        fp = _record_fingerprint(f"rec.{stream}", r)
+                        if fp:
+                            fps.add(fp)
+        return fps
 
     async def sync_venue(
         self,

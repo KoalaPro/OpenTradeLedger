@@ -50,10 +50,27 @@ async def sync_binance_venue(
     if not isinstance(cached_cr, dict):
         cached_cr = {}
     if active_syms:
-        fills = await client.fetch_um_trades_for_symbols(sorted(active_syms), account_mode=acc_mode)
-        ords = await client.fetch_um_orders_for_symbols(sorted(active_syms), account_mode=acc_mode)
+        sym_list = sorted(active_syms)
+        try:
+            fills = await client.fetch_um_trades_for_symbols(
+                sym_list,
+                account_mode=acc_mode,
+                since_sec=since_sec,
+                do_full=do_full,
+            )
+        except TypeError:
+            fills = await client.fetch_um_trades_for_symbols(sym_list, account_mode=acc_mode)
+        try:
+            ords = await client.fetch_um_orders_for_symbols(
+                sym_list,
+                account_mode=acc_mode,
+                since_sec=since_sec,
+                do_full=do_full,
+            )
+        except TypeError:
+            ords = await client.fetch_um_orders_for_symbols(sym_list, account_mode=acc_mode)
         if do_full or not cached_cr:
-            fresh_cr = await client.fetch_um_commission_rates(sorted(active_syms), account_mode=acc_mode) or {}
+            fresh_cr = await client.fetch_um_commission_rates(sym_list, account_mode=acc_mode) or {}
 
     last_cf_sync = int(scope.get_kv("cashflow_sync_sec", 0) or 0)
     cf_done = bool(scope.get_kv("copy_cf_v1", False))
@@ -108,10 +125,27 @@ async def sync_binance_venue(
     if fresh_bnb_px:
         cached_bnb_px.update(fresh_bnb_px)
         scope.set_kv("bnb_prices", cached_bnb_px)
+    prev_live = scope.get_kv("live_bundle")
+    live = dict(live) if isinstance(live, dict) else {}
+    failed_fields = [str(x) for x in (live.pop("_failed_fields", None) or ()) if x]
+    warnings = [str(w) for w in (live.get("_warnings") or ()) if w]
+    if isinstance(prev_live, dict) and failed_fields:
+        for fk in failed_fields:
+            if fk in prev_live and prev_live[fk]:
+                live[fk] = prev_live[fk]
     scope.set_kv("live_bundle", live)
     scope.set_kv("backfill_completed", True)
 
     eq_val = sum(float(wb.get("balance") or 0.0) for wb in (live.get("wallet_balances") or []))
+    if eq_val <= 0:
+        eq_val = float((live.get("pm_account") or {}).get("accountEquity") or 0.0)
+        tickers_bn = live.get("spot_tickers") or {}
+        for sb_item in live.get("spot_balances") or []:
+            a_bn = str(sb_item.get("asset") or "").upper()
+            q_bn = float(sb_item.get("free") or 0.0) + float(sb_item.get("locked") or 0.0)
+            if q_bn > 0:
+                px_bn = 1.0 if a_bn in ("USDT", "USDC", "FDUSD", "USD1", "USD") else float(tickers_bn.get(a_bn) or 0.0)
+                eq_val += q_bn * px_bn
     sb_live = live.get("stock_bundle") or {}
     has_open = bool(
         [p for p in (live.get("futures_positions") or []) if abs(float(p.get("positionAmt") or 0.0)) > 1e-9]
@@ -134,4 +168,5 @@ async def sync_binance_venue(
         fp_after=fp_after,
         new_closed_delta=new_closed,
         mode="venue_sync",
+        warnings=warnings,
     )

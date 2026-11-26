@@ -112,6 +112,14 @@ async def sync_gate_venue(
 
     if fetched_specs:
         scope.set_kv("contract_specs", fetched_specs)
+    prev_live = scope.get_kv("live_bundle")
+    live_bundle = dict(live_bundle) if isinstance(live_bundle, dict) else {}
+    failed_fields = [str(x) for x in (live_bundle.pop("_failed_fields", None) or ()) if x]
+    warnings = [str(w) for w in (live_bundle.get("_warnings") or ()) if w]
+    if isinstance(prev_live, dict) and failed_fields:
+        for fk in failed_fields:
+            if fk in prev_live and prev_live[fk]:
+                live_bundle[fk] = prev_live[fk]
     scope.set_kv("live_bundle", live_bundle)
     scope.set_kv("backfill_completed", True)
     scope.set_kv("spot_window_backfill_v2", True)
@@ -163,4 +171,5 @@ async def sync_gate_venue(
         fp_after=fp_after,
         new_closed_delta=new_closed,
         mode="venue_sync",
+        warnings=warnings,
     )

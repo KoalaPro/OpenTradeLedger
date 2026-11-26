@@ -53,6 +53,38 @@ class EasiCoinApiError(RuntimeError):
         super().__init__(f"EasiCoin GET {path} failed ({status_code}): {detail}")
 
 
+def _is_fatal_easicoin_error(exc: BaseException) -> bool:
+    if isinstance(exc, ReadOnlyGuardError):
+        return True
+    if isinstance(exc, (httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, EasiCoinApiError):
+        if exc.status_code == 0 or exc.status_code == 429 or exc.status_code >= 500:
+            return True
+        if isinstance(exc.detail, dict):
+            code_str = str(exc.detail.get("code") or "").strip()
+            if code_str in {"429", "500", "502", "503", "504", "-1003", "10006", "10016"}:
+                return True
+    low = str(exc).lower()
+    return any(
+        tok in low
+        for tok in (
+            "http 5",
+            "http 429",
+            "rate limit",
+            "too frequent",
+            "too many",
+            "busy",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "timed out",
+            "timeout",
+        )
+    )
+
+
 class EasiCoinReadOnlyClient:
     """HMAC-SHA256 hex signed strictly read-only client for EasiCoin (`https://api.easicoin.io`)."""
 
@@ -179,33 +211,75 @@ class EasiCoinReadOnlyClient:
         *,
         signed: bool = True,
         default: Any = None,
+        field_name: str = "",
+        failed_fields: Optional[list[str]] = None,
+        warnings: Optional[list[str]] = None,
     ) -> Any:
         try:
             return await self.raw_get(path, query_params, signed=signed)
-        except ReadOnlyGuardError:
-            raise
         except Exception as exc:
+            if _is_fatal_easicoin_error(exc):
+                raise
             logger.warning("EasiCoin optional GET %s failed: %s", path, exc)
+            if warnings is not None:
+                warnings.append(f"{field_name or path}: {exc}")
+            if failed_fields is not None and field_name and field_name not in failed_fields:
+                failed_fields.append(field_name)
             return default
 
     async def fetch_live_overview_bundle(self) -> dict[str, Any]:
+        warnings: list[str] = []
+        failed_fields: list[str] = []
         uid_response = await self.raw_get("/asset-api/account/private/v1/userid")
         uid_data = uid_response.get("data") if isinstance(uid_response, dict) else None
         uid = account_uid(uid_data.get("userid")) if isinstance(uid_data, dict) else ""
         if not uid:
             raise EasiCoinIdentityError("ACCOUNT_UID_UNAVAILABLE")
         fut_bal_res = await self.raw_get("/futures/private/v1/account/balance")
-        pos_res = await self._safe_get("/futures/private/v1/position/list", [("coin", "USDT")], default={})
+        pos_res = await self._safe_get(
+            "/futures/private/v1/position/list",
+            [("coin", "USDT")],
+            default={},
+            field_name="futures_positions",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
         open_ord_res = await self._safe_get(
-            "/futures/private/v1/trade/activity-orders", [("coin", "USDT")], default={}
+            "/futures/private/v1/trade/activity-orders",
+            [("coin", "USDT")],
+            default={},
+            field_name="futures_open_orders",
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
         fund_res = await self._safe_get(
-            "/asset-api/account/private/v1/get-funding-account-balance", default={}
+            "/asset-api/account/private/v1/get-funding-account-balance",
+            default={},
+            field_name="funding_balances",
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
-        spot_res = await self._safe_get("/spot-api/account/private/v1/balance", default={})
-        fee_res = await self._safe_get("/futures/private/v1/account/fee-rate", default={})
+        spot_res = await self._safe_get(
+            "/spot-api/account/private/v1/balance",
+            default={},
+            field_name="spot_balances",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        fee_res = await self._safe_get(
+            "/futures/private/v1/account/fee-rate",
+            default={},
+            field_name="fee_rates",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
         tickers_res = await self._safe_get(
-            "/futures/public/v1/market/tickers", signed=False, default={}
+            "/futures/public/v1/market/tickers",
+            signed=False,
+            default={},
+            field_name="tickers",
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
         funding_list = list(((fund_res or {}).get("data") or {}).get("list") or [])
         spot_list = list((spot_res or {}).get("data") or [])
@@ -260,7 +334,14 @@ class EasiCoinReadOnlyClient:
 
         spot_stock_fills: dict[str, list[dict[str, Any]]] = {}
         if held_ec_stocks:
-            bills_res = await self._safe_get("/spot-api/account/private/v1/bills", [("limit", 100)], default={})
+            bills_res = await self._safe_get(
+                "/spot-api/account/private/v1/bills",
+                [("limit", 100)],
+                default={},
+                field_name="stock_bundle",
+                failed_fields=failed_fields,
+                warnings=warnings,
+            )
             b_data = (bills_res or {}).get("data")
             b_rows = b_data.get("list") if isinstance(b_data, dict) else (b_data if isinstance(b_data, list) else [])
             for br in b_rows or []:
@@ -269,7 +350,7 @@ class EasiCoinReadOnlyClient:
                     if c_b in held_ec_stocks and str(br.get("type") or "").lower() in ("buy", "sell", "trade", ""):
                         spot_stock_fills.setdefault(c_b, []).append(dict(br))
 
-        return {
+        out: dict[str, Any] = {
             "userid": uid,
             "futures_balances": list(((fut_bal_res or {}).get("data") or {}).get("list") or []),
             "funding_balances": funding_list,
@@ -280,6 +361,11 @@ class EasiCoinReadOnlyClient:
             "tickers": tickers_list,
             "stock_bundle": {"spot_stock_fills": spot_stock_fills},
         }
+        if failed_fields:
+            out["_failed_fields"] = failed_fields
+        if warnings:
+            out["_warnings"] = warnings
+        return out
 
     async def fetch_closed_pnl(self, *, since_sec: int, max_pages: int = 30) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []

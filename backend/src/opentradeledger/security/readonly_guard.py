@@ -39,7 +39,10 @@ def _normalize_and_check_path(path: str, allowed_prefixes: tuple[str, ...]) -> s
     clean_path = posixpath.normpath(raw_path) if raw_path else ""
     if raw_path.endswith("/") and not clean_path.endswith("/"):
         clean_path += "/"
-    if not any(clean_path == prefix or clean_path.startswith(prefix) for prefix in allowed_prefixes):
+    if not any(
+        clean_path == prefix or clean_path.startswith(prefix.rstrip("/") + "/")
+        for prefix in allowed_prefixes
+    ):
         raise ReadOnlyViolationError(
             f"Read-only guard blocked non-whitelisted path: {clean_path!r}"
         )

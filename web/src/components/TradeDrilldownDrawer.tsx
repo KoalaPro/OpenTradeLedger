@@ -19,7 +19,7 @@ interface TradeDrilldownDrawerProps {
   rangeKey: string
   open: boolean
   onClose: () => void
-  onOpenInTrades: (venueId: string, symbol: string) => void
+  onOpenInTrades: (venueId: string, symbol: string, effectiveRangeKey?: string) => void
 }
 
 function modeText(code: string, t: (k: MessageKey) => string): string {
@@ -48,7 +48,13 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
           </span>
         </div>
         <span className="text-[var(--fg-3)] whitespace-nowrap">
-          {leg.time_str} {leg.avg_price > 0 ? `· ${fmtPrice(leg.avg_price)}` : ''}
+          {leg.time_str}
+          {leg.avg_price > 0 && (
+            <>
+              {' · '}
+              <span className="sensitive">{fmtPrice(leg.avg_price)}</span>
+            </>
+          )}
         </span>
       </div>
       <div className="grid grid-cols-3 gap-2">
@@ -107,6 +113,7 @@ export function TradeDrilldownDrawer({
   const [trades, setTrades] = useState<ClosedTrade[]>([])
   const [livePos, setLivePos] = useState<OpenPosition | null>(null)
   const [expandedId, setExpandedId] = useState<string>('')
+  const [fellBackToAll, setFellBackToAll] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -148,6 +155,7 @@ export function TradeDrilldownDrawer({
     let alive = true
     setLoading(true)
     setLoadFailed(false)
+    setFellBackToAll(false)
     setTrades([])
     setLivePos(null)
     api
@@ -165,6 +173,7 @@ export function TradeDrilldownDrawer({
           const allDash = await api.getDashboard('all', venueId, symbol)
           if (!alive) return
           setTrades(allDash.trades)
+          setFellBackToAll(allDash.trades.length > 0)
           setExpandedId(allDash.trades[0]?.trade_id ?? '')
           return
         }
@@ -230,7 +239,7 @@ export function TradeDrilldownDrawer({
             {trades.length > 0 && (
               <button
                 type="button"
-                onClick={() => onOpenInTrades(venueId, symbol)}
+                onClick={() => onOpenInTrades(venueId, symbol, fellBackToAll ? 'all' : undefined)}
                 className="otl-btn h-7 px-2.5"
               >
                 <span>{locale === 'en' ? 'Open in Trades' : '去合约页查看'}</span>
@@ -250,18 +259,32 @@ export function TradeDrilldownDrawer({
         </div>
 
         <div className="flex-1 overflow-y-auto">
+          {fellBackToAll && trades.length > 0 && (
+            <div
+              data-testid="drilldown-fallback-banner"
+              className="otl-status-warn mx-6 mt-3 px-3 py-2 rounded-md text-[12px] font-medium"
+            >
+              {locale === 'en'
+                ? 'No closed trades in the selected period · showing all-time history instead'
+                : '当前所选周期无交割记录，已为您展示全部历史记录'}
+            </div>
+          )}
+
           {livePos && (
             <div className="px-6 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3 text-[12.5px]">
               <div className="flex items-center gap-2">
                 <span className={`font-semibold ${livePos.side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                   {livePos.side === 'LONG' ? t('side_long') : t('side_short')} {livePos.leverage}x
                 </span>
-                <span className="text-[var(--fg-2)]">
+                <span className="text-[var(--fg-2)] sensitive">
                   {fmtPrice(livePos.entry_price)} → {fmtPrice(livePos.mark_price)}
                 </span>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-[var(--fg-3)] sensitive">{livePos.contract_count != null && `${fmtContractQty(livePos, locale)} · `}{cur.money(livePos.notional_usd, 0)}</span>
+                <span className="text-[var(--fg-3)] sensitive">
+                  {(livePos.contract_count != null || livePos.qty != null) && `${fmtContractQty(livePos, locale)} · `}
+                  {cur.money(livePos.notional_usd, 0)}
+                </span>
                 <span className={`font-semibold sensitive ${pnlTone(livePos.unrealized_pnl_usd)}`}>
                   {cur.signedMoney(livePos.unrealized_pnl_usd)}
                   {Math.abs(livePos.unrealized_roi_pct) >= 0.01
@@ -338,7 +361,9 @@ export function TradeDrilldownDrawer({
                           </span>
                           <span className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
                             · {fmtDuration(tr.holding_sec, locale)}
-                            {tr.contract_count != null && <span className="sensitive"> · {fmtContractQty(tr, locale)}</span>}
+                            {(tr.contract_count != null || tr.qty != null) && (
+                              <span className="sensitive"> · {fmtContractQty(tr, locale)}</span>
+                            )}
                           </span>
                         </div>
                         <div className="text-[12px] text-[var(--fg-3)] mt-0.5 sensitive">

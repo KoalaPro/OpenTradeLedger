@@ -431,7 +431,7 @@ def test_partial_spot_503_never_wipes_cached_balances_across_four_new_venues(tmp
         if p == "/openApi/account/v1/uid":
             return httpx.Response(200, json={"code": 0, "data": {"uid": 7001}})
         if p == "/openApi/wallets/v1/capital/deposit/hisrec":
-            return httpx.Response(200, json={"code": 0, "data": [{"id": "bd1", "coin": "USDT", "amount": "120.0", "status": 1, "insertTime": now_ms}]})
+            return httpx.Response(200, json={"code": 0, "data": [{"id": "bd1", "coin": "USDT", "amount": "120.0", "status": 6, "insertTime": now_ms}]})
         return httpx.Response(200, json={"code": 0, "data": []})
 
     def htx_handler(req: httpx.Request) -> httpx.Response:
@@ -674,7 +674,8 @@ def test_kucoin_bingx_htx_strict_contracts_pagination_status_and_rebates(tmp_pat
                 json={
                     "code": 0,
                     "data": [
-                        {"id": "dep-ok", "coin": "USDT", "amount": "111.0", "status": 1, "insertTime": now_ms},
+                        {"id": "dep-ok", "coin": "USDT", "amount": "111.0", "status": 6, "insertTime": now_ms},
+                        {"id": "dep-uncredited", "coin": "USDT", "amount": "31.0", "status": 1, "insertTime": now_ms},
                         {"id": "dep-pending", "coin": "USDT", "amount": "20.0", "status": 0, "insertTime": now_ms},
                     ],
                 },

@@ -1,4 +1,5 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
+import { normalizeZeroAfterRound } from './format'
 import type { CurrencyCode, FxRatesPayload } from './types'
 
 export interface CurrencyOption {
@@ -70,15 +71,17 @@ function buildHelpers(code: CurrencyCode, fx: FxRatesPayload): CurrencyContextVa
     val.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
 
   const plainMoney = (usd: number, decimals?: number) => {
-    const safe = Number.isFinite(usd) ? usd * rate : 0
+    const raw = Number.isFinite(usd) ? usd * rate : 0
     const d = resolveDecimals(decimals)
+    const safe = normalizeZeroAfterRound(raw, d)
     const sign = safe < 0 ? '-' : ''
     return `${sign}${opt.symbol}${formatNum(Math.abs(safe), d)}`
   }
 
   const signedPlainMoney = (usd: number, decimals?: number) => {
-    const safe = Number.isFinite(usd) ? usd * rate : 0
+    const raw = Number.isFinite(usd) ? usd * rate : 0
     const d = resolveDecimals(decimals)
+    const safe = normalizeZeroAfterRound(raw, d)
     const sign = safe > 0 ? '+' : safe < 0 ? '-' : ''
     return `${sign}${opt.symbol}${formatNum(Math.abs(safe), d)}`
   }
@@ -95,11 +98,15 @@ function buildHelpers(code: CurrencyCode, fx: FxRatesPayload): CurrencyContextVa
 
   const convertText = (text: string) => {
     if (!text || isUsdt) return text
-    return text.replace(/(^|[^\w.$+-])([+-]?)(?:US\$|\$)?(\d[\d,]*(?:\.\d+)?)\s*(?:USDT|USD|U)\b/gi, (token, prefix: string, sign: string, amount: string) => {
-      const value = Number(sign + amount.replace(/,/g, ''))
-      if (!Number.isFinite(value)) return token
-      return prefix + (sign ? signedMoney(value) : money(value))
-    })
+    return text.replace(
+      /(^|[^\w.$+-])([+-]?)(?:(?:US\$|\$)?((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?:USDT|USD|U)\b|(?:US\$|\$)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?![\d.%a-zA-Z]))/gi,
+      (token, prefix: string, sign: string, amtWithUnit?: string, amtDollarOnly?: string) => {
+        const rawAmt = amtWithUnit ?? amtDollarOnly ?? ''
+        const value = Number(sign + rawAmt.replace(/,/g, ''))
+        if (!Number.isFinite(value)) return token
+        return prefix + (sign ? signedMoney(value) : money(value))
+      },
+    )
   }
 
   return {

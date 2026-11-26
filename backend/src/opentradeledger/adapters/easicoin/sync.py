@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
 from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError, account_uid, transfer_record_id, verify_archive_rows
+from opentradeledger.core.venue_primitives import USD_CASH_ASSETS
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
@@ -92,13 +93,54 @@ async def sync_easicoin_venue(
         key_fn=transfer_record_id,
         ts_fn=lambda r: float(r.get("time") or 0),
     )
+    prev_live = scope.get_kv("live_bundle")
+    live = dict(live) if isinstance(live, dict) else {}
+    failed_fields = [str(x) for x in (live.pop("_failed_fields", None) or ()) if x]
+    warnings = [str(w) for w in (live.get("_warnings") or ()) if w]
+    if not has_unattributed_snapshot and isinstance(prev_live, dict) and failed_fields:
+        prev_uid_chk = account_uid(prev_live.get("userid"))
+        if not prev_uid_chk or prev_uid_chk == uid:
+            for fk in failed_fields:
+                if fk in prev_live and prev_live[fk]:
+                    live[fk] = prev_live[fk]
+
     scope.set_kv("live_bundle", live)
     scope.set_kv("backfill_completed", True)
 
+    px_map: dict[str, float] = {c: 1.0 for c in USD_CASH_ASSETS}
+    for tk in live.get("tickers") or []:
+        if isinstance(tk, dict):
+            sym_u = str(tk.get("symbol") or "").upper()
+            try:
+                lp = float(tk.get("last_price") or 0.0)
+            except (TypeError, ValueError):
+                lp = 0.0
+            if lp <= 0:
+                continue
+            base = sym_u[:-4] if (sym_u.endswith("USDT") and len(sym_u) > 4) else sym_u
+            for pfx in ("1000000", "100000", "10000", "1000", "100"):
+                if base.startswith(pfx) and len(base) > len(pfx):
+                    px_map.setdefault(base[len(pfx):], lp / float(pfx))
+                    break
+            px_map[base] = lp
+
     eq_val = 0.0
     for fb in live.get("futures_balances") or []:
-        if str(fb.get("coin") or "").upper() in ("USDT", "USDC", "USD"):
-            eq_val += float(fb.get("equity") or fb.get("wallet_balance") or 0.0)
+        coin_fb = str(fb.get("coin") or "").upper()
+        q_fb = float(fb.get("equity") or fb.get("wallet_balance") or 0.0)
+        if q_fb > 0:
+            eq_val += q_fb * px_map.get(coin_fb, 0.0)
+    for fnd in live.get("funding_balances") or []:
+        q_fnd = float(fnd.get("total_equity") or fnd.get("available_balance") or fnd.get("balance") or 0.0)
+        if q_fnd > 0:
+            coin_fnd = str(fnd.get("coin") or fnd.get("token_name") or "").upper()
+            eq_val += q_fnd * px_map.get(coin_fnd, 0.0)
+    for spb in live.get("spot_balances") or []:
+        q_sp = float(spb.get("balance") or spb.get("available") or 0.0)
+        if q_sp > 0:
+            coin_sp = str(spb.get("token_name") or spb.get("coin") or "").upper()
+            eq_val += q_sp * px_map.get(coin_sp, 0.0)
+
     has_open = bool(live.get("positions") or live.get("futures_positions") or live.get("open_orders") or live.get("futures_open_orders"))
     fp_after = (
         scope.count_records("closed_pnl"),
@@ -107,10 +149,11 @@ async def sync_easicoin_venue(
     )
     new_closed = max(0, int(fp_after[0]) - int(fp_before[0])) if sum(fp_before) > 0 else 0
     return VenueSyncOutcome(
-        equity_usd=eq_val,
+        equity_usd=round(eq_val, 4),
         has_open_activity=has_open,
         fp_before=fp_before,
         fp_after=fp_after,
         new_closed_delta=new_closed,
         mode="venue_sync",
+        warnings=warnings,
     )

@@ -10,6 +10,8 @@ import re
 import time
 from typing import Any
 
+import httpx
+
 from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.core.account_partition import AccountIdentityError
 from opentradeledger.core.store import LedgerStore
@@ -17,6 +19,80 @@ from opentradeledger.core.store import LedgerStore
 VENUE_HEALTH_META_KEY = "venue_health"
 
 _SENSITIVE_TOKEN_RE = re.compile(r"([A-Za-z0-9_\-]{28,})")
+_TRANSIENT_CODE_RE = re.compile(r"(?:^|[^0-9])(-1003|50011|50004|50001|10006|10016|429000)(?:$|[^0-9])")
+
+
+class IdentityProbeTransientError(RuntimeError):
+    """Raised when the main connection succeeds, but an auxiliary UID/role endpoint suffers a transient outage."""
+
+
+def is_transient_upstream_error(exc: BaseException) -> bool:
+    """Return True when `exc` represents a network timeout, transport failure, HTTP 429, or HTTP 5xx/busy error."""
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, (IdentityProbeTransientError, httpx.TransportError, TimeoutError, ConnectionError)):
+            return True
+        if isinstance(cur, httpx.HTTPStatusError) and cur.response is not None:
+            if cur.response.status_code in {429, 500, 502, 503, 504}:
+                return True
+        status_attr = getattr(cur, "status_code", None)
+        if isinstance(status_attr, int) and status_attr in {429, 500, 502, 503, 504}:
+            return True
+        code_attr = str(getattr(cur, "code", "") or "").strip()
+        if code_attr in {"-1003", "50011", "50004", "50001", "10006", "10016", "429000"}:
+            return True
+        cur = cur.__cause__ or cur.__context__
+
+    raw = f"{type(exc).__name__}: {exc}"
+    low = raw.lower()
+    if _TRANSIENT_CODE_RE.search(raw):
+        return True
+    if any(
+        tok in low
+        for tok in (
+            "http 429",
+            "429 too many",
+            "status 429",
+            "(429",
+            "rate limit",
+            "too many requests",
+            "too frequent",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "(500",
+            "(502",
+            "(503",
+            "(504",
+            "500 internal",
+            "502 bad gateway",
+            "503 service",
+            "504 gateway",
+            "bad gateway",
+            "service unavailable",
+            "gateway timeout",
+            "internal server error",
+            "upstream unavailable",
+            "system busy",
+            "server busy",
+            "timeout",
+            "timed out",
+            "connecttimeout",
+            "readtimeout",
+            "connecterror",
+            "connection refused",
+            "network is unreachable",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "all connection attempts failed",
+            "eof occurred",
+        )
+    ):
+        return True
+    return False
 
 
 def _sanitize_raw_error(raw: Any, max_len: int = 280) -> str:
@@ -270,15 +346,19 @@ class VenueHealthTracker:
             "error_reason": "",
             "error_reason_zh": "",
             "raw_error": "",
+            "warnings": [],
         }
         all_h[vid] = entry
         self._save_all(all_h)
         return entry
 
-    def record_success(self, venue_id: str) -> dict[str, Any]:
+    def record_success(self, venue_id: str, *, warnings: list[str] | None = None) -> dict[str, Any]:
         vid = venue_id.strip().lower()
         all_h = self.get_all()
         now_ms = int(time.time() * 1000)
+        clean_warnings = list(
+            dict.fromkeys(str(w).strip() for w in (warnings or []) if str(w or "").strip())
+        )
         entry = {
             "status": "connected",
             "last_attempt_ms": now_ms,
@@ -288,6 +368,7 @@ class VenueHealthTracker:
             "error_reason": "",
             "error_reason_zh": "",
             "raw_error": "",
+            "warnings": clean_warnings,
         }
         all_h[vid] = entry
         self._save_all(all_h)
@@ -309,6 +390,7 @@ class VenueHealthTracker:
             "error_reason": diag["reason"],
             "error_reason_zh": diag["reason_zh"],
             "raw_error": diag["raw"],
+            "warnings": list(prev.get("warnings") or []),
         }
         all_h[vid] = entry
         self._save_all(all_h)
@@ -338,6 +420,7 @@ class VenueHealthTracker:
                 "error_reason": "",
                 "error_reason_zh": "",
                 "raw_error": "",
+                "warnings": [],
             }
         if not enabled:
             return {
@@ -348,12 +431,16 @@ class VenueHealthTracker:
                 "error_reason": "",
                 "error_reason_zh": "",
                 "raw_error": "",
+                "warnings": [],
             }
 
         vid = venue_id.strip().lower()
         recorded = self.get_all().get(vid)
         if isinstance(recorded, dict) and recorded.get("status") in {"connected", "error", "unverified"}:
-            return dict(recorded)
+            out = dict(recorded)
+            raw_w = out.get("warnings")
+            out["warnings"] = [str(w).strip() for w in raw_w if str(w or "").strip()] if isinstance(raw_w, list) else []
+            return out
 
         # Backward compatibility: if adaptive sync schedule already recorded a clean sync timestamp
         last_sync_sec = int((poll_state or {}).get("last_sync_sec") or 0)
@@ -366,6 +453,7 @@ class VenueHealthTracker:
                 "error_reason": "",
                 "error_reason_zh": "",
                 "raw_error": "",
+                "warnings": [],
             }
 
         return {
@@ -376,4 +464,5 @@ class VenueHealthTracker:
             "error_reason": "",
             "error_reason_zh": "",
             "raw_error": "",
+            "warnings": [],
         }

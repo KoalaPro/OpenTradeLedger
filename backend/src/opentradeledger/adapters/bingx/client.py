@@ -144,6 +144,10 @@ class BingxReadOnlyClient:
         if resp.status_code >= 400:
             raise BingxApiError(f"BingX GET {path} HTTP {resp.status_code}: {resp.text[:240]}")
         payload = resp.json()
+        if isinstance(payload, list):
+            return payload
+        if not isinstance(payload, dict):
+            raise BingxApiError(f"BingX GET {path} unexpected payload type: {type(payload).__name__}")
         if int(payload.get("code", -1)) != 0:
             raise BingxApiError(f"BingX GET {path} code={payload.get('code')}: {payload.get('msg', '')}")
         return payload.get("data")
@@ -173,56 +177,145 @@ class BingxReadOnlyClient:
         res = await self.request_readonly("GET", "/openApi/swap/v2/user/positions")
         return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
 
-    async def get_income(self, *, since_ms: int = 0, limit: int = 500) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": min(1000, limit)}
-        if since_ms > 0:
-            params["startTime"] = since_ms
-        res = await self.request_readonly("GET", "/openApi/swap/v2/user/income", params)
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+    async def get_income(
+        self,
+        *,
+        since_ms: int = 0,
+        limit: int = 500,
+        max_pages: int = 20,
+    ) -> list[dict[str, Any]]:
+        page_limit = max(1, min(1000, int(limit)))
+        merged: dict[str, dict[str, Any]] = {}
+        cursor_start: Optional[int] = since_ms if since_ms > 0 else None
+        cursor_end: Optional[int] = None
 
-    async def get_fills(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
+        for _ in range(max(1, int(max_pages))):
+            params: dict[str, Any] = {"limit": page_limit}
+            if cursor_start is not None and cursor_start > 0:
+                params["startTime"] = cursor_start
+            if cursor_end is not None and cursor_end > 0:
+                params["endTime"] = cursor_end
+            res = await self.request_readonly("GET", "/openApi/swap/v2/user/income", params)
+            valid_rows = [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+            if not valid_rows:
+                break
+
+            new_cnt = 0
+            ts_list: list[int] = []
+            for r in valid_rows:
+                ik = str(r.get("tranId") or f"{r.get('time')}_{r.get('incomeType')}_{r.get('income')}_{r.get('symbol')}")
+                if ik not in merged:
+                    merged[ik] = r
+                    new_cnt += 1
+                rts = parse_bingx_ts_ms(r.get("time"))
+                if rts > 0:
+                    ts_list.append(rts)
+
+            if len(valid_rows) < page_limit or new_cnt == 0 or not ts_list:
+                break
+
+            first_ts = parse_bingx_ts_ms(valid_rows[0].get("time"))
+            last_ts = parse_bingx_ts_ms(valid_rows[-1].get("time"))
+            min_ts = min(ts_list)
+            max_ts = max(ts_list)
+            if first_ts >= last_ts:
+                next_end = min_ts if (cursor_end is None or min_ts < cursor_end) and min_ts < max_ts else (min_ts - 1)
+                if next_end <= 0 or (since_ms > 0 and next_end < since_ms):
+                    break
+                cursor_end = next_end
+            else:
+                next_start = max_ts if (cursor_start is None or max_ts > cursor_start) and min_ts < max_ts else (max_ts + 1)
+                cursor_start = next_start
+
+        return list(merged.values())
+
+    async def get_fills(
+        self,
+        *,
+        since_ms: int = 0,
+        max_windows: int = 53,
+        max_empty_windows: int = 8,
+        earliest_hint_ms: int = 0,
+    ) -> list[dict[str, Any]]:
         now_ms = self._clock_ms()
         seven_days_ms = 7 * 86_400_000 - 60_000
         merged: dict[str, dict[str, Any]] = {}
         w_end = now_ms
-        max_windows = 1 if (since_ms > 0 and (now_ms - since_ms) <= seven_days_ms) else 4
-        for _ in range(max_windows):
+        if since_ms > 0:
+            span = max(0, now_ms - since_ms)
+            needed = max(1, int(span // seven_days_ms) + 1)
+            win_cap = min(max(1, int(max_windows)), needed)
+        else:
+            win_cap = max(1, int(max_windows))
+
+        empty_streak = 0
+        abort_all = False
+        for _ in range(win_cap):
             if since_ms > 0 and w_end < since_ms:
                 break
             w_start = max(since_ms, w_end - seven_days_ms) if since_ms > 0 else max(0, w_end - seven_days_ms)
-            params: dict[str, Any] = {
-                "tradingUnit": "COIN",
-                "startTs": w_start,
-                "endTs": w_end,
-                "limit": 500,
-            }
-            res = await self.request_readonly("GET", "/openApi/swap/v2/trade/allFillOrders", params)
-            rows = (
-                res.get("fill_orders")
-                if isinstance(res, dict) and isinstance(res.get("fill_orders"), list)
-                else (res if isinstance(res, list) else [])
-            )
-            valid_rows = [r for r in rows if isinstance(r, dict)]
-            if not valid_rows:
-                if since_ms == 0 and w_start > 0:
-                    w_end = w_start - 1
-                    continue
+            sub_end = w_end
+            win_had_rows = False
+
+            for _sub_idx in range(10):
+                params: dict[str, Any] = {
+                    "tradingUnit": "COIN",
+                    "startTs": w_start,
+                    "endTs": sub_end,
+                    "limit": 500,
+                }
+                res = await self.request_readonly("GET", "/openApi/swap/v2/trade/allFillOrders", params)
+                rows = (
+                    res.get("fill_orders")
+                    if isinstance(res, dict) and isinstance(res.get("fill_orders"), list)
+                    else (res if isinstance(res, list) else [])
+                )
+                valid_rows = [r for r in rows if isinstance(r, dict)]
+                if not valid_rows:
+                    break
+
+                win_had_rows = True
+                empty_streak = 0
+                sub_new = 0
+                in_bounds = False
+                sub_ts_list: list[int] = []
+                for r in valid_rows:
+                    fk = str(r.get("tradeId") or f"{r.get('orderId')}_{r.get('filledTm') or r.get('time')}")
+                    if fk not in merged:
+                        merged[fk] = r
+                        sub_new += 1
+                    rts = parse_bingx_ts_ms(r.get("filledTm") or r.get("time") or r.get("updateTime"))
+                    if rts > 0:
+                        sub_ts_list.append(rts)
+                    if w_start - 86_400_000 <= rts <= sub_end + 86_400_000:
+                        in_bounds = True
+
+                if sub_new == 0 and not in_bounds:
+                    abort_all = True
+                    break
+                if len(valid_rows) < 500 or sub_new == 0 or not sub_ts_list:
+                    break
+
+                min_rts = min(sub_ts_list)
+                max_rts = max(sub_ts_list)
+                next_sub_end = min_rts if (min_rts < sub_end and min_rts < max_rts) else (min_rts - 1)
+                if next_sub_end <= w_start:
+                    break
+                sub_end = next_sub_end
+
+            if abort_all or w_start <= 0 or (since_ms > 0 and w_start <= since_ms):
                 break
-            new_cnt = 0
-            in_bounds = False
-            for r in valid_rows:
-                fk = str(r.get("tradeId") or f"{r.get('orderId')}_{r.get('filledTm') or r.get('time')}")
-                if fk not in merged:
-                    merged[fk] = r
-                    new_cnt += 1
-                rts = parse_bingx_ts_ms(r.get("filledTm") or r.get("time") or r.get("updateTime"))
-                if w_start - 86_400_000 <= rts <= w_end + 86_400_000:
-                    in_bounds = True
-            if new_cnt == 0 and not in_bounds:
-                break
-            if w_start <= 0:
-                break
+
+            if not win_had_rows and since_ms <= 0:
+                if earliest_hint_ms > 0 and w_start > earliest_hint_ms:
+                    pass
+                else:
+                    empty_streak += 1
+                    if max_empty_windows > 0 and empty_streak >= max_empty_windows:
+                        break
+
             w_end = w_start - 1
+
         return list(merged.values())
 
     async def get_spot_balances(self) -> list[dict[str, Any]]:
@@ -257,25 +350,114 @@ class BingxReadOnlyClient:
                     break
         return prices
 
-    async def get_deposits(self) -> list[dict[str, Any]]:
-        try:
-            res = await self.request_readonly("GET", "/openApi/wallets/v1/capital/deposit/hisrec", {"limit": 200})
-        except BingxApiError as exc:
-            if "http 404" in str(exc).lower():
-                res = await self.request_readonly("GET", "/openApi/api/v3/capital/deposit/hisrec", {"limit": 200})
-            else:
-                raise
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+    async def _fetch_capital_history(
+        self,
+        v1_path: str,
+        v3_path: str,
+        *,
+        id_keys: tuple[str, ...],
+        ts_keys: tuple[str, ...],
+        since_ms: int = 0,
+        max_windows: int = 4,
+        page_limit: int = 200,
+        max_pages_per_window: int = 20,
+    ) -> list[dict[str, Any]]:
+        now_ms = self._clock_ms()
+        ninety_days_ms = 90 * 86_400_000 - 60_000
+        merged: dict[str, dict[str, Any]] = {}
+        active_path = v1_path
+        w_end = now_ms
 
-    async def get_withdrawals(self) -> list[dict[str, Any]]:
-        try:
-            res = await self.request_readonly("GET", "/openApi/wallets/v1/capital/withdraw/history", {"limit": 200})
-        except BingxApiError as exc:
-            if "http 404" in str(exc).lower():
-                res = await self.request_readonly("GET", "/openApi/api/v3/capital/withdraw/history", {"limit": 200})
-            else:
-                raise
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+        if since_ms > 0:
+            span = max(0, now_ms - since_ms)
+            win_cap = min(max(1, int(max_windows)), max(1, int(span // ninety_days_ms) + 1))
+        else:
+            win_cap = max(1, int(max_windows))
+
+        abort_windows = False
+        for _ in range(win_cap):
+            if since_ms > 0 and w_end < since_ms:
+                break
+            w_start = max(since_ms, w_end - ninety_days_ms) if since_ms > 0 else max(0, w_end - ninety_days_ms)
+            offset = 0
+            for _page_idx in range(max(1, int(max_pages_per_window))):
+                params: dict[str, Any] = {
+                    "limit": page_limit,
+                    "offset": offset,
+                    "startTime": w_start,
+                    "endTime": w_end,
+                }
+                try:
+                    res = await self.request_readonly("GET", active_path, params)
+                except BingxApiError as exc:
+                    err_low = str(exc).lower()
+                    if active_path == v1_path and ("http 404" in err_low or "not found" in err_low):
+                        active_path = v3_path
+                        res = await self.request_readonly("GET", active_path, params)
+                    else:
+                        raise
+
+                rows = (
+                    res.get("list")
+                    if isinstance(res, dict) and isinstance(res.get("list"), list)
+                    else (res if isinstance(res, list) else [])
+                )
+                valid_rows = [r for r in rows if isinstance(r, dict)]
+                if not valid_rows:
+                    break
+
+                page_new = 0
+                in_bounds = False
+                for r in valid_rows:
+                    rid = ""
+                    for k in id_keys:
+                        if r.get(k) not in (None, ""):
+                            rid = str(r[k])
+                            break
+                    rts = 0
+                    for tk in ts_keys:
+                        rts = parse_bingx_ts_ms(r.get(tk))
+                        if rts > 0:
+                            break
+                    if not rid:
+                        rid = f"{rts}_{r.get('coin')}_{r.get('amount')}_{r.get('address') or ''}"
+                    if rid not in merged:
+                        merged[rid] = r
+                        page_new += 1
+                    if rts == 0 or (w_start - 86_400_000 <= rts <= w_end + 86_400_000):
+                        in_bounds = True
+
+                if page_new == 0:
+                    if not in_bounds:
+                        abort_windows = True
+                    break
+                if len(valid_rows) < page_limit:
+                    break
+                offset += page_limit
+
+            if abort_windows or w_start <= 0 or (since_ms > 0 and w_start <= since_ms):
+                break
+            w_end = w_start - 1
+
+        return list(merged.values())
+
+    async def get_deposits(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
+        return await self._fetch_capital_history(
+            "/openApi/wallets/v1/capital/deposit/hisrec",
+            "/openApi/api/v3/capital/deposit/hisrec",
+            id_keys=("txId", "id"),
+            ts_keys=("insertTime", "createTime", "time"),
+            since_ms=since_ms,
+        )
+
+    async def get_withdrawals(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
+        return await self._fetch_capital_history(
+            "/openApi/wallets/v1/capital/withdraw/history",
+            "/openApi/api/v3/capital/withdraw/history",
+            id_keys=("id", "txId"),
+            ts_keys=("applyTime", "completeTime", "time"),
+            since_ms=since_ms,
+        )
 
     async def get_commission_rate(self) -> dict[str, Any]:
         res = await self.request_readonly("GET", "/openApi/swap/v2/trade/commissionRate")
@@ -294,7 +476,16 @@ class BingxReadOnlyClient:
                 isinstance(exc, httpx.TransportError)
                 or "http 5" in msg_low
                 or "http 429" in msg_low
+                or "code=429" in msg_low
                 or "code=100400" in msg_low
+                or "code=100410" in msg_low
+                or "code=100500" in msg_low
+                or "100410" in msg_low
+                or "100500" in msg_low
+                or "rate limit" in msg_low
+                or "too many" in msg_low
+                or "busy" in msg_low
+                or "timeout" in msg_low
                 or "parameter" in msg_low
             )
 
@@ -310,11 +501,34 @@ class BingxReadOnlyClient:
 
         positions = await _opt("positions", self.get_positions(), [])
         income = await _opt("income", self.get_income(since_ms=since_ms), [])
-        fills = await _opt("fills", self.get_fills(since_ms=since_ms), [])
         spot_balances = await _opt("spot_balances", self.get_spot_balances(), [])
         tickers = await _opt("tickers", self.get_spot_tickers(), {})
-        deposits = await _opt("deposits", self.get_deposits(), [])
-        withdrawals = await _opt("withdrawals", self.get_withdrawals(), [])
+        deposits = await _opt("deposits", self.get_deposits(since_ms=since_ms), [])
+        withdrawals = await _opt("withdrawals", self.get_withdrawals(since_ms=since_ms), [])
+
+        hint_candidates: list[int] = []
+        for inc_row in income:
+            if isinstance(inc_row, dict):
+                ts_i = parse_bingx_ts_ms(inc_row.get("time"))
+                if ts_i > 0:
+                    hint_candidates.append(ts_i)
+        for dep_row in deposits:
+            if isinstance(dep_row, dict):
+                ts_d = parse_bingx_ts_ms(dep_row.get("insertTime") or dep_row.get("createTime") or dep_row.get("time"))
+                if ts_d > 0:
+                    hint_candidates.append(ts_d)
+        for wd_row in withdrawals:
+            if isinstance(wd_row, dict):
+                ts_w = parse_bingx_ts_ms(wd_row.get("applyTime") or wd_row.get("completeTime") or wd_row.get("time"))
+                if ts_w > 0:
+                    hint_candidates.append(ts_w)
+        earliest_hint_ms = min(hint_candidates) if hint_candidates else 0
+
+        fills = await _opt(
+            "fills",
+            self.get_fills(since_ms=since_ms, earliest_hint_ms=earliest_hint_ms),
+            [],
+        )
         commission = await _opt("commission", self.get_commission_rate(), {})
 
         out_snap: dict[str, Any] = {

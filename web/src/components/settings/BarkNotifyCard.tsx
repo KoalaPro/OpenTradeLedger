@@ -110,7 +110,27 @@ export function BarkNotifyCard({
           />
         </div>
 
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {settings.notifications?.bark_push_key_set && (
+            <button
+              type="button"
+              data-testid="clear-bark-key-btn"
+              onClick={async () => {
+                const cleared = await onUpdateSettings({
+                  notifications: { clear_bark_push_key: true },
+                })
+                if (cleared === false) return
+                setBarkKey('')
+                flashOk(
+                  isZh ? '已清除保存的 Bark 推送密钥' : 'Saved Bark push key cleared',
+                  2500,
+                )
+              }}
+              className="otl-btn text-[var(--fg-2)] hover:text-[var(--err)]"
+            >
+              {isZh ? '清除密钥' : 'Clear Key'}
+            </button>
+          )}
           <button
             type="button"
             data-testid="test-notify-btn"

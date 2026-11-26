@@ -23,6 +23,7 @@ export interface VenueHealthState {
   error_reason: string
   error_reason_zh: string
   raw_error: string
+  warnings?: string[]
 }
 
 export interface FxRatesPayload {
@@ -120,6 +121,7 @@ export interface ExchangeSummary {
   health_status?: 'connected' | 'error' | 'archived'
   error_reason?: string
   error_reason_zh?: string
+  warnings?: string[]
   equity_usd: number
   net_principal_usd: number
   net_pnl_usd: number
@@ -128,6 +130,15 @@ export interface ExchangeSummary {
   rebate_rate_pct: number
   discount_rate_pct: number
   capabilities: Record<string, boolean>
+}
+
+export interface DashboardWarningItem {
+  venue_id: string
+  display_name: string
+  display_name_zh: string
+  warnings: string[]
+  summary: string
+  summary_zh: string
 }
 
 export interface OpenPosition {
@@ -197,6 +208,9 @@ export interface DashboardData {
   last_sync_ms: number
   syncing: boolean
   range_key: string
+  venue_filter?: string
+  symbol_filter?: string
+  warnings?: DashboardWarningItem[]
   available_months: string[]
   available_symbols: string[]
   summary: {

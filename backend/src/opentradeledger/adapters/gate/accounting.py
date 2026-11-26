@@ -18,6 +18,7 @@ from opentradeledger.adapters.stock_channels import (
     reconstruct_spot_cost_basis,
 )
 from opentradeledger.core.venue_primitives import (
+    USD_CASH_ASSETS,
     aggregate_trade_legs_decimal,
     build_spot_wallet_balances,
     spot_holdings_from_wallets,
@@ -1062,6 +1063,36 @@ def build_gate_venue_ledger(
     )
 
     # Gate Whole-Account Conservation Law
+    px_map = {**(global_spot_prices or {}), **extract_gate_spot_prices(store)}
+
+    def _gate_ccy_usd_px(ccy_raw: str) -> Decimal:
+        cu = (ccy_raw or "").strip().upper()
+        if not cu:
+            return Decimal("0")
+        if cu in USD_CASH_ASSETS:
+            return Decimal("1")
+        raw_px = px_map.get(cu)
+        if raw_px is not None:
+            dp = dec(raw_px, "0")
+            if dp > 0:
+                return dp
+        return Decimal("0")
+
+    def _gate_book_status_ok(row: Mapping[str, Any]) -> bool:
+        raw_st = row.get("status") if row.get("status") not in (None, "") else row.get("state")
+        if raw_st in (None, ""):
+            return True
+        return str(raw_st).strip().lower() not in {
+            "cancelled",
+            "canceled",
+            "cancel",
+            "failed",
+            "fail",
+            "rejected",
+            "reject",
+            "pending",
+        }
+
     deposit_in_usd = Decimal("0")
     push_in_usd = Decimal("0")
     c2c_in_usd = Decimal("0")
@@ -1075,24 +1106,38 @@ def build_gate_venue_ledger(
     _GATE_CARD_PAY_OUT_CODES = ("3001", "3019", "3501", "3519")
 
     for sb_row in spot_account_book:
-        if str(sb_row.get("currency") or "").upper() != "USDT":
-            continue
+        ccy_sb = str(sb_row.get("currency") or "").strip().upper()
         tp = str(sb_row.get("type") or "")
         cd = str(sb_row.get("code") or "")
         chg = dec(sb_row.get("change"))
-        if tp == "deposit":
-            deposit_in_usd += chg
-        elif tp in ("push_rcvd", "pay_in") or (cd in _GATE_CARD_PAY_IN_CODES and chg > 0):
-            push_in_usd += chg
-        elif tp in ("c2c_om", "c2c_in") and chg > 0:
-            c2c_in_usd += chg
-        elif (
+        is_ext_in_dep = tp == "deposit"
+        is_ext_in_push = tp in ("push_rcvd", "pay_in") or (cd in _GATE_CARD_PAY_IN_CODES and chg > 0)
+        is_ext_in_c2c = tp in ("c2c_om", "c2c_in") and chg > 0
+        is_ext_out = (
             tp in ("withdraw", "push_dctd", "c2c_out", "pay_out")
             or (tp == "c2c_om" and chg < 0)
             or (cd in _GATE_CARD_PAY_OUT_CODES and chg < 0)
-        ):
-            outflow_usd += abs(chg)
-        elif cd in ("150222", "150223", "150256", "150258"):
+        )
+        if is_ext_in_dep or is_ext_in_push or is_ext_in_c2c or is_ext_out:
+            if not _gate_book_status_ok(sb_row):
+                continue
+            px_sb = _gate_ccy_usd_px(ccy_sb)
+            if px_sb <= 0:
+                continue
+            chg_usd = chg * px_sb
+            if is_ext_in_dep:
+                deposit_in_usd += chg_usd
+            elif is_ext_in_push:
+                push_in_usd += chg_usd
+            elif is_ext_in_c2c:
+                c2c_in_usd += chg_usd
+            elif is_ext_out:
+                outflow_usd += abs(chg_usd)
+            continue
+
+        if ccy_sb != "USDT":
+            continue
+        if cd in ("150222", "150223", "150256", "150258"):
             launchpad_net_usdt += chg
             has_launchpad_flow = True
         elif tp in ("lend", "redeem") or cd in ("686", "687", "688", "150349"):
@@ -1232,8 +1277,7 @@ def build_gate_venue_ledger(
     fx_pending_run = Decimal("0")
 
     for sb_row in sorted(spot_account_book, key=lambda x: norm_sec(x.get("time"))):
-        if str(sb_row.get("currency") or "").upper() != "USDT":
-            continue
+        ccy_d = str(sb_row.get("currency") or "").strip().upper()
         tp = str(sb_row.get("type") or "")
         cd = str(sb_row.get("code") or "")
         rid = str(sb_row.get("id") or "")
@@ -1248,14 +1292,25 @@ def build_gate_venue_ledger(
             or (tp in ("c2c_om", "c2c_in") and chg > 0)
             or (cd in _GATE_CARD_PAY_IN_CODES and chg > 0)
         ):
-            daily_ext_flow[day_sb] += chg
-        elif (
+            if _gate_book_status_ok(sb_row):
+                px_d = _gate_ccy_usd_px(ccy_d)
+                if px_d > 0:
+                    daily_ext_flow[day_sb] += chg * px_d
+            continue
+        if (
             tp in ("withdraw", "push_dctd", "c2c_out", "pay_out")
             or (tp == "c2c_om" and chg < 0)
             or (cd in _GATE_CARD_PAY_OUT_CODES and chg < 0)
         ):
-            daily_ext_flow[day_sb] -= abs(chg)
-        elif tp in ("fct_out", "fct_in", "fct_refund"):
+            if _gate_book_status_ok(sb_row):
+                px_d = _gate_ccy_usd_px(ccy_d)
+                if px_d > 0:
+                    daily_ext_flow[day_sb] -= abs(chg * px_d)
+            continue
+
+        if ccy_d != "USDT":
+            continue
+        if tp in ("fct_out", "fct_in", "fct_refund"):
             daily_copy_prin_flow[day_sb] += -chg
         elif cd in ("150222", "150223", "150256", "150258"):
             daily_lp_flow[day_sb] += chg
@@ -1460,7 +1515,6 @@ def build_gate_venue_ledger(
         )
 
     # Gate Spot Holdings
-    px_map = {**(global_spot_prices or {}), **extract_gate_spot_prices(store)}
     raw_spot_rows: list[tuple[str, float, float, str]] = []
     if isinstance(uni_balances, Mapping):
         for coin, row in uni_balances.items():

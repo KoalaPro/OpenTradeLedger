@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Check } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, Check } from 'lucide-react'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { formatDisplayKpiValue } from '../components/KpiCard'
 import { SegmentedPills } from '../components/SegmentedPills'
@@ -7,8 +7,8 @@ import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n/zh-CN'
 import { useCurrency } from '../lib/currency'
-import { fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, pnlTone } from '../lib/format'
-import type { ClosedTrade, DashboardData, TradeLegFee } from '../lib/types'
+import { collectActiveWarnings, fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, pnlTone } from '../lib/format'
+import type { ClosedTrade, DashboardData, DashboardWarningItem, TradeLegFee } from '../lib/types'
 
 const TAG_KEYS: Array<{ id: string; key: MessageKey }> = [
   { id: 'planned', key: 'tag_planned' },
@@ -55,7 +55,13 @@ function LegFeeCard({
           {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${fmtLegRate(leg.fee_bps, locale)}`}
         </div>
         <div className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
-          {leg.time_str} {leg.avg_price > 0 ? `· ${fmtPrice(leg.avg_price)}` : ''}
+          {leg.time_str}
+          {leg.avg_price > 0 && (
+            <>
+              {' · '}
+              <span className="sensitive">{fmtPrice(leg.avg_price)}</span>
+            </>
+          )}
         </div>
       </div>
 
@@ -105,6 +111,11 @@ export function TradesPage({
   onSymbolChange,
   onSaveJournal,
   onInspectSymbol,
+  scopeReady = true,
+  scopeLoading = false,
+  scopeError = '',
+  onRetryScope,
+  activeWarnings,
 }: {
   data: DashboardData
   venueFilter: string
@@ -113,6 +124,11 @@ export function TradesPage({
   onSymbolChange: (s: string) => void
   onSaveJournal: (tradeId: string, tags: string[], note: string) => Promise<void>
   onInspectSymbol?: (venueId: string, symbol: string, venueName: string, rangeKey: string) => void
+  scopeReady?: boolean
+  scopeLoading?: boolean
+  scopeError?: string
+  onRetryScope?: () => void
+  activeWarnings?: DashboardWarningItem[]
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
@@ -123,6 +139,8 @@ export function TradesPage({
   const [draftMap, setDraftMap] = useState<Record<string, { tags: string[]; note: string }>>({})
   const [saving, setSaving] = useState(false)
   const [savedAck, setSavedAck] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const savedTimerRef = useRef<number | null>(null)
   const tableWrapRef = useRef<HTMLDivElement | null>(null)
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
   const [rowGlider, setRowGlider] = useState<{ top: number; height: number; visible: boolean }>({
@@ -131,12 +149,55 @@ export function TradesPage({
     visible: false,
   })
 
+  const clearSavedIndicators = () => {
+    if (savedTimerRef.current !== null) {
+      window.clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = null
+    }
+    setSavedAck(false)
+    setSaveError('')
+  }
+
+  useEffect(() => {
+    return () => {
+      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current)
+    }
+  }, [])
+
   useEffect(() => {
     setSelectedId('')
+    clearSavedIndicators()
   }, [venueFilter, symbolFilter])
 
+  const localDataScopeConflict = useMemo(() => {
+    const respVenue = data.venue_filter
+    const respSymbol = data.symbol_filter
+    if (respVenue) {
+      const wantV = venueFilter.toUpperCase() === 'ALL' ? 'ALL' : venueFilter.toLowerCase()
+      const gotV = respVenue.toUpperCase() === 'ALL' ? 'ALL' : respVenue.toLowerCase()
+      if (wantV !== gotV) return true
+    }
+    if (respSymbol) {
+      const wantS = symbolFilter.toUpperCase() === 'ALL' ? 'ALL' : symbolFilter.toUpperCase()
+      const gotS = respSymbol.toUpperCase() === 'ALL' ? 'ALL' : respSymbol.toUpperCase()
+      if (wantS !== gotS) return true
+    }
+    return false
+  }, [data.venue_filter, data.symbol_filter, venueFilter, symbolFilter])
+
+  const effectiveScopeReady = scopeReady && !localDataScopeConflict && !scopeError
+
   const sortedTrades = useMemo(() => {
-    const arr = [...data.trades]
+    if (!effectiveScopeReady) return []
+    const arr = data.trades.filter(tr => {
+      if (venueFilter !== 'ALL' && tr.venue_id.toLowerCase() !== venueFilter.toLowerCase()) {
+        return false
+      }
+      if (symbolFilter !== 'ALL' && tr.symbol.toUpperCase() !== symbolFilter.toUpperCase()) {
+        return false
+      }
+      return true
+    })
     arr.sort((a, b) => {
       if (sortBy === 'OPEN_DESC') return b.open_time_ms - a.open_time_ms
       if (sortBy === 'PNL_DESC') return b.net_pnl_usd - a.net_pnl_usd
@@ -144,7 +205,7 @@ export function TradesPage({
       return b.close_time_ms - a.close_time_ms
     })
     return arr
-  }, [data.trades, sortBy])
+  }, [data.trades, sortBy, venueFilter, symbolFilter, effectiveScopeReady])
 
   const selected: ClosedTrade | null = useMemo(() => {
     if (!sortedTrades.length) return null
@@ -155,10 +216,11 @@ export function TradesPage({
   const currentDraft = selected ? draftMap[selected.trade_id] : undefined
   const draftTags = currentDraft ? currentDraft.tags : (selected?.tags ?? [])
   const draftNote = currentDraft ? currentDraft.note : (selected?.note ?? '')
+  const canSaveJournal = Boolean(selected && effectiveScopeReady && !scopeLoading && !scopeError)
 
   useEffect(() => {
+    clearSavedIndicators()
     if (selected) {
-      setSavedAck(false)
       rowRefs.current[selected.trade_id]?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
     }
   }, [selected?.trade_id])
@@ -200,8 +262,10 @@ export function TradesPage({
   }
 
   const handleSave = async () => {
-    if (!selected) return
+    if (!selected || !canSaveJournal) return
     setSaving(true)
+    setSaveError('')
+    setSavedAck(false)
     try {
       await onSaveJournal(selected.trade_id, draftTags, draftNote)
       setDraftMap(prev => {
@@ -210,11 +274,35 @@ export function TradesPage({
         return next
       })
       setSavedAck(true)
-      setTimeout(() => setSavedAck(false), 2000)
+      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = window.setTimeout(() => {
+        setSavedAck(false)
+        savedTimerRef.current = null
+      }, 2000)
+    } catch (err) {
+      setSaveError(
+        err instanceof Error
+          ? err.message
+          : locale === 'en'
+            ? 'Failed to save journal note'
+            : '保存复盘笔记失败，请稍后重试',
+      )
     } finally {
       setSaving(false)
     }
   }
+
+  const truncationWarnings = useMemo(() => {
+    const allWarnings = activeWarnings ?? collectActiveWarnings(data)
+    const TRUNC_RE = /截断|上限|分页|最多|仅拉取|未完整|历史|成交|交割|truncat|limit|cap|max|pagination|partial\s+history|trades?\b|fills?\b/i
+    return allWarnings.filter(w => {
+      if (venueFilter !== 'ALL' && w.venue_id.toLowerCase() !== venueFilter.toLowerCase()) {
+        return false
+      }
+      const joined = `${w.summary} ${w.summary_zh} ${w.warnings.join(' ')}`
+      return TRUNC_RE.test(joined)
+    })
+  }, [activeWarnings, data, venueFilter])
 
   const normalizedVenueValue = useMemo(() => {
     if (venueFilter === 'ALL') return 'ALL'
@@ -242,6 +330,29 @@ export function TradesPage({
 
   return (
     <div data-testid="trades-page" className="otl-stagger">
+      {!data.demo_mode && truncationWarnings.length > 0 && (
+        <div
+          role="status"
+          data-testid="trades-warnings-banner"
+          className="otl-status-warn mt-4 px-4 py-2.5 rounded-lg text-[12.5px] flex items-start gap-2.5"
+        >
+          <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            {truncationWarnings.map(w => {
+              const name = locale === 'en' ? w.display_name : w.display_name_zh || w.display_name
+              const summary = locale === 'en' ? w.summary || w.summary_zh : w.summary_zh || w.summary
+              const extra = w.warnings.filter(msg => msg && !summary.includes(msg))
+              return (
+                <div key={w.venue_id}>
+                  <strong>{name}</strong>：{summary}
+                  {extra.length > 0 ? `（${extra.join('；')}）` : ''}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Flush Filter Toolbar */}
       <div className="py-3.5 px-4 sm:px-5 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
@@ -308,6 +419,39 @@ export function TradesPage({
       </div>
 
       {/* 7:5 Master-Detail Hairline Split */}
+      {!effectiveScopeReady ? (
+        scopeError && !scopeLoading ? (
+          <div
+            role="alert"
+            data-testid="dashboard-load-error-state"
+            className="py-16 text-center space-y-3 border-b border-[var(--border)]"
+          >
+            <p className="m-0 text-[13px] text-[var(--fg-2)]">
+              {locale === 'en'
+                ? 'Could not load trades for the selected filter. Previous account data is hidden to prevent cross-account edits.'
+                : '当前筛选条件下的交易数据加载失败（已隐藏旧筛选数据，防止跨平台误写笔记）。'}
+            </p>
+            {onRetryScope && (
+              <button
+                type="button"
+                data-testid="dashboard-retry-btn"
+                onClick={onRetryScope}
+                className="otl-btn otl-btn-primary"
+              >
+                {locale === 'en' ? 'Retry' : '重试'}
+              </button>
+            )}
+          </div>
+        ) : (
+          <div
+            role="status"
+            className="py-20 text-center text-[13px] text-[var(--fg-3)] border-b border-[var(--border)]"
+          >
+            {locale === 'en' ? 'Loading…' : '加载中…'}
+          </div>
+        )
+      ) : (
+      <>
       <div className="grid grid-cols-1 xl:grid-cols-12 border-b border-[var(--border)] items-start">
         <div
           className="xl:col-span-7 xl:pr-4 xl:border-r border-[var(--border)]"
@@ -481,7 +625,14 @@ export function TradesPage({
                       />
                     </div>
                     <div className="text-[12px] text-[var(--fg-3)] mt-1">
-                      {(selected.qty || selected.contract_count) ? <span className="sensitive">{fmtContractQty(selected, locale)} · </span> : null}
+                      {(selected.qty || selected.contract_count) ? (
+                        <span className="sensitive">{fmtContractQty(selected, locale)} · </span>
+                      ) : null}
+                      {(selected.entry_leg.avg_price > 0 || selected.exit_leg.avg_price > 0) && (
+                        <span className="sensitive">
+                          {fmtPrice(selected.entry_leg.avg_price)} → {fmtPrice(selected.exit_leg.avg_price)} ·{' '}
+                        </span>
+                      )}
                       {fmtDuration(selected.holding_sec, locale)}
                       {selected.effective_relief_pct > 0
                         ? ` · ${t('detail_relief_short')} ${selected.effective_relief_pct.toFixed(1)}%`
@@ -563,7 +714,8 @@ export function TradesPage({
                   <span className="text-[12px] font-medium text-[var(--fg-2)]">{t('journal_title')}</span>
                   <button
                     type="button"
-                    disabled={saving}
+                    data-testid="journal-save-btn"
+                    disabled={saving || !canSaveJournal}
                     onClick={() => void handleSave()}
                     className="otl-btn h-7 px-2.5"
                   >
@@ -571,6 +723,15 @@ export function TradesPage({
                     <span>{saving ? t('journal_saving') : savedAck ? t('journal_saved') : t('journal_save')}</span>
                   </button>
                 </div>
+                {saveError && (
+                  <div
+                    role="alert"
+                    data-testid="journal-save-error"
+                    className="otl-status-err px-3 py-2 rounded-md text-[12px] font-medium"
+                  >
+                    {saveError}
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-1.5">
                   {TAG_KEYS.map(tk => {
                     const on = draftTags.includes(tk.id)
@@ -579,6 +740,8 @@ export function TradesPage({
                         key={tk.id}
                         type="button"
                         onClick={() => {
+                          setSavedAck(false)
+                          setSaveError('')
                           const nextTags = draftTags.includes(tk.id)
                             ? draftTags.filter(x => x !== tk.id)
                             : [...draftTags, tk.id]
@@ -603,6 +766,8 @@ export function TradesPage({
                   rows={2}
                   value={draftNote}
                   onChange={e => {
+                    setSavedAck(false)
+                    setSaveError('')
                     const val = e.target.value
                     setDraftMap(prev => ({
                       ...prev,
@@ -691,6 +856,8 @@ export function TradesPage({
           </div>
         )}
       </section>
+      </>
+      )}
     </div>
   )
 }

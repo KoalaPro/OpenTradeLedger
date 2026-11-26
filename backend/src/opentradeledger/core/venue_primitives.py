@@ -116,8 +116,14 @@ def dec(val: Any, default: str = "0") -> Decimal:
         return Decimal(default)
 
 
-def f2(val: Decimal | float, digits: int = 4) -> float:
-    return round(float(val), digits)
+def f2(val: Decimal | float | int | str, digits: int = 4) -> float:
+    d = dec(val)
+    if digits <= 0:
+        q = d.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    else:
+        q = d.quantize(Decimal(10) ** (-digits), rounding=ROUND_HALF_UP)
+    res = float(q)
+    return 0.0 if res == 0.0 else res
 
 
 def fmt_bj(ts_sec: float | int, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:

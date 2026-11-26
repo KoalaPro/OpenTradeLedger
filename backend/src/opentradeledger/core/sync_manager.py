@@ -15,6 +15,7 @@ from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.core.account_partition import (
     AccountIdentityError,
+    is_secondary_account_id,
     mask_uid,
     parse_adapter_id,
 )
@@ -216,6 +217,14 @@ class SyncManager:
             "venues": schedule,
         }
 
+    def _occupied_for_adapter(self, adapter_id: str, adapter: Any) -> set[str]:
+        ad_id = parse_adapter_id(adapter_id)
+        occupied = {c.venue_id.lower() for c in self.vault.list_for_adapter(ad_id)}
+        occupied.update(self.store.list_partition_account_ids(ad_id))
+        if adapter is not None and adapter.has_venue_data(self.store.for_account(ad_id, ad_id)):
+            occupied.add(ad_id)
+        return occupied
+
     def check_identity_conflicts(
         self,
         *,
@@ -231,6 +240,7 @@ class SyncManager:
     ) -> None:
         acct_id = account_id.strip().lower()
         ad_id = parse_adapter_id(adapter_id)
+        adapter = self.registry.get(ad_id)
         clean_uid = (resolved_uid or "").strip()
         clean_bound = (bound_uid or "").strip()
 
@@ -249,7 +259,7 @@ class SyncManager:
                     exchange_name=exchange_name,
                     exchange_name_zh=exchange_name_zh,
                 )
-        elif require_uid_for_existing_data and not clean_uid:
+        elif (require_verified_uid or require_uid_for_existing_data) and not clean_uid:
             raise AccountIdentityError(
                 "ACCOUNT_UID_UNAVAILABLE",
                 exchange_name=exchange_name,
@@ -263,9 +273,12 @@ class SyncManager:
             active_acct_ids.add(other_acct)
             if other_acct == acct_id or other.effective_adapter_id != ad_id:
                 continue
-            other_uid = str(
-                other.remote_uid or self.store.venue_scope(other_acct).get_kv("account_uid") or ""
-            ).strip()
+            cached_other_uid = (
+                adapter.extract_cached_account_uid(self.store.for_account(other_acct, ad_id))
+                if adapter is not None
+                else str(self.store.venue_scope(other_acct).get_kv("account_uid") or "")
+            )
+            other_uid = str(other.remote_uid or cached_other_uid or "").strip()
             if clean_uid and other_uid and clean_uid.lower() == other_uid.lower():
                 raise AccountIdentityError(
                     "DUPLICATE_ACCOUNT_UID",
@@ -283,19 +296,18 @@ class SyncManager:
                 )
 
         if clean_uid:
-            adapter = self.registry.get(ad_id)
             candidate_partitions = {ad_id, *self.store.list_partition_account_ids(ad_id)}
             for other_acct in sorted(candidate_partitions):
                 if other_acct == acct_id or other_acct in active_acct_ids:
                     continue
-                if adapter is not None and not adapter.has_venue_data(self.store.for_account(other_acct, ad_id)):
+                other_scoped = self.store.for_account(other_acct, ad_id)
+                if adapter is not None and not adapter.has_venue_data(other_scoped):
                     continue
                 other_sc = self.store.venue_scope(other_acct)
-                other_uid = str(other_sc.get_kv("account_uid") or "").strip()
-                if not other_uid:
-                    snap_other = other_sc.get_kv("snapshot")
-                    if isinstance(snap_other, dict):
-                        other_uid = str(snap_other.get("wallet_address") or "").strip()
+                other_uid = str(
+                    (adapter.extract_cached_account_uid(other_scoped) if adapter is not None else other_sc.get_kv("account_uid"))
+                    or ""
+                ).strip()
                 if other_uid and clean_uid.lower() == other_uid.lower():
                     saved_lbl = str(other_sc.get_kv("account_label") or other_acct).strip()
                     raise AccountIdentityError(
@@ -353,7 +365,12 @@ class SyncManager:
             results: dict[str, dict[str, Any]] = {}
             any_synced = False
             try:
-                for cred in self.vault.list_decrypted():
+                all_creds = self.vault.list_decrypted()
+                priority_order = {
+                    c.venue_id.lower(): (1 if is_secondary_account_id(c.venue_id.lower()) else 0, idx)
+                    for idx, c in enumerate(all_creds)
+                }
+                for cred in all_creds:
                     if not cred.enabled:
                         continue
                     acct_id = cred.venue_id.lower()
@@ -410,12 +427,16 @@ class SyncManager:
                             "stage": sched["stage"],
                         }
                         if outcome.warnings:
-                            res_row["warnings"] = outcome.warnings
+                            res_row["warnings"] = list(outcome.warnings)
                         results[acct_id] = res_row
-                        self.health_tracker.record_success(acct_id)
+                        self.health_tracker.record_success(acct_id, warnings=outcome.warnings)
                         any_synced = True
                         raw_scope = self.store.venue_scope(acct_id)
-                        kv_uid = str(raw_scope.get_kv("account_uid") or "").strip()
+                        kv_uid = str(
+                            raw_scope.get_kv("account_uid")
+                            or adapter.extract_cached_account_uid(scoped_store)
+                            or ""
+                        ).strip()
                         kv_role = str(raw_scope.get_kv("account_role") or "").strip()
                         probed_uid = kv_uid
                         probed_role = kv_role
@@ -426,11 +447,71 @@ class SyncManager:
                             if isinstance(info, dict):
                                 probed_uid = str(info.get("remote_uid") or probed_uid or "").strip()
                                 probed_role = str(info.get("account_role") or probed_role or "").strip()
-                        eff_uid = cred.remote_uid or probed_uid
-                        eff_role = cred.account_role or probed_role
+                        eff_uid = str(cred.remote_uid or probed_uid or "").strip()
+                        eff_role = str(cred.account_role or probed_role or "").strip()
+
+                        duplicate_owner = None
+                        if eff_uid:
+                            my_prio = priority_order.get(acct_id, (1, 9999))
+                            for other_c in self.vault.list_decrypted():
+                                other_acct = other_c.venue_id.lower()
+                                if other_acct == acct_id or other_c.effective_adapter_id != adapter_id or not other_c.enabled:
+                                    continue
+                                other_uid = str(
+                                    other_c.remote_uid
+                                    or adapter.extract_cached_account_uid(self.store.for_account(other_acct, adapter_id))
+                                    or ""
+                                ).strip()
+                                if not other_uid or other_uid.lower() != eff_uid.lower():
+                                    continue
+                                other_prio = priority_order.get(other_acct, (1, 9999))
+                                if other_prio < my_prio:
+                                    duplicate_owner = other_c
+                                    break
+                                if my_prio < other_prio and is_secondary_account_id(other_acct):
+                                    other_sc = self.store.venue_scope(other_acct)
+                                    other_sc.set_kv("duplicate_uid_conflict", True)
+                                    dup_err = AccountIdentityError(
+                                        "DUPLICATE_ACCOUNT_UID",
+                                        masked_uid=mask_uid(eff_uid),
+                                        existing_label=cred.label or acct_id,
+                                        exchange_name=adapter.meta.display_name,
+                                        exchange_name_zh=adapter.meta.display_name_zh,
+                                    )
+                                    o_err_state = self.health_tracker.record_error(other_acct, dup_err)
+                                    if other_acct in results:
+                                        results[other_acct] = {
+                                            "ok": False,
+                                            "error": o_err_state["error_reason"],
+                                            "error_zh": o_err_state["error_reason_zh"],
+                                            "error_code": o_err_state["error_code"],
+                                            "raw_error": o_err_state["raw_error"],
+                                        }
+
+                        if duplicate_owner is not None:
+                            raw_scope.set_kv("duplicate_uid_conflict", True)
+                            dup_exc = AccountIdentityError(
+                                "DUPLICATE_ACCOUNT_UID",
+                                masked_uid=mask_uid(eff_uid),
+                                existing_label=duplicate_owner.label or duplicate_owner.venue_id,
+                                exchange_name=adapter.meta.display_name,
+                                exchange_name_zh=adapter.meta.display_name_zh,
+                            )
+                            err_state = self.health_tracker.record_error(acct_id, dup_exc)
+                            results[acct_id] = {
+                                "ok": False,
+                                "error": err_state["error_reason"],
+                                "error_zh": err_state["error_reason_zh"],
+                                "error_code": err_state["error_code"],
+                                "raw_error": err_state["raw_error"],
+                            }
+                            continue
+
+                        if raw_scope.get_kv("duplicate_uid_conflict"):
+                            raw_scope.set_kv("duplicate_uid_conflict", False)
                         if eff_uid and not raw_scope.get_kv("identity_backfilled_v1"):
                             raw_scope.set_kv("identity_backfilled_v1", True)
-                        if eff_uid and eff_uid != kv_uid:
+                        if eff_uid and eff_uid != str(raw_scope.get_kv("account_uid") or "").strip():
                             raw_scope.set_kv("account_uid", eff_uid)
                         if eff_role and eff_role != kv_role:
                             raw_scope.set_kv("account_role", eff_role)
@@ -512,6 +593,7 @@ class SyncManager:
             prev_bound_uid = str(
                 (existing_cred.remote_uid if existing_cred else "")
                 or raw_scope.get_kv("account_uid")
+                or adapter.extract_cached_account_uid(scoped_store)
                 or ""
             ).strip()
             id_mode = adapter.meta.identity_mode
@@ -521,29 +603,43 @@ class SyncManager:
             self.ledger_service.syncing = True
             client: Any = None
             try:
-                if (
-                    not prev_bound_uid
-                    and existing_cred is not None
-                    and uses_probe_uid
-                    and (
-                        existing_cred.api_key.strip() != cred.api_key.strip()
-                        or existing_cred.api_secret.strip() != cred.api_secret.strip()
-                    )
-                ):
-                    prev_info = await adapter.probe_identity(existing_cred)
-                    if isinstance(prev_info, dict) and prev_info.get("remote_uid"):
-                        prev_bound_uid = str(prev_info["remote_uid"]).strip()
-
-                probed = await adapter.probe_identity(cred)
-                early_uid = str(probed.get("remote_uid") or getattr(cred, "remote_uid", "") or "").strip()
                 is_rotating_existing = (
                     uses_probe_uid
                     and existing_cred is not None
                     and (
                         existing_cred.api_key.strip() != cred.api_key.strip()
                         or existing_cred.api_secret.strip() != cred.api_secret.strip()
+                        or existing_cred.passphrase.strip() != getattr(cred, "passphrase", "").strip()
                     )
                 )
+                if not prev_bound_uid and is_rotating_existing and existing_cred is not None:
+                    prev_info = await adapter.probe_identity(existing_cred)
+                    if isinstance(prev_info, dict) and prev_info.get("remote_uid"):
+                        prev_bound_uid = str(prev_info["remote_uid"]).strip()
+
+                probed = await adapter.probe_identity(cred)
+                early_uid = str(probed.get("remote_uid") or getattr(cred, "remote_uid", "") or "").strip()
+                occupied_for_adapter = self._occupied_for_adapter(adapter_id, adapter)
+                has_other_partitions = bool(occupied_for_adapter - {acct_id})
+                must_verify_uid = bool(
+                    uses_probe_uid
+                    and (
+                        prev_bound_uid
+                        or is_secondary_account_id(acct_id)
+                        or has_other_partitions
+                        or is_rotating_existing
+                        or (has_existing_data and existing_cred is None)
+                    )
+                )
+                if (
+                    uses_probe_uid
+                    and isinstance(probed, dict)
+                    and probed.get("_transient_error")
+                    and not prev_bound_uid
+                    and not (is_rotating_existing and has_existing_data)
+                ):
+                    raise RuntimeError(str(probed["_transient_error"]))
+
                 self.check_identity_conflicts(
                     account_id=acct_id,
                     adapter_id=adapter_id,
@@ -552,23 +648,64 @@ class SyncManager:
                     bound_uid=prev_bound_uid,
                     exchange_name=adapter.meta.display_name,
                     exchange_name_zh=adapter.meta.display_name_zh,
-                    require_verified_uid=bool(prev_bound_uid and uses_probe_uid),
-                    require_uid_for_existing_data=bool(is_rotating_existing and has_existing_data),
+                    require_verified_uid=must_verify_uid,
+                    require_uid_for_existing_data=bool(uses_probe_uid and is_rotating_existing and has_existing_data),
                 )
 
-                client = adapter.create_client(cred)
-                outcome = await adapter.sync_venue(
-                    client,
-                    scoped_store,
-                    now_s=now_s,
-                    force_full=True,
+                needs_archive_fp_proof = bool(
+                    uses_probe_uid
+                    and has_existing_data
+                    and not prev_bound_uid
+                    and (existing_cred is None or is_rotating_existing)
                 )
+                client = adapter.create_client(cred)
+                if needs_archive_fp_proof:
+                    old_fps = adapter.extract_archive_record_fingerprints(
+                        scoped_store,
+                        include_legacy_fallback=True,
+                    )
+                    self.store.clear_venue_partition_only(acct_id)
+                    outcome = await adapter.sync_venue(
+                        client,
+                        scoped_store,
+                        now_s=now_s,
+                        force_full=True,
+                    )
+                    fresh_fps = adapter.extract_archive_record_fingerprints(
+                        scoped_store,
+                        include_legacy_fallback=False,
+                    )
+                    if (not old_fps) or not (old_fps & fresh_fps):
+                        raise AccountIdentityError(
+                            "ARCHIVE_OWNER_UNVERIFIED",
+                            exchange_name=adapter.meta.display_name,
+                            exchange_name_zh=adapter.meta.display_name_zh,
+                        )
+                    self.store.restore_venue_partition(acct_id, partition_snap)
+                    outcome = await adapter.sync_venue(
+                        client,
+                        scoped_store,
+                        now_s=now_s,
+                        force_full=True,
+                    )
+                else:
+                    outcome = await adapter.sync_venue(
+                        client,
+                        scoped_store,
+                        now_s=now_s,
+                        force_full=True,
+                    )
+
                 if outcome.mode == "custom_noop" and not probed:
                     conn_res = await adapter.test_connection(cred)
                     if isinstance(conn_res, dict):
                         probed = conn_res
 
-                post_sync_kv_uid = str(raw_scope.get_kv("account_uid") or "").strip() if uses_sync_uid else ""
+                post_sync_kv_uid = (
+                    str(raw_scope.get_kv("account_uid") or adapter.extract_cached_account_uid(scoped_store) or "").strip()
+                    if uses_sync_uid
+                    else str(adapter.extract_cached_account_uid(scoped_store) or "").strip()
+                )
                 resolved_uid = str(
                     probed.get("remote_uid")
                     or getattr(cred, "remote_uid", "")
@@ -589,10 +726,12 @@ class SyncManager:
                     bound_uid=prev_bound_uid,
                     exchange_name=adapter.meta.display_name,
                     exchange_name_zh=adapter.meta.display_name_zh,
-                    require_verified_uid=bool(prev_bound_uid and uses_probe_uid),
-                    require_uid_for_existing_data=bool(is_rotating_existing and has_existing_data),
+                    require_verified_uid=must_verify_uid,
+                    require_uid_for_existing_data=bool(uses_probe_uid and is_rotating_existing and has_existing_data),
                 )
 
+                if raw_scope.get_kv("duplicate_uid_conflict"):
+                    raw_scope.set_kv("duplicate_uid_conflict", False)
                 if resolved_uid:
                     raw_scope.set_kv("account_uid", resolved_uid)
                     raw_scope.set_kv("identity_backfilled_v1", True)
@@ -617,7 +756,7 @@ class SyncManager:
                     base_interval_sec=base_iv,
                 )
                 self._save_schedule(schedule)
-                h_state = self.health_tracker.record_success(acct_id)
+                h_state = self.health_tracker.record_success(acct_id, warnings=outcome.warnings)
                 now_ms = int(time.time() * 1000)
                 self.store.set_meta("last_sync_ms", now_ms)
                 updated_cred = cred.model_copy(
@@ -628,6 +767,16 @@ class SyncManager:
                         "account_role": resolved_role,
                     }
                 )
+                venue_res_entry: dict[str, Any] = {
+                    "ok": True,
+                    "mode": outcome.mode,
+                    "equity_usd": round(outcome.equity_usd, 2),
+                    "poll_mode": sched["mode"],
+                    "interval_sec": sched["interval_sec"],
+                    "stage": sched["stage"],
+                }
+                if outcome.warnings:
+                    venue_res_entry["warnings"] = list(outcome.warnings)
                 result: dict[str, Any] = {
                     "ok": True,
                     "committed": True,
@@ -635,16 +784,7 @@ class SyncManager:
                     "adapter_id": adapter_id,
                     "health": h_state,
                     "synced_ms": now_ms,
-                    "venues": {
-                        acct_id: {
-                            "ok": True,
-                            "mode": outcome.mode,
-                            "equity_usd": round(outcome.equity_usd, 2),
-                            "poll_mode": sched["mode"],
-                            "interval_sec": sched["interval_sec"],
-                            "stage": sched["stage"],
-                        }
-                    },
+                    "venues": {acct_id: venue_res_entry},
                 }
                 if probed.get("subaccounts"):
                     result["subaccounts"] = probed["subaccounts"]

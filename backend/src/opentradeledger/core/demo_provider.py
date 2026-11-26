@@ -263,7 +263,7 @@ def build_demo_dashboard(
         and (symbol_filter.upper() == "ALL" or tr["symbol"].upper() == symbol_filter.upper())
     ]
 
-    exchanges = [dict(ex) for ex in _DEMO_EXCHANGES]
+    exchanges = [dict(ex, warnings=[]) for ex in _DEMO_EXCHANGES]
     period_trades = [tr for tr in all_trades if _in_range(tr)]
     counts_by_venue: dict[str, int] = defaultdict(int)
     for tr in period_trades:
@@ -500,12 +500,20 @@ def build_demo_dashboard(
         },
     ]
 
+    vf_raw = (venue_filter or "ALL").strip()
+    vf_out = "ALL" if (not vf_raw or vf_raw.lower() == "all") else vf_raw.lower()
+    sf_raw = (symbol_filter or "ALL").strip()
+    sf_out = "ALL" if (not sf_raw or sf_raw.upper() == "ALL") else sf_raw.upper()
+
     return {
         "demo_mode": True,
         "read_only": True,
         "last_sync_ms": int(now_dt.timestamp() * 1000),
         "syncing": False,
         "range_key": range_key,
+        "venue_filter": vf_out,
+        "symbol_filter": sf_out,
+        "warnings": [],
         "available_months": ["2026-11", "2026-10"],
         "available_symbols": sorted({t["symbol"] for t in all_trades}),
         "summary": {

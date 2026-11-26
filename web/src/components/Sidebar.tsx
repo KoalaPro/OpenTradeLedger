@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
@@ -23,6 +23,8 @@ interface SidebarProps {
   lastSyncMs: number
   manualSyncing: boolean
   syncFailed?: boolean
+  syncPartialWarning?: boolean
+  syncWarningTitle?: string
   onSync: () => void
   authEnabled?: boolean
   onLock?: () => void
@@ -36,6 +38,8 @@ export function Sidebar({
   lastSyncMs,
   manualSyncing,
   syncFailed = false,
+  syncPartialWarning = false,
+  syncWarningTitle = '',
   onSync,
   authEnabled = false,
   onLock,
@@ -61,14 +65,17 @@ export function Sidebar({
   const prevSyncingRef = useRef(manualSyncing)
   const [justSynced, setJustSynced] = useState(false)
 
-  useEffect(() => {
+  if (manualSyncing) {
+    prevSyncingRef.current = true
+  }
+
+  useLayoutEffect(() => {
     if (prevSyncingRef.current && !manualSyncing) {
+      prevSyncingRef.current = false
       setJustSynced(true)
-      const timer = window.setTimeout(() => setJustSynced(false), 1100)
-      prevSyncingRef.current = manualSyncing
+      const timer = window.setTimeout(() => setJustSynced(false), 1500)
       return () => window.clearTimeout(timer)
     }
-    prevSyncingRef.current = manualSyncing
   }, [manualSyncing])
 
   const primaryItems: Array<{ id: NavPage; label: string; icon: typeof LayoutDashboard }> = [
@@ -168,11 +175,19 @@ export function Sidebar({
             {t('brand')}
           </span>
         </div>
-        <span className="md:hidden inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)] shrink-0">
+        <span
+          title={syncWarningTitle || undefined}
+          className="md:hidden inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)] shrink-0"
+        >
           <span
             className="h-1.5 w-1.5 rounded-full"
-            style={{ background: syncFailed ? 'var(--warn)' : 'var(--ok)' }}
+            style={{ background: syncFailed || syncPartialWarning ? 'var(--warn)' : 'var(--ok)' }}
           />
+          {syncPartialWarning && !syncFailed && (
+            <span style={{ color: 'var(--warn)' }} className="font-medium">
+              {locale === 'en' ? 'Partial Sync' : '部分同步'}
+            </span>
+          )}
           <span>{fmtSyncTime(lastSyncMs)}</span>
         </span>
       </div>
@@ -181,7 +196,7 @@ export function Sidebar({
       <nav
         ref={navRef}
         aria-label={t('brand')}
-        className="no-scrollbar relative z-10 flex flex-row overflow-x-auto md:overflow-visible flex-nowrap md:flex-col gap-0.5"
+        className="otl-primary-nav no-scrollbar relative z-10 flex flex-row overflow-x-auto md:overflow-visible flex-nowrap md:flex-col gap-0.5"
       >
         {primaryItems.map(item => {
           const Icon = item.icon
@@ -239,13 +254,22 @@ export function Sidebar({
           )}
         </button>
 
-        <div className="hidden md:flex items-center justify-between px-3 pt-0.5 text-[12px] text-[var(--fg-3)]">
+        <div
+          title={syncWarningTitle || undefined}
+          className="hidden md:flex items-center justify-between px-3 pt-0.5 text-[12px] text-[var(--fg-3)]"
+        >
           <span className="inline-flex items-center gap-1.5">
             <span
               className="h-1.5 w-1.5 rounded-full"
-              style={{ background: syncFailed ? 'var(--warn)' : 'var(--ok)' }}
+              style={{ background: syncFailed || syncPartialWarning ? 'var(--warn)' : 'var(--ok)' }}
             />
-            <span>{t('read_only')}</span>
+            <span>
+              {syncPartialWarning && !syncFailed
+                ? locale === 'en'
+                  ? 'Partial Sync'
+                  : '部分同步'
+                : t('read_only')}
+            </span>
           </span>
           <span>{fmtSyncTime(lastSyncMs)}</span>
         </div>
@@ -254,6 +278,7 @@ export function Sidebar({
           <button
             type="button"
             data-testid="sync-now-btn"
+            title={syncWarningTitle || undefined}
             disabled={manualSyncing}
             onClick={onSync}
             className="otl-btn flex-1"
@@ -264,6 +289,13 @@ export function Sidebar({
                   <AlertTriangle size={13} style={{ color: 'var(--warn)' }} />
                   <span style={{ color: 'var(--warn)' }}>
                     {locale === 'en' ? 'Sync Error' : '同步异常'}
+                  </span>
+                </>
+              ) : syncPartialWarning ? (
+                <>
+                  <AlertTriangle size={13} style={{ color: 'var(--warn)' }} />
+                  <span style={{ color: 'var(--warn)' }}>
+                    {locale === 'en' ? 'Partial Sync' : '部分同步'}
                   </span>
                 </>
               ) : (

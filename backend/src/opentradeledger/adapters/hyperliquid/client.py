@@ -26,11 +26,13 @@ HYPERLIQUID_ALLOWED_INFO_TYPES: tuple[str, ...] = (
     "userFillsByTime",
     "userFunding",
     "userNonFundingLedgerUpdates",
+    "userVaultEquities",
     "subAccounts",
     "allMids",
     "meta",
     "spotMeta",
 )
+HYPERLIQUID_ALLOWED_POST_TYPES: tuple[str, ...] = HYPERLIQUID_ALLOWED_INFO_TYPES
 
 
 class HyperliquidApiError(RuntimeError):
@@ -137,14 +139,101 @@ class HyperliquidReadOnlyClient:
         res = await self.request_info({"type": "spotMeta"})
         return res if isinstance(res, dict) else {}
 
-    async def get_user_fills(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
+    async def get_vault_equities(self) -> list[dict[str, Any]]:
+        res = await self.request_info({"type": "userVaultEquities", "user": self.wallet_address})
+        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+
+    @staticmethod
+    def _fill_unique_key(r: dict[str, Any]) -> str:
+        return str(r.get("tid") or r.get("hash") or f"{r.get('oid')}_{r.get('time')}_{r.get('coin')}")
+
+    async def get_user_fills(
+        self,
+        *,
+        since_ms: int = 0,
+        warnings_out: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        collected: dict[str, dict[str, Any]] = {}
+
         if since_ms <= 0:
             res = await self.request_info({"type": "userFills", "user": self.wallet_address})
-            return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+            first_page = [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+            first_ts_list: list[int] = []
+            for r in first_page:
+                collected[self._fill_unique_key(r)] = r
+                rts = int(r.get("time") or 0)
+                if rts > 0:
+                    first_ts_list.append(rts)
 
-        collected: dict[str, dict[str, Any]] = {}
+            if len(first_page) < 2000 or not first_ts_list:
+                return list(collected.values())
+
+            low_bound = 0
+            high_bound = min(first_ts_list)
+            if min(first_ts_list) == max(first_ts_list):
+                high_bound = max(0, high_bound - 1)
+
+            truncated = False
+            for page_idx in range(self.max_fill_pages):
+                if high_bound < low_bound:
+                    break
+                page_res = await self.request_info(
+                    {
+                        "type": "userFillsByTime",
+                        "user": self.wallet_address,
+                        "startTime": low_bound,
+                        "endTime": high_bound,
+                    }
+                )
+                valid_rows = [r for r in page_res if isinstance(r, dict)] if isinstance(page_res, list) else []
+                if not valid_rows:
+                    if page_idx == 0:
+                        truncated = True
+                    break
+
+                new_cnt = 0
+                page_ts_list: list[int] = []
+                for r in valid_rows:
+                    fk = self._fill_unique_key(r)
+                    if fk not in collected:
+                        collected[fk] = r
+                        new_cnt += 1
+                    rts = int(r.get("time") or 0)
+                    page_ts_list.append(rts)
+
+                if len(valid_rows) < 2000 or new_cnt == 0 or not page_ts_list:
+                    break
+
+                if page_idx == self.max_fill_pages - 1 or len(collected) >= 10_000:
+                    truncated = True
+                    break
+
+                p_min = min(page_ts_list)
+                p_max = max(page_ts_list)
+                if p_min == p_max:
+                    if p_min <= low_bound:
+                        low_bound = p_max + 1
+                    else:
+                        high_bound = p_min - 1
+                else:
+                    first_r_ts = int(valid_rows[0].get("time") or 0)
+                    last_r_ts = int(valid_rows[-1].get("time") or 0)
+                    if p_max < high_bound and (first_r_ts <= last_r_ts or p_min <= low_bound):
+                        low_bound = p_max
+                    else:
+                        high_bound = p_min if p_min < high_bound else (p_min - 1)
+
+            if len(collected) >= 10_000:
+                truncated = True
+            if truncated and warnings_out is not None:
+                warnings_out.append(
+                    "Hyperliquid userFills reached 2,000 per-page Info API cap (10,000 max history ceiling); older trades may be truncated."
+                )
+            return list(collected.values())
+
         cursor_start = max(0, int(since_ms))
-        for _ in range(self.max_fill_pages):
+        truncated = False
+        for page_idx in range(self.max_fill_pages):
             res = await self.request_info(
                 {
                     "type": "userFillsByTime",
@@ -152,38 +241,137 @@ class HyperliquidReadOnlyClient:
                     "startTime": cursor_start,
                 }
             )
-            if not isinstance(res, list) or not res:
+            valid_rows = [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+            if not valid_rows:
                 break
-            max_ts = cursor_start
+            page_ts_list: list[int] = []
             new_cnt = 0
-            for r in res:
-                if not isinstance(r, dict):
-                    continue
-                fk = str(r.get("tid") or r.get("hash") or f"{r.get('oid')}_{r.get('time')}_{r.get('coin')}")
+            for r in valid_rows:
+                fk = self._fill_unique_key(r)
                 if fk not in collected:
                     collected[fk] = r
                     new_cnt += 1
                 rts = int(r.get("time") or 0)
-                if rts > max_ts:
-                    max_ts = rts
-            if len(res) < 2000 or new_cnt == 0 or max_ts <= cursor_start:
+                page_ts_list.append(rts)
+            if len(valid_rows) < 2000 or new_cnt == 0 or not page_ts_list:
                 break
-            cursor_start = max_ts + 1
+            if page_idx == self.max_fill_pages - 1:
+                truncated = True
+                break
+            max_ts = max(page_ts_list)
+            min_ts = min(page_ts_list)
+            if max_ts > cursor_start and min_ts < max_ts:
+                cursor_start = max_ts
+            else:
+                cursor_start = max(cursor_start, max_ts) + 1
+
+        if truncated and warnings_out is not None:
+            warnings_out.append(
+                "Hyperliquid userFillsByTime reached 2,000 per-page pagination cap during incremental sync."
+            )
         return list(collected.values())
 
-    async def get_user_funding(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
-        start = max(0, int(since_ms)) if since_ms > 0 else max(0, self._clock_ms() - 365 * 86_400_000)
-        res = await self.request_info(
-            {"type": "userFunding", "user": self.wallet_address, "startTime": start}
-        )
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+    async def get_user_funding(
+        self,
+        *,
+        since_ms: int = 0,
+        max_pages: int = 40,
+        warnings_out: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        collected: dict[str, dict[str, Any]] = {}
+        cursor_start = max(0, int(since_ms)) if since_ms > 0 else 0
+        truncated = False
 
-    async def get_ledger_updates(self, *, since_ms: int = 0) -> list[dict[str, Any]]:
-        start = max(0, int(since_ms)) if since_ms > 0 else 0
-        res = await self.request_info(
-            {"type": "userNonFundingLedgerUpdates", "user": self.wallet_address, "startTime": start}
-        )
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+        for page_idx in range(max(1, int(max_pages))):
+            res = await self.request_info(
+                {"type": "userFunding", "user": self.wallet_address, "startTime": cursor_start}
+            )
+            valid_rows = [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+            if not valid_rows:
+                break
+
+            new_cnt = 0
+            page_ts_list: list[int] = []
+            for r in valid_rows:
+                delta = r.get("delta") if isinstance(r.get("delta"), dict) else r
+                ts = int(r.get("time") or delta.get("time") or 0)
+                coin = str(delta.get("coin") or r.get("coin") or "").strip().upper()
+                usdc = str(delta.get("usdc") or r.get("usdc") or "")
+                fk = str(r.get("hash") or f"{ts}_{coin}_{usdc}")
+                if fk not in collected:
+                    collected[fk] = r
+                    new_cnt += 1
+                page_ts_list.append(ts)
+
+            if len(valid_rows) < 500 or new_cnt == 0 or not page_ts_list:
+                break
+            if page_idx == max(1, int(max_pages)) - 1:
+                truncated = True
+                break
+
+            max_ts = max(page_ts_list)
+            min_ts = min(page_ts_list)
+            if max_ts > cursor_start and min_ts < max_ts:
+                cursor_start = max_ts
+            else:
+                cursor_start = max(cursor_start, max_ts) + 1
+
+        if truncated and warnings_out is not None:
+            warnings_out.append(
+                f"Hyperliquid userFunding reached {max_pages}-page (500/page) pagination cap; older funding fees may be truncated."
+            )
+        return list(collected.values())
+
+    async def get_ledger_updates(
+        self,
+        *,
+        since_ms: int = 0,
+        max_pages: int = 40,
+        warnings_out: Optional[list[str]] = None,
+    ) -> list[dict[str, Any]]:
+        collected: dict[str, dict[str, Any]] = {}
+        cursor_start = max(0, int(since_ms)) if since_ms > 0 else 0
+        truncated = False
+
+        for page_idx in range(max(1, int(max_pages))):
+            res = await self.request_info(
+                {"type": "userNonFundingLedgerUpdates", "user": self.wallet_address, "startTime": cursor_start}
+            )
+            valid_rows = [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+            if not valid_rows:
+                break
+
+            new_cnt = 0
+            page_ts_list: list[int] = []
+            for r in valid_rows:
+                delta = r.get("delta") if isinstance(r.get("delta"), dict) else r
+                ts = int(r.get("time") or delta.get("time") or 0)
+                tp = str(delta.get("type") or "")
+                amt = str(delta.get("usdc") or delta.get("amount") or "")
+                lk = str(r.get("hash") or f"{ts}_{tp}_{amt}")
+                if lk not in collected:
+                    collected[lk] = r
+                    new_cnt += 1
+                page_ts_list.append(ts)
+
+            if len(valid_rows) < 500 or new_cnt == 0 or not page_ts_list:
+                break
+            if page_idx == max(1, int(max_pages)) - 1:
+                truncated = True
+                break
+
+            max_ts = max(page_ts_list)
+            min_ts = min(page_ts_list)
+            if max_ts > cursor_start and min_ts < max_ts:
+                cursor_start = max_ts
+            else:
+                cursor_start = max(cursor_start, max_ts) + 1
+
+        if truncated and warnings_out is not None:
+            warnings_out.append(
+                f"Hyperliquid userNonFundingLedgerUpdates reached {max_pages}-page (500/page) pagination cap."
+            )
+        return list(collected.values())
 
     async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
         warnings: list[str] = []
@@ -191,9 +379,9 @@ class HyperliquidReadOnlyClient:
         clearinghouse = await self.get_clearinghouse_state()
         spot = await self.get_spot_state()
         raw_mids = await self.get_raw_all_mids()
-        fills = await self.get_user_fills(since_ms=since_ms)
-        funding = await self.get_user_funding(since_ms=since_ms)
-        ledger_updates = await self.get_ledger_updates(since_ms=since_ms)
+        fills = await self.get_user_fills(since_ms=since_ms, warnings_out=warnings)
+        funding = await self.get_user_funding(since_ms=since_ms, warnings_out=warnings)
+        ledger_updates = await self.get_ledger_updates(since_ms=since_ms, warnings_out=warnings)
 
         async def _opt_aux(name: str, coro: Any, default: Any) -> Any:
             try:
@@ -208,6 +396,7 @@ class HyperliquidReadOnlyClient:
 
         spot_meta = await _opt_aux("spot_meta", self.get_spot_meta(), {})
         subaccounts = await _opt_aux("subaccounts", self.get_subaccounts(), [])
+        vault_equities = await _opt_aux("vault_equities", self.get_vault_equities(), [])
 
         mids = {k: v for k, v in raw_mids.items() if not k.startswith("@") and "/" not in k}
         spot_token_prices, spot_tickers, has_spot_meta = build_hyperliquid_spot_prices(raw_mids, spot_meta)
@@ -215,20 +404,12 @@ class HyperliquidReadOnlyClient:
         if "spot_meta" in failed_fields:
             failed_fields.extend(["spot_tickers", "spot_token_prices", "has_spot_meta"])
 
-        if since_ms <= 0 and len(fills) >= 2000:
-            warnings.append(
-                "userFills reached Hyperliquid Info API 2,000-fill return cap; fills older than the earliest returned row are not exposed via public /info."
-            )
-        if since_ms <= 0 and len(ledger_updates) >= 2000:
-            warnings.append(
-                "userNonFundingLedgerUpdates reached Hyperliquid Info API 2,000-row return cap."
-            )
-
         out: dict[str, Any] = {
             "venue_id": "hyperliquid",
             "wallet_address": self.wallet_address,
             "clearinghouse": clearinghouse,
             "spot": spot,
+            "vault_equities": vault_equities,
             "tickers": mids,
             "spot_tickers": spot_tickers,
             "spot_token_prices": spot_token_prices,

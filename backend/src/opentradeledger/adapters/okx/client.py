@@ -7,6 +7,7 @@ Signature specification (OKX v5):
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -24,7 +25,7 @@ from opentradeledger.adapters.okx.contracts import (
     instrument_at,
     positive_number,
 )
-from opentradeledger.security.readonly_guard import assert_readonly_request
+from opentradeledger.security.readonly_guard import ReadOnlyGuardError, assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
 
@@ -54,6 +55,48 @@ OKX_ALLOWED_GET_PATHS: tuple[str, ...] = (
 
 class OkxApiError(RuntimeError):
     """Raised when OKX v5 returns a non-zero business error code or HTTP error."""
+
+    def __init__(self, message: str, *, status_code: int = 0, code: str = "") -> None:
+        self.status_code = status_code
+        self.code = code
+        super().__init__(message)
+
+
+def _is_fatal_okx_error(exc: BaseException) -> bool:
+    if isinstance(exc, ReadOnlyGuardError):
+        return True
+    if isinstance(exc, (httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, OkxApiError):
+        if exc.status_code == 429 or exc.status_code >= 500:
+            return True
+        if exc.code in {"50011", "50004", "50001", "50013", "50026"}:
+            return True
+    low = str(exc).lower()
+    return any(
+        tok in low
+        for tok in (
+            "http 5",
+            "http 429",
+            "code=50011",
+            "code=50004",
+            "code=50001",
+            "code=50013",
+            "code=50026",
+            "rate limit",
+            "too frequent",
+            "too many",
+            "busy",
+            "service unavailable",
+            "service temporarily unavailable",
+            "endpoint request timeout",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "timed out",
+            "timeout",
+        )
+    )
 
 
 def _default_iso_timestamp() -> str:
@@ -127,11 +170,18 @@ class OkxReadOnlyClient:
                 resp = await c.get(url, headers=headers)
 
         if resp.status_code >= 400:
-            raise OkxApiError(f"OKX GET {path} HTTP {resp.status_code}: {resp.text[:240]}")
+            raise OkxApiError(
+                f"OKX GET {path} HTTP {resp.status_code}: {resp.text[:240]}",
+                status_code=resp.status_code,
+            )
         payload = resp.json()
         code = str(payload.get("code", "0"))
         if code != "0":
-            raise OkxApiError(f"OKX GET {path} error code={code}: {payload.get('msg', '')}")
+            raise OkxApiError(
+                f"OKX GET {path} error code={code}: {payload.get('msg', '')}",
+                status_code=resp.status_code,
+                code=code,
+            )
         data = payload.get("data")
         return data if isinstance(data, list) else []
 
@@ -255,7 +305,9 @@ class OkxReadOnlyClient:
                 since_ms=since_ms,
                 limit=limit,
             )
-        except Exception:
+        except Exception as exc:
+            if _is_fatal_okx_error(exc):
+                raise
             archive = []
         merged: dict[str, dict[str, Any]] = {}
         for b in archive + recent:
@@ -278,7 +330,7 @@ class OkxReadOnlyClient:
         return await self._paginate_after(
             "/api/v5/asset/deposit-history",
             {},
-            cursor_fields=("depId",),
+            cursor_fields=("ts",),
             id_fn=lambda r: str(r.get("depId") or r.get("txId") or f"{r.get('ts')}_{r.get('amt')}"),
             ts_field="ts",
             since_ms=since_ms,
@@ -289,7 +341,7 @@ class OkxReadOnlyClient:
         return await self._paginate_after(
             "/api/v5/asset/withdrawal-history",
             {},
-            cursor_fields=("wdId",),
+            cursor_fields=("ts",),
             id_fn=lambda r: str(r.get("wdId") or r.get("txId") or f"{r.get('ts')}_{r.get('amt')}"),
             ts_field="ts",
             since_ms=since_ms,
@@ -334,8 +386,7 @@ class OkxReadOnlyClient:
             try:
                 return await coro
             except Exception as exc:
-                msg_low = str(exc).lower()
-                if isinstance(exc, httpx.TransportError) or "http 5" in msg_low or "http 429" in msg_low:
+                if _is_fatal_okx_error(exc):
                     raise
                 warnings.append(f"{name}: {exc}")
                 failed_fields.append(name)

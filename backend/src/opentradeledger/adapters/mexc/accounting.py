@@ -109,14 +109,16 @@ def _build_mexc_closed_records(
                 kickback_rebates.append((norm_sec(tr.get("_time_ms") or tr.get("createTime")), r_val))
             continue
         if src_t == "spot_deposit":
-            if str(tr.get("status") if tr.get("status") is not None else "5").upper() in ("5", "SUCCESS", "COMPLETED"):
+            raw_d_st = tr.get("status")
+            if raw_d_st in (None, "") or str(raw_d_st).strip().upper() in ("5", "SUCCESS", "COMPLETED"):
                 d_cur = str(tr.get("coin") or tr.get("asset") or "USDT").upper()
                 d_amt = abs(dec(tr.get("amount")))
                 d_px = Decimal("1") if d_cur in ("USDT", "USDC", "USDE", "FDUSD", "USD") else dec(tickers.get(d_cur))
                 spot_dep_usd += d_amt * d_px
             continue
         if src_t == "spot_withdraw":
-            if str(tr.get("status") if tr.get("status") is not None else "6").upper() in ("6", "7", "SUCCESS", "COMPLETED"):
+            raw_w_st = tr.get("status")
+            if raw_w_st in (None, "") or str(raw_w_st).strip().upper() in ("6", "SUCCESS", "COMPLETED"):
                 w_cur = str(tr.get("coin") or tr.get("asset") or "USDT").upper()
                 w_amt = abs(dec(tr.get("amount")))
                 w_px = Decimal("1") if w_cur in ("USDT", "USDC", "USDE", "FDUSD", "USD") else dec(tickers.get(w_cur))
@@ -843,7 +845,7 @@ def build_mexc_venue_ledger(
     mx_lb = mx_lb if isinstance(mx_lb, dict) else {}
 
     mx_uid = str(mx_lb.get("refer_code") or "")
-    mx_spot_tickers = mx_lb.get("spot_tickers") or {}
+    mx_spot_tickers = {**(global_spot_prices or {}), **(mx_lb.get("spot_tickers") or {})}
     mx_contract_specs = scope.get_kv("contract_specs", {})
 
     mx_closed_records, mx_meta = _build_mexc_closed_records(

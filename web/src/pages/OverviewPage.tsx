@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle } from 'lucide-react'
 import { EquityChart } from '../components/EquityChart'
 import { FloatingModal } from '../components/FloatingModal'
 import { InstrumentMark } from '../components/InstrumentMark'
@@ -8,8 +9,8 @@ import { UnderlineTabs } from '../components/UnderlineTabs'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
-import { fmtContractQty, fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
-import type { DashboardData, ExtensionSubTab, NavPage, SpotHolding } from '../lib/types'
+import { collectActiveWarnings, fmtContractQty, fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
+import type { DashboardData, DashboardWarningItem, ExtensionSubTab, NavPage, SpotHolding } from '../lib/types'
 
 type StockHoldingItem = DashboardData['extensions']['stocks']['holdings'][number]
 
@@ -29,12 +30,14 @@ const BAR_COLORS: Record<string, string> = {
 
 export function OverviewPage({
   data,
+  activeWarnings,
   enableStockTab = false,
   enableWatcherTab = true,
   onNavigate,
   onInspectSymbol,
 }: {
   data: DashboardData
+  activeWarnings?: DashboardWarningItem[]
   enableStockTab?: boolean
   enableWatcherTab?: boolean
   onNavigate: (page: NavPage, extTab?: ExtensionSubTab) => void
@@ -42,6 +45,10 @@ export function OverviewPage({
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
+  const warnings = useMemo(
+    () => activeWarnings ?? collectActiveWarnings(data),
+    [activeWarnings, data],
+  )
   const [openModal, setOpenModal] = useState<null | 'equity' | 'reconcile' | 'wallet'>(null)
   const [selectedStock, setSelectedStock] = useState<StockHoldingItem | null>(null)
   const [selectedSpot, setSelectedSpot] = useState<SpotHolding | null>(null)
@@ -122,6 +129,45 @@ export function OverviewPage({
 
   return (
     <div data-testid="overview-page" className="otl-stagger">
+      {!data.demo_mode && warnings.length > 0 && (
+        <div
+          role="status"
+          data-testid="overview-warnings-banner"
+          className="otl-status-warn mt-4 px-4 py-3 rounded-lg text-[12.5px] flex flex-wrap items-start justify-between gap-3"
+        >
+          <div className="flex items-start gap-2.5 min-w-0 flex-1">
+            <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+            <div className="space-y-1 min-w-0">
+              <div className="font-semibold">
+                {locale === 'en'
+                  ? 'Partial Sync Warning · Some balances or histories may be incomplete'
+                  : '部分同步告警 · 以下平台存在权限受限或历史数据截断'}
+              </div>
+              <ul className="m-0 pl-4 list-disc space-y-0.5">
+                {warnings.map(w => {
+                  const name = locale === 'en' ? w.display_name : w.display_name_zh || w.display_name
+                  const summary = locale === 'en' ? w.summary || w.summary_zh : w.summary_zh || w.summary
+                  const extraDetails = w.warnings.filter(msg => msg && !summary.includes(msg))
+                  return (
+                    <li key={w.venue_id}>
+                      <strong>{name}</strong>：{summary}
+                      {extraDetails.length > 0 ? `（${extraDetails.join('；')}）` : ''}
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('settings')}
+            className="otl-btn h-7 px-2.5 shrink-0"
+          >
+            {locale === 'en' ? 'Manage Accounts →' : '查看账户详情 →'}
+          </button>
+        </div>
+      )}
+
       {/* Flush 4-Column Horizontal Ledger Strip */}
       <section className="otl-ledger-strip otl-kpi-grid">
         <KpiCard
@@ -160,9 +206,10 @@ export function OverviewPage({
                 t('kpi_reconciled_zero')
               ) : (
                 <span className="text-[var(--warn)] font-medium whitespace-nowrap">
-                  {locale === 'en'
-                    ? `Drift ${cur.signedMoney(data.reconciliation.residual_usd)}`
-                    : `待核对差额 ${cur.signedMoney(data.reconciliation.residual_usd)}`}
+                  {locale === 'en' ? 'Drift ' : '待核对差额 '}
+                  <span data-testid="kpi-residual-drift" className="sensitive">
+                    {cur.signedMoney(data.reconciliation.residual_usd)}
+                  </span>
                 </span>
               )}{' '}
               · <b className={`whitespace-nowrap ${pnlTone(s.whole_roi_pct)}`}>{fmtSignedPct(s.whole_roi_pct)}</b>
@@ -415,7 +462,7 @@ export function OverviewPage({
             <span className="font-semibold text-[var(--fg)]">{data.goal.label || t('an_goal_default')}</span>
             <span className="text-[var(--fg-2)] sensitive">
               {cur.plainMoney(data.goal.current_equity_usd)} / {cur.money(data.goal.target_usd)} (
-              {data.goal.progress_pct.toFixed(1)}%)
+              {((Math.round((Number(data.goal.progress_pct) + Number.EPSILON) * 10) / 10)).toFixed(1)}%)
             </span>
           </div>
           <div className="w-full sm:w-56 h-1.5 rounded-full bg-[var(--track)] overflow-hidden">

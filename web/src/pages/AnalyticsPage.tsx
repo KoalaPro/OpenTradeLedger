@@ -35,6 +35,7 @@ export function AnalyticsPage({
   const [goalAmount, setGoalAmount] = useState(
     String(settings?.goal_target_usd ?? data.goal?.target_usd ?? ''),
   )
+  const [goalError, setGoalError] = useState('')
   const [savingGoal, setSavingGoal] = useState(false)
   const [barReady, setBarReady] = useState(false)
 
@@ -55,6 +56,7 @@ export function AnalyticsPage({
     if (!editingGoal) {
       setGoalLabel(settings?.goal_label || data.goal?.label || '')
       setGoalAmount(String(settings?.goal_target_usd ?? data.goal?.target_usd ?? ''))
+      setGoalError('')
     }
   }, [settings?.goal_label, settings?.goal_target_usd, data.goal?.label, data.goal?.target_usd, editingGoal])
 
@@ -66,8 +68,17 @@ export function AnalyticsPage({
 
   const handleSaveGoal = async () => {
     if (!onUpdateSettings) return
-    const num = Number(goalAmount)
-    if (!Number.isFinite(num) || num <= 0) return
+    const raw = goalAmount.trim()
+    const num = Number(raw)
+    if (!raw || !Number.isFinite(num) || num <= 0) {
+      setGoalError(
+        locale === 'en'
+          ? 'Target equity must be a valid number greater than 0 USDT'
+          : '目标净值必须为大于 0 的有效数字（单位固定为 USDT）',
+      )
+      return
+    }
+    setGoalError('')
     setSavingGoal(true)
     try {
       const failure = await onUpdateSettings({
@@ -75,7 +86,11 @@ export function AnalyticsPage({
         goal_label: goalLabel.trim(),
         goal_target_usd: num,
       })
-      if (!failure) setEditingGoal(false)
+      if (failure) {
+        setGoalError(failure)
+      } else {
+        setEditingGoal(false)
+      }
     } finally {
       setSavingGoal(false)
     }
@@ -107,7 +122,7 @@ export function AnalyticsPage({
               </span>
               <span className="text-[var(--fg-2)] whitespace-nowrap sensitive">
                 {cur.plainMoney(data.goal.current_equity_usd)} / {cur.money(data.goal.target_usd)} (
-                {data.goal.progress_pct.toFixed(1)}%)
+                {((Math.round((Number(data.goal.progress_pct) + Number.EPSILON) * 10) / 10)).toFixed(1)}%)
               </span>
               <span className="text-[var(--fg-3)]">
                 {data.goal.is_reached ? t('an_goal_surplus') : t('an_goal_remaining')}{' '}
@@ -149,47 +164,66 @@ export function AnalyticsPage({
             </div>
           </div>
 
-          {onUpdateSettings && (
-            <AnimatedCollapse
-              open={editingGoal}
-              innerClassName="pt-3.5 flex flex-wrap items-center gap-2.5"
-            >
-              <input
-                type="text"
-                value={goalLabel}
-                onChange={e => setGoalLabel(e.target.value)}
-                placeholder={locale === 'en' ? 'Goal name (e.g. 2026 Equity Target)' : '目标名称（如：阶段净值目标）'}
-                className="otl-input flex-1 min-w-[160px]"
-              />
-              <input
-                type="number"
-                value={goalAmount}
-                onChange={e => setGoalAmount(e.target.value)}
-                placeholder={t('set_goal_target')}
-                className="otl-input w-44"
-              />
-              <button
-                type="button"
-                disabled={savingGoal}
-                onClick={() => void handleSaveGoal()}
-                className="otl-btn otl-btn-primary h-[34px]"
-              >
-                {t('save_config')}
-              </button>
-              <button
-                type="button"
-                disabled={savingGoal}
-                onClick={() => void handleDisableGoal()}
-                className="otl-btn h-[34px] text-[var(--fg-2)]"
-              >
-                {locale === 'en' ? 'Hide Goal' : '关闭进度条'}
-              </button>
-            </AnimatedCollapse>
+          {onUpdateSettings && editingGoal && (
+            <div data-testid="analytics-goal-form" className="pt-3.5 space-y-2 overflow-visible">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <input
+                  type="text"
+                  value={goalLabel}
+                  onChange={e => setGoalLabel(e.target.value)}
+                  placeholder={locale === 'en' ? 'Goal name (e.g. 2026 Equity Target)' : '目标名称（如：阶段净值目标）'}
+                  className="otl-input flex-1 min-w-[160px]"
+                />
+                <div className="relative inline-flex items-center">
+                  <input
+                    type="number"
+                    data-testid="analytics-goal-amount-input"
+                    aria-label={locale === 'en' ? 'Target Equity (Fixed in USDT)' : '目标净值 (固定以 USDT 计价)'}
+                    value={goalAmount}
+                    onChange={e => {
+                      setGoalAmount(e.target.value)
+                      if (goalError) setGoalError('')
+                    }}
+                    placeholder={t('set_goal_target')}
+                    className="otl-input w-48 pr-14 sensitive"
+                  />
+                  <span className="pointer-events-none absolute right-3 text-[11.5px] font-semibold text-[var(--fg-3)]">
+                    USDT
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  data-testid="analytics-save-goal-btn"
+                  disabled={savingGoal}
+                  onClick={() => void handleSaveGoal()}
+                  className="otl-btn otl-btn-primary h-[34px]"
+                >
+                  {t('save_config')}
+                </button>
+                <button
+                  type="button"
+                  disabled={savingGoal}
+                  onClick={() => void handleDisableGoal()}
+                  className="otl-btn h-[34px] text-[var(--fg-2)]"
+                >
+                  {locale === 'en' ? 'Hide Goal' : '关闭进度条'}
+                </button>
+              </div>
+              {goalError && (
+                <div
+                  role="alert"
+                  data-testid="analytics-goal-error"
+                  className="otl-status-err px-3 py-1.5 rounded-md text-[12px] font-medium"
+                >
+                  {goalError}
+                </div>
+              )}
+            </div>
           )}
         </section>
       ) : (
         onUpdateSettings && (
-          <div className="py-3.5 px-5 border-b border-[var(--border)]">
+          <div className="py-3.5 px-5 border-b border-[var(--border)] overflow-visible">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="text-[12px] text-[var(--fg-3)]">
                 {locale === 'en' ? 'Custom equity goal bar is currently hidden' : '自定义净值目标进度条当前已隐藏'}
@@ -203,39 +237,64 @@ export function AnalyticsPage({
                 {locale === 'en' ? 'Set Custom Equity Goal' : '设置自定义净值目标'}
               </button>
             </div>
-            <AnimatedCollapse open={editingGoal} innerClassName="pt-3">
-              <div className="flex flex-wrap items-center gap-2.5">
-                <input
-                  type="text"
-                  value={goalLabel}
-                  onChange={e => setGoalLabel(e.target.value)}
-                  placeholder={locale === 'en' ? 'Goal name (e.g. Milestone 50k)' : '目标名称（如：阶段净值目标）'}
-                  className="otl-input flex-1 min-w-[160px]"
-                />
-                <input
-                  type="number"
-                  value={goalAmount}
-                  onChange={e => setGoalAmount(e.target.value)}
-                  placeholder={t('set_goal_target')}
-                  className="otl-input w-44"
-                />
-                <button
-                  type="button"
-                  disabled={savingGoal}
-                  onClick={() => void handleSaveGoal()}
-                  className="otl-btn otl-btn-primary h-[34px]"
-                >
-                  {t('save_config')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingGoal(false)}
-                  className="otl-btn h-[34px]"
-                >
-                  {t('cancel')}
-                </button>
+            {editingGoal && (
+              <div data-testid="analytics-goal-form" className="pt-3 space-y-2 overflow-visible">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <input
+                    type="text"
+                    value={goalLabel}
+                    onChange={e => setGoalLabel(e.target.value)}
+                    placeholder={locale === 'en' ? 'Goal name (e.g. Milestone 50k)' : '目标名称（如：阶段净值目标）'}
+                    className="otl-input flex-1 min-w-[160px]"
+                  />
+                  <div className="relative inline-flex items-center">
+                    <input
+                      type="number"
+                      data-testid="analytics-goal-amount-input"
+                      aria-label={locale === 'en' ? 'Target Equity (Fixed in USDT)' : '目标净值 (固定以 USDT 计价)'}
+                      value={goalAmount}
+                      onChange={e => {
+                        setGoalAmount(e.target.value)
+                        if (goalError) setGoalError('')
+                      }}
+                      placeholder={t('set_goal_target')}
+                      className="otl-input w-48 pr-14 sensitive"
+                    />
+                    <span className="pointer-events-none absolute right-3 text-[11.5px] font-semibold text-[var(--fg-3)]">
+                      USDT
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="analytics-save-goal-btn"
+                    disabled={savingGoal}
+                    onClick={() => void handleSaveGoal()}
+                    className="otl-btn otl-btn-primary h-[34px]"
+                  >
+                    {t('save_config')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGoalError('')
+                      setEditingGoal(false)
+                    }}
+                    className="otl-btn h-[34px]"
+                  >
+                    {t('cancel')}
+                  </button>
+                </div>
+                {goalError && (
+                  <div
+                    role="alert"
+                    data-testid="analytics-goal-error"
+                    className="otl-status-err px-3 py-1.5 rounded-md text-[12px] font-medium"
+                  >
+                    {goalError}
+                  </div>
+                )}
               </div>
-            </AnimatedCollapse>
+            )}
           </div>
         )
       )}
@@ -254,8 +313,8 @@ export function AnalyticsPage({
           valueClass={pnlTone(s.futures_net_pnl_usd)}
           sub={
             s.trade_count > 0
-              ? `${s.trade_count} · ${t('kpi_winrate')} ${s.win_rate_pct.toFixed(1)}%`
-              : `${s.trade_count} · ${t('kpi_winrate')} —`
+              ? `${s.trade_count} ${locale === 'en' ? 'trades' : '笔交割'} · ${t('kpi_winrate')} ${s.win_rate_pct.toFixed(1)}%`
+              : `${s.trade_count} ${locale === 'en' ? 'trades' : '笔交割'} · ${t('kpi_winrate')} —`
           }
         />
         <KpiCard

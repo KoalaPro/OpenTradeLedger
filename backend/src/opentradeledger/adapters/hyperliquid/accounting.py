@@ -80,8 +80,15 @@ def _compute_hl_principal(ledger_updates: list[dict[str, Any]], user_addr: str) 
                     net += amt
                 elif addr and src == addr and dest != addr:
                     net -= amt
-        # Note: `accountClassTransfer` moves USDC internally between Perp and Spot on the same address,
-        # which leaves total (Perp + Spot) equity unchanged and is intentionally excluded from external principal.
+        elif tp in {
+            "accountClassTransfer",
+            "vaultDeposit",
+            "vaultWithdraw",
+            "vaultDistribution",
+            "vaultLeaderCommission",
+        }:
+            # Internal moves between Perp, Spot, and HLP/Vaults on the same wallet leave external principal unchanged.
+            continue
     return round(net, 2)
 
 
@@ -138,7 +145,16 @@ def build_hyperliquid_venue_ledger(
     if perp_equity_usd > 0:
         raw_spot_rows.append(("USDC", perp_equity_usd, perp_equity_usd, "PERP_MARGIN"))
 
-    equity_2dp = round(perp_equity_usd + spot_equity_usd, 2)
+    vault_equities = snap.get("vault_equities") if isinstance(snap.get("vault_equities"), list) else []
+    vault_equity_dec = sum(
+        (dec(v.get("equity")) for v in vault_equities if isinstance(v, dict)),
+        Decimal("0"),
+    )
+    vault_equity_usd = max(0.0, float(vault_equity_dec))
+    if vault_equity_usd > 0:
+        raw_spot_rows.append(("USDC", vault_equity_usd, vault_equity_usd, "VAULT"))
+
+    equity_2dp = round(perp_equity_usd + spot_equity_usd + vault_equity_usd, 2)
     principal_usd = _compute_hl_principal(
         snap.get("ledger_updates") or [],
         str(snap.get("wallet_address") or ""),

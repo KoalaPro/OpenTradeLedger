@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -27,6 +28,44 @@ class GateApiHttpError(RuntimeError):
         self.subpath = subpath
         self.detail = detail
         super().__init__(f"Gate GET {subpath} failed with HTTP {status_code}: {detail}")
+
+
+def _is_fatal_gate_error(exc: BaseException) -> bool:
+    if isinstance(exc, ReadOnlyGuardError):
+        return True
+    if isinstance(exc, (httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, GateApiHttpError):
+        if exc.status_code == 0 or exc.status_code == 429 or exc.status_code >= 500:
+            return True
+        if isinstance(exc.detail, dict):
+            lbl = str(exc.detail.get("label") or "").strip().upper()
+            if lbl in {
+                "TOO_MANY_REQUESTS",
+                "REQUEST_FREQUENCY_TOO_HIGH",
+                "SERVER_ERROR",
+                "INTERNAL_ERROR",
+                "SERVICE_UNAVAILABLE",
+            }:
+                return True
+    low = str(exc).lower()
+    return any(
+        tok in low
+        for tok in (
+            "http 5",
+            "http 429",
+            "rate limit",
+            "too frequent",
+            "too many",
+            "busy",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "timed out",
+            "timeout",
+        )
+    )
 
 
 class GateReadOnlyClient:
@@ -107,19 +146,60 @@ class GateReadOnlyClient:
     # ── Live Account, Fee Tier & Active Positions ──────────────────────────────
 
     async def fetch_live_overview_bundle(self) -> dict[str, Any]:
+        warnings: list[str] = []
+        failed_fields: list[str] = []
         wallet_total = await self.raw_get("/wallet/total_balance")
         unified = await self.raw_get("/unified/accounts")
         futures_acc = await self.raw_get("/futures/usdt/accounts")
         futures_pos = await self.raw_get("/futures/usdt/positions")
         futures_open_orders = await self.raw_get("/futures/usdt/orders", [("status", "open")])
         futures_price_orders = await self.raw_get("/futures/usdt/price_orders", [("status", "open")])
-        wallet_fee = await self._safe_get("/wallet/fee", default={})
-        account_detail = await self._safe_get("/account/detail", default={})
-        stock_assets = await self._safe_get("/stock/users/assets", default={})
-        stock_positions = await self._safe_get("/stock/positions", default={})
-        stock_open_orders = await self._safe_get("/stock/orders", default={})
-        stock_fee_rates = await self._safe_get("/stock/fee-rate", default={})
-        copy_probe = await self.probe_copy_trading_positions()
+        wallet_fee = await self._safe_get(
+            "/wallet/fee",
+            default={},
+            field_name="wallet_fee",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        account_detail = await self._safe_get(
+            "/account/detail",
+            default={},
+            field_name="account_detail",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        stock_assets = await self._safe_get(
+            "/stock/users/assets",
+            default={},
+            field_name="stock_assets",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        stock_positions = await self._safe_get(
+            "/stock/positions",
+            default={},
+            field_name="stock_positions",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        stock_open_orders = await self._safe_get(
+            "/stock/orders",
+            default={},
+            field_name="stock_open_orders",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        stock_fee_rates = await self._safe_get(
+            "/stock/fee-rate",
+            default={},
+            field_name="stock_fee_rates",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        copy_probe = await self.probe_copy_trading_positions(
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
 
         active_f_pos = [
             p for p in (futures_pos if isinstance(futures_pos, list) else [])
@@ -141,14 +221,29 @@ class GateReadOnlyClient:
                     continue
                 tok_s = t_info["token_symbol"]
                 pair_s = f"{tok_s}_USDT"
-                tk_res = await self._safe_get("/spot/tickers", [("currency_pair", pair_s)], default=[], signed=False)
+                tk_res = await self._safe_get(
+                    "/spot/tickers",
+                    [("currency_pair", pair_s)],
+                    default=[],
+                    signed=False,
+                    field_name="spot_stock_bundle",
+                    failed_fields=failed_fields,
+                    warnings=warnings,
+                )
                 if isinstance(tk_res, list) and tk_res and isinstance(tk_res[0], dict) and tk_res[0].get("last"):
                     spot_stock_tickers[tok_s] = str(tk_res[0]["last"])
-                tr_res = await self._safe_get("/spot/my_trades", [("currency_pair", pair_s), ("limit", 100)], default=[])
+                tr_res = await self._safe_get(
+                    "/spot/my_trades",
+                    [("currency_pair", pair_s), ("limit", 100)],
+                    default=[],
+                    field_name="spot_stock_bundle",
+                    failed_fields=failed_fields,
+                    warnings=warnings,
+                )
                 if isinstance(tr_res, list):
                     spot_stock_trades[tok_s] = [dict(r) for r in tr_res if isinstance(r, dict)]
 
-        return {
+        out: dict[str, Any] = {
             "wallet_total": wallet_total if isinstance(wallet_total, dict) else {},
             "unified": unified if isinstance(unified, dict) else {},
             "futures_account": futures_acc if isinstance(futures_acc, dict) else {},
@@ -173,6 +268,11 @@ class GateReadOnlyClient:
             },
             "copy_trading_probe": copy_probe,
         }
+        if failed_fields:
+            out["_failed_fields"] = failed_fields
+        if warnings:
+            out["_warnings"] = warnings
+        return out
 
     async def fetch_contract_specs(self) -> dict[str, dict[str, Any]]:
         rows = await self._safe_get("/futures/usdt/contracts", default=[], signed=False)
@@ -184,7 +284,12 @@ class GateReadOnlyClient:
                     out[name] = item
         return out
 
-    async def probe_copy_trading_positions(self) -> dict[str, Any]:
+    async def probe_copy_trading_positions(
+        self,
+        *,
+        failed_fields: Optional[list[str]] = None,
+        warnings: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
         try:
             data = await self.raw_get("/copy_trading/positions")
             items = (data.get("data") or {}).get("list") if isinstance(data, dict) else data
@@ -193,13 +298,21 @@ class GateReadOnlyClient:
                 "reason": "OK",
                 "positions": items if isinstance(items, list) else [],
             }
-        except GateApiHttpError as exc:
+        except Exception as exc:
+            if _is_fatal_gate_error(exc):
+                raise
             label = ""
-            if isinstance(exc.detail, dict):
-                label = str(exc.detail.get("label") or exc.detail.get("message") or "")
+            status_code = getattr(exc, "status_code", 0)
+            detail = getattr(exc, "detail", None)
+            if isinstance(detail, dict):
+                label = str(detail.get("label") or detail.get("message") or "")
+            if warnings is not None:
+                warnings.append(f"copy_trading_probe: {exc}")
+            if failed_fields is not None and "copy_trading_probe" not in failed_fields:
+                failed_fields.append("copy_trading_probe")
             return {
                 "accessible": False,
-                "reason": label or f"HTTP_{exc.status_code}",
+                "reason": label or (f"HTTP_{status_code}" if status_code else str(exc)),
                 "positions": [],
             }
 
@@ -210,11 +323,20 @@ class GateReadOnlyClient:
         *,
         default: Any = None,
         signed: bool = True,
+        field_name: str = "",
+        failed_fields: Optional[list[str]] = None,
+        warnings: Optional[list[str]] = None,
     ) -> Any:
         try:
             return await self.raw_get(subpath, query_params, signed=signed)
-        except GateApiHttpError as exc:
-            logger.debug("Optional Gate GET %s returned %s", subpath, exc.status_code)
+        except Exception as exc:
+            if _is_fatal_gate_error(exc):
+                raise
+            logger.debug("Optional Gate GET %s skipped: %s", subpath, exc)
+            if warnings is not None:
+                warnings.append(f"{field_name or subpath}: {exc}")
+            if failed_fields is not None and field_name and field_name not in failed_fields:
+                failed_fields.append(field_name)
             return default
 
     # ── Sliding-Window Historical Backfill & Incremental Pulls ─────────────────

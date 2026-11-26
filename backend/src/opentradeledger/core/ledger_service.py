@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from decimal import Decimal
+import logging
 import re
 import time
 from typing import Any
@@ -12,6 +13,9 @@ from opentradeledger.adapters.base import BaseExchangeAdapter, VenueLedgerBundle
 from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.config import UserPreferences
 from opentradeledger.core.account_partition import (
+    format_account_display_names,
+    is_secondary_account_id,
+    mask_uid,
     parse_adapter_id,
     scope_journals_for_account,
     stamp_bundle_for_account,
@@ -22,6 +26,8 @@ from opentradeledger.core.demo_provider import build_demo_dashboard
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.venue_primitives import dec, f2, fmt_bj
 from opentradeledger.security.vault import CredentialVault
+
+logger = logging.getLogger("opentradeledger.ledger")
 
 _CIRCLED_NUM_RE = re.compile(r"^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\))\s*")
 _CN_NUMS = (
@@ -245,6 +251,65 @@ def _trade_matches_range(close_time_ms: int, close_date: str, range_key: str, no
     return True
 
 
+def _collect_venue_warnings(
+    raw_sc: Any,
+    vh: dict[str, Any] | None,
+    extra_errors: list[str] | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+    if isinstance(vh, dict) and isinstance(vh.get("warnings"), list):
+        candidates.extend(str(w) for w in vh["warnings"] if w)
+    snap = raw_sc.get_kv("snapshot")
+    if isinstance(snap, dict):
+        for wk in ("warnings", "_warnings"):
+            if isinstance(snap.get(wk), list):
+                candidates.extend(str(w) for w in snap[wk] if w)
+    lb = raw_sc.get_kv("live_bundle")
+    if isinstance(lb, dict):
+        for wk in ("_warnings", "warnings"):
+            if isinstance(lb.get(wk), list):
+                candidates.extend(str(w) for w in lb[wk] if w)
+    if extra_errors:
+        candidates.extend(str(w) for w in extra_errors if w)
+    return list(dict.fromkeys(w.strip() for w in candidates if w and w.strip()))
+
+
+def _summarize_venue_warnings(w_list: list[str]) -> tuple[str, str]:
+    joined_low = " ".join(w_list).lower()
+    has_perm = any(
+        tok in joined_low
+        for tok in ("spot", "wallet", "deposit", "withdraw", "permission", "403", "unauthorized", "forbidden", "funding")
+    )
+    has_trunc = any(
+        tok in joined_low
+        for tok in ("2,000", "2000", "10,000", "10000", "truncated", "ceiling", "cap", "pagination", "limit reached")
+    )
+    has_crash = any("ledger computation failed" in w.lower() for w in w_list)
+
+    en_parts: list[str] = []
+    zh_parts: list[str] = []
+    if has_perm:
+        en_parts.append(
+            "Some sub-account balances or deposit/withdrawal records could not be read (check Spot/Wallet read-only permissions); total equity or principal may be understated."
+        )
+        zh_parts.append("部分子账户或充提流水未读取（可能缺少现货/钱包只读权限），总资产或本金可能少算")
+    if has_trunc:
+        en_parts.append(
+            "Historical records reached the exchange API pagination cap; earlier history may be truncated."
+        )
+        zh_parts.append("历史记录已达交易所接口分页上限，更早历史可能被截断")
+    if has_crash:
+        en_parts.append(
+            "Local snapshot encountered a calculation error and was isolated to protect other accounts."
+        )
+        zh_parts.append("该账户本地快照核算异常已自动隔离，不影响其他平台数据展示")
+    if not zh_parts:
+        first_w = w_list[0] if w_list else ""
+        en_parts.append(first_w)
+        zh_parts.append(f"同步产生数据完整性提示：{first_w}" if first_w else "")
+    return "; ".join(en_parts), "；".join(zh_parts)
+
+
 def _date_matches_range(date_str: str, range_key: str, cutoff_day_bj: str) -> bool:
     rk = (range_key or "all").strip().lower()
     if rk == "all" or not rk:
@@ -383,28 +448,48 @@ class LedgerService:
         cutoff_day_bj = fmt_bj(cutoff_sec, "%Y-%m-%d") if cutoff_sec > 0 else ""
 
         # 1. Gather cross-venue spot ticker fallback map uniformly across all active account partitions
-        account_targets = self._iter_account_targets()
+        vault_creds = self.vault.list_decrypted()
+        creds_by_acct = {c.venue_id.lower(): c for c in vault_creds}
+        account_targets: list[tuple[BaseExchangeAdapter, str]] = []
+        for adapter, acct_id in self._iter_account_targets():
+            if acct_id in creds_by_acct and not creds_by_acct[acct_id].enabled:
+                continue
+            if is_secondary_account_id(acct_id) and bool(self.store.venue_scope(acct_id).get_kv("duplicate_uid_conflict")):
+                continue
+            account_targets.append((adapter, acct_id))
+
         global_spot_prices: dict[str, float] = {}
         for adapter, acct_id in account_targets:
             scoped_store = self.store.for_account(acct_id, adapter.meta.venue_id)
-            for sym, px in adapter.extract_spot_prices(scoped_store).items():
+            try:
+                spot_map = adapter.extract_spot_prices(scoped_store)
+            except Exception as exc:
+                logger.warning("Isolated spot price extraction error for %s: %s", acct_id, exc)
+                continue
+            for sym, px in spot_map.items():
                 if px > 0:
                     global_spot_prices.setdefault(sym, px)
 
         # 2. Compute each active account's self-contained ledger bundle independently
-        vault_creds = self.vault.list_decrypted()
-        creds_by_acct = {c.venue_id.lower(): c for c in vault_creds}
         raw_bundles: list[tuple[BaseExchangeAdapter, str, VenueLedgerBundle]] = []
+        isolated_build_errors: list[tuple[BaseExchangeAdapter, str, str]] = []
         sibling_counts: dict[str, int] = defaultdict(int)
         for adapter, acct_id in account_targets:
             scoped_store = self.store.for_account(acct_id, adapter.meta.venue_id)
             scoped_journals = scope_journals_for_account(journals, acct_id)
-            bundle = adapter.build_venue_ledger(
-                scoped_store,
-                journals=scoped_journals,
-                now_s=now_s,
-                global_spot_prices=global_spot_prices,
-            )
+            try:
+                bundle = adapter.build_venue_ledger(
+                    scoped_store,
+                    journals=scoped_journals,
+                    now_s=now_s,
+                    global_spot_prices=global_spot_prices,
+                )
+            except Exception as exc:
+                logger.warning("Isolated venue ledger build failure for %s: %s", acct_id, exc)
+                isolated_build_errors.append(
+                    (adapter, acct_id, f"Ledger computation failed ({type(exc).__name__}): {exc}")
+                )
+                continue
             if bundle is not None:
                 raw_bundles.append((adapter, acct_id, bundle))
                 sibling_counts[adapter.meta.venue_id.lower()] += 1
@@ -416,7 +501,13 @@ class LedgerService:
             ordinals[ad_id] += 1
             cred_rec = creds_by_acct.get(acct_id)
             raw_sc = self.store.venue_scope(acct_id)
-            saved_uid = str((cred_rec.remote_uid if cred_rec else "") or raw_sc.get_kv("account_uid") or "")
+            scoped_for_uid = self.store.for_account(acct_id, ad_id)
+            saved_uid = str(
+                (cred_rec.remote_uid if cred_rec else "")
+                or raw_sc.get_kv("account_uid")
+                or adapter.extract_cached_account_uid(scoped_for_uid)
+                or ""
+            )
             saved_role = str((cred_rec.account_role if cred_rec else "") or raw_sc.get_kv("account_role") or "")
             saved_label = str((cred_rec.label if cred_rec else "") or raw_sc.get_kv("account_label") or "")
             stamp_bundle_for_account(
@@ -446,10 +537,11 @@ class LedgerService:
         if not isinstance(venue_health_map, dict):
             venue_health_map = {}
         configured_vids = {
-            c.venue_id.lower() for c in self.vault.list_decrypted() if c.enabled
+            c.venue_id.lower() for c in vault_creds if c.enabled
         }
 
         exchanges: list[dict[str, Any]] = []
+        dashboard_warnings: list[dict[str, Any]] = []
         all_open_positions: list[dict[str, Any]] = []
         spot_wallet_balances: list[dict[str, Any]] = []
         spot_holdings: list[dict[str, Any]] = []
@@ -482,6 +574,8 @@ class LedgerService:
             vh = venue_health_map.get(vid) if isinstance(venue_health_map.get(vid), dict) else {}
             is_conf = vid in configured_vids
             is_err = is_conf and (vh.get("status") == "error")
+            raw_sc = self.store.venue_scope(vid)
+            w_list = _collect_venue_warnings(raw_sc, vh)
 
             ex_card = dict(bundle.exchange_card)
             ex_card["connected"] = is_conf and (not is_err)
@@ -490,6 +584,22 @@ class LedgerService:
             )
             ex_card["error_reason"] = str(vh.get("error_reason") or "") if is_err else ""
             ex_card["error_reason_zh"] = str(vh.get("error_reason_zh") or "") if is_err else ""
+            ex_card["warnings"] = w_list
+
+            if w_list:
+                sum_en, sum_zh = _summarize_venue_warnings(w_list)
+                dashboard_warnings.append(
+                    {
+                        "venue_id": vid,
+                        "display_name": str(ex_card.get("display_name") or adapter.meta.display_name),
+                        "display_name_zh": str(
+                            ex_card.get("display_name_zh") or adapter.meta.display_name_zh or adapter.meta.display_name
+                        ),
+                        "warnings": w_list,
+                        "summary": sum_en,
+                        "summary_zh": sum_zh,
+                    }
+                )
 
             all_open_positions.extend(bundle.open_positions)
             spot_holdings.extend(bundle.spot_holdings)
@@ -515,10 +625,12 @@ class LedgerService:
                 ex_card["trade_count"] = len(v_range_trades)
             exchanges.append(ex_card)
 
-            fee_row = stamp_fee_row_for_account(
-                adapter.build_fee_matrix_row(bundle, v_range_sym_trades),
-                bundle,
-            )
+            try:
+                raw_fee_row = adapter.build_fee_matrix_row(bundle, v_range_sym_trades)
+            except Exception as exc:
+                logger.warning("Isolated fee matrix build error for %s: %s", vid, exc)
+                raw_fee_row = None
+            fee_row = stamp_fee_row_for_account(raw_fee_row, bundle)
             if fee_row is not None:
                 fee_matrix.append(fee_row)
 
@@ -545,6 +657,35 @@ class LedgerService:
             stock_perpetuals.extend(st.perpetuals)
             if st.venue_fee_rate is not None:
                 stock_venue_fee_rates.append(st.venue_fee_rate)
+
+        for err_adapter, err_vid, err_msg in isolated_build_errors:
+            err_sc = self.store.venue_scope(err_vid)
+            err_vh = venue_health_map.get(err_vid) if isinstance(venue_health_map.get(err_vid), dict) else {}
+            err_cred = creds_by_acct.get(err_vid)
+            err_uid = str((err_cred.remote_uid if err_cred else "") or err_sc.get_kv("account_uid") or "")
+            err_role = str((err_cred.account_role if err_cred else "") or err_sc.get_kv("account_role") or "")
+            err_lbl = str((err_cred.label if err_cred else "") or err_sc.get_kv("account_label") or "")
+            disp_en_err, disp_zh_err = format_account_display_names(
+                account_id=err_vid,
+                meta=err_adapter.meta,
+                custom_label=err_lbl,
+                account_role=err_role,
+                masked_uid=mask_uid(err_uid),
+                sibling_count=1,
+                ordinal=1,
+            )
+            err_w_list = _collect_venue_warnings(err_sc, err_vh, extra_errors=[err_msg])
+            sum_en_err, sum_zh_err = _summarize_venue_warnings(err_w_list)
+            dashboard_warnings.append(
+                {
+                    "venue_id": err_vid,
+                    "display_name": disp_en_err,
+                    "display_name_zh": disp_zh_err,
+                    "warnings": err_w_list,
+                    "summary": sum_en_err,
+                    "summary_zh": sum_zh_err,
+                }
+            )
 
         spot_holdings.sort(key=lambda x: float(x.get("market_value_usd") or 0.0), reverse=True)
         trades.sort(key=lambda t: (t["close_time_ms"], t["open_time_ms"], t["trade_id"]), reverse=True)
@@ -661,14 +802,17 @@ class LedgerService:
             period_lbl = f"{rk_norm} 月度" if is_month_rk else ("近 7 天" if rk_norm == "7d" else "近 30 天")
             raw_r_streams: list[dict[str, Any]] = []
             for adapter, b in active_entries:
-                raw_r_streams.extend(
-                    adapter.build_range_reconcile_streams(
-                        b,
-                        period_label_zh=period_lbl,
-                        comp_sums=range_comp_by_vid.get(b.venue_id, {}),
-                        range_trades=range_trades_by_vid.get(b.venue_id, []),
+                try:
+                    raw_r_streams.extend(
+                        adapter.build_range_reconcile_streams(
+                            b,
+                            period_label_zh=period_lbl,
+                            comp_sums=range_comp_by_vid.get(b.venue_id, {}),
+                            range_trades=range_trades_by_vid.get(b.venue_id, []),
+                        )
                     )
-                )
+                except Exception as exc:
+                    logger.warning("Isolated range reconcile build error for %s: %s", b.venue_id, exc)
             range_reconcile_items = _format_numbered_reconcile_items(raw_r_streams, target_total_2dp=range_whole_net)
 
         # 6. Symbol attribution across matched `trades`
@@ -878,6 +1022,9 @@ class LedgerService:
             "last_sync_ms": self.last_sync_ms or int(self.store.get_meta("last_sync_ms", 0) or 0),
             "syncing": self.syncing,
             "range_key": range_key,
+            "venue_filter": "ALL" if vf_norm in ("all", "") else vf_norm,
+            "symbol_filter": "ALL" if sf_norm in ("ALL", "") else sf_norm,
+            "warnings": dashboard_warnings,
             "available_months": all_months,
             "available_symbols": sorted({t["symbol"] for t in all_trades_unfiltered if t.get("symbol")}),
             "summary": {

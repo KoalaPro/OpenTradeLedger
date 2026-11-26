@@ -30,7 +30,15 @@ def extract_htx_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, tu
     for row in snap.get("spot_balances") or []:
         if not isinstance(row, dict):
             continue
+        acct_tp = str(row.get("_account_type") or "SPOT").strip().upper()
+        if acct_tp == "POINT":
+            continue
+        item_tp = str(row.get("type") or "").strip().lower()
+        if item_tp and item_tp not in {"trade", "frozen"}:
+            continue
         ccy = str(row.get("currency") or "").strip().upper()
+        if ccy in {"HBPOINT", "POINT"}:
+            continue
         bal = float(row.get("balance") or 0.0)
         if ccy and bal > 0:
             spot_agg[ccy] = spot_agg.get(ccy, 0.0) + bal
@@ -63,7 +71,7 @@ async def sync_htx_venue(
     existing_snap = store.venue_scope("htx").get_kv("snapshot") or {}
     _, _, fp_before = extract_htx_snapshot_activity(existing_snap) if existing_snap else (0.0, False, ())
     last_sync_ms = int(existing_snap.get("_last_sync_ms") or 0)
-    since_ms = max(0, last_sync_ms - 2 * 86_400_000) if (last_sync_ms > 0 and not force_full) else 0
+    since_ms = max(0, last_sync_ms - 36 * 3600 * 1000) if (last_sync_ms > 0 and not force_full) else 0
     raw_snap = await client.fetch_full_snapshot(since_ms=since_ms)
     snap = store.upsert_plugin_snapshot("htx", raw_snap, merge_specs=HTX_MERGE_SPECS)
     eq_usd, has_open, fp_after = extract_htx_snapshot_activity(snap)

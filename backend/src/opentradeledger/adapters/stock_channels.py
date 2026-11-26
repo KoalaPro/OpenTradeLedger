@@ -193,8 +193,14 @@ def _dec(val: Any, default: str = "0") -> Decimal:
         return Decimal(default)
 
 
-def _f2(val: Decimal | float, digits: int = 4) -> float:
-    return round(float(val), digits)
+def _f2(val: Decimal | float | int | str, digits: int = 4) -> float:
+    d = _dec(val)
+    if digits <= 0:
+        q = d.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    else:
+        q = d.quantize(Decimal(10) ** (-digits), rounding=ROUND_HALF_UP)
+    res = float(q)
+    return 0.0 if res == 0.0 else res
 
 
 def _norm_ms(raw_ts: Any) -> int:

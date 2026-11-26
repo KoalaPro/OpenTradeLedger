@@ -27,6 +27,20 @@ if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
 
 
+def _is_completed_htx_deposit(row: Mapping[str, Any]) -> bool:
+    st = row.get("state")
+    if st is None or str(st).strip() == "":
+        return True
+    return str(st).strip().lower() in {"safe", "confirmed", "completed"}
+
+
+def _is_completed_htx_withdrawal(row: Mapping[str, Any]) -> bool:
+    st = row.get("state")
+    if st is None or str(st).strip() == "":
+        return True
+    return str(st).strip().lower() in {"confirmed", "safe", "completed"}
+
+
 def extract_htx_spot_prices(store: "LedgerStore") -> dict[str, float]:
     snap = store.venue_scope("htx").get_kv("snapshot")
     out: dict[str, float] = {}
@@ -81,9 +95,16 @@ def build_htx_venue_ledger(
     for row in snap.get("spot_balances") or []:
         if not isinstance(row, dict):
             continue
+        acct_tp = str(row.get("_account_type") or "SPOT").strip().upper()
+        if acct_tp == "POINT":
+            continue
+        item_tp = str(row.get("type") or "").strip().lower()
+        if item_tp and item_tp not in {"trade", "frozen"}:
+            continue
         ccy = str(row.get("currency") or "").strip().upper()
+        if ccy in {"HBPOINT", "POINT"}:
+            continue
         bal = float(row.get("balance") or 0.0)
-        acct_tp = str(row.get("_account_type") or "SPOT").upper()
         if ccy and bal > 0:
             spot_agg[(ccy, acct_tp)] += bal
 
@@ -97,12 +118,12 @@ def build_htx_venue_ledger(
     dep = sum(
         _coin_usd(str(x.get("currency") or ""), float(x.get("amount") or 0.0))
         for x in (snap.get("deposits") or [])
-        if str(x.get("state") or "safe").lower() in {"safe", "confirmed", ""}
+        if isinstance(x, dict) and _is_completed_htx_deposit(x)
     )
     wd = sum(
         _coin_usd(str(x.get("currency") or ""), float(x.get("amount") or 0.0) + float(x.get("fee") or 0.0))
         for x in (snap.get("withdrawals") or [])
-        if str(x.get("state") or "confirmed").lower() in {"confirmed", ""}
+        if isinstance(x, dict) and _is_completed_htx_withdrawal(x)
     )
     principal_usd = round(dep - wd, 2)
 

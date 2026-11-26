@@ -18,6 +18,7 @@ from opentradeledger.adapters.stock_channels import (
 )
 from opentradeledger.core.venue_primitives import (
     STOCK_COMMODITY_BASES,
+    USD_CASH_ASSETS,
     aggregate_trade_legs_decimal,
     build_spot_wallet_balances,
     spot_holdings_from_wallets,
@@ -406,6 +407,7 @@ def _reconcile_easicoin_rebates_and_principal(
     ec_unrealized_usd: Decimal,
     has_easicoin: bool,
     now_f: float,
+    ec_px_map: Mapping[str, Decimal] | None = None,
 ) -> tuple[Decimal, Decimal, Decimal]:
     leg_fee_events: list[tuple[float, Decimal]] = []
     total_ec_fees = Decimal("0")
@@ -425,51 +427,64 @@ def _reconcile_easicoin_rebates_and_principal(
     latest_rebate_tx_sec = 0.0
     fees_at_latest_rebate_tx = Decimal("0")
     running_observed_rate = Decimal("0")
+    px_lookup = ec_px_map or {}
 
     if easicoin_transfers:
         ec_capital_tx_net_usd = Decimal("0")
-        valid_txs: list[tuple[float, str, str, Decimal]] = []
+        valid_txs: list[tuple[float, str, str, str, Decimal, str]] = []
         for etx in easicoin_transfers:
-            st = str(etx.get("transfer_status") or "1")
-            if st not in ("1", "SUCCESS", "success"):
+            raw_st = etx.get("transfer_status") if etx.get("transfer_status") not in (None, "") else etx.get("status")
+            if raw_st not in (None, ""):
+                if str(raw_st).strip().lower() not in ("1", "success", "completed", "ok"):
+                    continue
+            coin_tx = str(etx.get("coin") or "").strip().upper()
+            if not coin_tx:
                 continue
-            coin_tx = str(etx.get("coin") or "").upper()
-            if coin_tx not in ("USDT", "USDC", "USD1", "USD"):
+            px_tx = Decimal("1") if coin_tx in USD_CASH_ASSETS else dec(px_lookup.get(coin_tx), "0")
+            if px_tx <= 0:
                 continue
-            amt_tx = abs(dec(etx.get("amount")))
+            amt_tx = abs(dec(etx.get("amount"))) * px_tx
             if amt_tx <= 0:
                 continue
-            fw = str(etx.get("from_wallet") or "").upper()
-            tw = str(etx.get("to_wallet") or "").upper()
+            fw = str(etx.get("from_wallet") or "").strip().upper()
+            tw = str(etx.get("to_wallet") or "").strip().upper()
+            tx_type = str(etx.get("type") or etx.get("transfer_type") or "").strip().lower()
             ts_tx = norm_sec(etx.get("time"))
-            valid_txs.append((ts_tx, fw, tw, amt_tx))
+            valid_txs.append((ts_tx, fw, tw, coin_tx, amt_tx, tx_type))
 
         valid_txs.sort(key=lambda row: row[0])
-        for ts_tx, fw, tw, amt_tx in valid_txs:
-            if fw == "FUNDING" and tw in ("TRADING", "SPOT"):
-                cum_fees_at_tx = sum(
-                    (fee_v for f_ts, fee_v in leg_fee_events if (ts_tx <= 0 or f_ts <= ts_tx + 60.0)),
-                    Decimal("0"),
-                )
-                max_plausible_rebate = cum_fees_at_tx * Decimal("0.98")
-                unclaimed_cap = max(Decimal("0"), max_plausible_rebate - claimed_rebate_transfers_usd)
-                if cum_fees_at_tx > 0 and amt_tx <= (unclaimed_cap + Decimal("0.05")):
-                    claimed_rebate_transfers_usd += amt_tx
-                    if ts_tx >= latest_rebate_tx_sec:
-                        latest_rebate_tx_sec = ts_tx
-                        fees_at_latest_rebate_tx = cum_fees_at_tx
-                    running_observed_rate = min(Decimal("0.95"), claimed_rebate_transfers_usd / cum_fees_at_tx)
-                else:
-                    est_earned = cum_fees_at_tx * running_observed_rate if running_observed_rate > 0 else Decimal("0")
-                    reb_part = max(Decimal("0"), min(amt_tx, est_earned - claimed_rebate_transfers_usd))
-                    prin_part = amt_tx - reb_part
-                    if reb_part > 0:
-                        claimed_rebate_transfers_usd += reb_part
+        for ts_tx, fw, tw, coin_tx, amt_tx, tx_type in valid_txs:
+            if fw == "FUNDING" and tw in ("TRADING", "SPOT", "CONTRACT", "FUTURES"):
+                if coin_tx == "USDT":
+                    cum_fees_at_tx = sum(
+                        (fee_v for f_ts, fee_v in leg_fee_events if (ts_tx <= 0 or f_ts <= ts_tx + 60.0)),
+                        Decimal("0"),
+                    )
+                    max_plausible_rebate = cum_fees_at_tx * Decimal("0.98")
+                    unclaimed_cap = max(Decimal("0"), max_plausible_rebate - claimed_rebate_transfers_usd)
+                    if cum_fees_at_tx > 0 and amt_tx <= (unclaimed_cap + Decimal("0.05")):
+                        claimed_rebate_transfers_usd += amt_tx
                         if ts_tx >= latest_rebate_tx_sec:
                             latest_rebate_tx_sec = ts_tx
                             fees_at_latest_rebate_tx = cum_fees_at_tx
-                    ec_capital_tx_net_usd += prin_part
-            elif tw == "FUNDING" and fw in ("TRADING", "SPOT"):
+                        running_observed_rate = min(Decimal("0.95"), claimed_rebate_transfers_usd / cum_fees_at_tx)
+                    else:
+                        est_earned = cum_fees_at_tx * running_observed_rate if running_observed_rate > 0 else Decimal("0")
+                        reb_part = max(Decimal("0"), min(amt_tx, est_earned - claimed_rebate_transfers_usd))
+                        prin_part = amt_tx - reb_part
+                        if reb_part > 0:
+                            claimed_rebate_transfers_usd += reb_part
+                            if ts_tx >= latest_rebate_tx_sec:
+                                latest_rebate_tx_sec = ts_tx
+                                fees_at_latest_rebate_tx = cum_fees_at_tx
+                        ec_capital_tx_net_usd += prin_part
+                else:
+                    ec_capital_tx_net_usd += amt_tx
+            elif tw == "FUNDING" and fw in ("TRADING", "SPOT", "CONTRACT", "FUTURES"):
+                ec_capital_tx_net_usd -= amt_tx
+            elif not fw and tx_type in ("deposit", "in"):
+                ec_capital_tx_net_usd += amt_tx
+            elif not tw and tx_type in ("withdraw", "withdrawal", "out"):
                 ec_capital_tx_net_usd -= amt_tx
 
         if running_observed_rate > 0:
@@ -605,6 +620,13 @@ def build_easicoin_venue_ledger(
 
     ec_uid = str(ec_lb.get("userid") or ec_lb.get("uid") or "")
     ec_px_map = _build_ec_price_map(ec_lb.get("tickers"))
+    for gs_sym, gs_px in (global_spot_prices or {}).items():
+        gs_u = str(gs_sym or "").strip().upper()
+        gs_d = dec(gs_px, "0")
+        if gs_u and gs_d > 0:
+            ec_px_map.setdefault(gs_u, gs_d)
+    for usd_c in USD_CASH_ASSETS:
+        ec_px_map.setdefault(usd_c, Decimal("1"))
     ec_closed_records = _build_easicoin_closed_records(
         closed_pnl_rows=closed_pnl_rows,
         fills=fills,
@@ -720,6 +742,7 @@ def build_easicoin_venue_ledger(
         ec_unrealized_usd=ec_unrealized_usd,
         has_easicoin=has_easicoin,
         now_f=now_s,
+        ec_px_map=ec_px_map,
     )
 
     public_trades = [

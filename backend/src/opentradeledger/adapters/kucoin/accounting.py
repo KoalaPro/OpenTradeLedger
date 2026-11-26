@@ -27,6 +27,13 @@ if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
 
 
+def _is_completed_kucoin_cashflow(row: Mapping[str, Any]) -> bool:
+    st = row.get("status")
+    if st is None or str(st).strip() == "":
+        return True
+    return str(st).strip().upper() in {"SUCCESS", "COMPLETED", "CONFIRMED"}
+
+
 def extract_kucoin_spot_prices(store: "LedgerStore") -> dict[str, float]:
     snap = store.venue_scope("kucoin").get_kv("snapshot")
     out: dict[str, float] = {}
@@ -88,10 +95,15 @@ def build_kucoin_venue_ledger(
         raw_spot_rows.append(("USDT", fut_equity, fut_equity, "FUTURES"))
 
     equity_2dp = round(fut_equity + spot_equity, 2)
-    dep = sum(_coin_usd(str(x.get("currency") or ""), float(x.get("amount") or 0.0)) for x in (snap.get("deposits") or []))
+    dep = sum(
+        _coin_usd(str(x.get("currency") or ""), float(x.get("amount") or 0.0))
+        for x in (snap.get("deposits") or [])
+        if isinstance(x, dict) and _is_completed_kucoin_cashflow(x)
+    )
     wd = sum(
         _coin_usd(str(x.get("currency") or ""), float(x.get("amount") or 0.0) + float(x.get("fee") or 0.0))
         for x in (snap.get("withdrawals") or [])
+        if isinstance(x, dict) and _is_completed_kucoin_cashflow(x)
     )
     principal_usd = round(dep - wd, 2)
 

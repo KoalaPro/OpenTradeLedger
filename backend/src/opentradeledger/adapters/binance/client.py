@@ -36,6 +36,7 @@ from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 logger = logging.getLogger("gate_manual.binance")
 
 INCOME_WINDOW_MS = 14 * 86400 * 1000
+UM_TRADE_WINDOW_MS = 7 * 86400 * 1000 - 1000
 CAPITAL_WINDOW_MS = 89 * 86400 * 1000
 SAPI_30D_WINDOW_MS = 29 * 86400 * 1000
 SAPI_150D_WINDOW_MS = 150 * 86400 * 1000
@@ -104,6 +105,46 @@ class BinanceApiError(RuntimeError):
         self.path = path
         self.detail = detail
         super().__init__(f"Binance GET {path} failed ({status_code}): {detail}")
+
+
+def _is_fatal_binance_error(exc: BaseException) -> bool:
+    if isinstance(exc, ReadOnlyGuardError):
+        return True
+    if isinstance(exc, (httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, BinanceApiError):
+        if exc.status_code == 0 or exc.status_code in (418, 429) or exc.status_code >= 500:
+            return True
+        if isinstance(exc.detail, dict):
+            code = exc.detail.get("code")
+            if code in (-1003, -1001, -1006, -1007, -1008, 429, 500, 502, 503, 504):
+                return True
+    low = str(exc).lower()
+    return any(
+        tok in low
+        for tok in (
+            "http 5",
+            "http 429",
+            "failed (0)",
+            "failed (418)",
+            "failed (429)",
+            "-1003",
+            "rate limit",
+            "way too many",
+            "too many requests",
+            "too frequent",
+            "busy",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "connecttimeout",
+            "readtimeout",
+            "connecterror",
+            "timed out",
+            "timeout",
+        )
+    )
 
 
 class BinanceReadOnlyClient:
@@ -258,13 +299,20 @@ class BinanceReadOnlyClient:
         *,
         signed: bool = True,
         default: Any = None,
+        field_name: str = "",
+        failed_fields: Optional[list[str]] = None,
+        warnings: Optional[list[str]] = None,
     ) -> Any:
         try:
             return await self.raw_get(path, query_params, signed=signed)
-        except ReadOnlyGuardError:
-            raise
         except Exception as exc:
+            if _is_fatal_binance_error(exc):
+                raise
             logger.debug("Binance optional GET %s skipped: %s", path, exc)
+            if warnings is not None:
+                warnings.append(f"{field_name or path}: {exc}")
+            if failed_fields is not None and field_name and field_name not in failed_fields:
+                failed_fields.append(field_name)
             return default
 
     async def fetch_bnb_daily_prices(self, *, full_history: bool = False) -> dict[str, str]:
@@ -297,11 +345,24 @@ class BinanceReadOnlyClient:
         return out
 
     async def fetch_live_overview_bundle(self) -> dict[str, Any]:
+        warnings: list[str] = []
+        failed_fields: list[str] = []
         spot_acc = await self.raw_get("/api/v3/account", [("omitZeroBalances", "true")])
         wallet_bal = await self._safe_get(
-            "/sapi/v1/asset/wallet/balance", [("quoteAsset", "USDT")], default=[]
+            "/sapi/v1/asset/wallet/balance",
+            [("quoteAsset", "USDT")],
+            default=[],
+            field_name="wallet_balances",
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
-        bnb_burn = await self._safe_get("/sapi/v1/bnbBurn", default={})
+        bnb_burn = await self._safe_get(
+            "/sapi/v1/bnbBurn",
+            default={},
+            field_name="bnb_burn",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
 
         account_mode = "PAPI"
         futures_balances: list[dict[str, Any]] = []
@@ -309,22 +370,60 @@ class BinanceReadOnlyClient:
         futures_open_orders: list[dict[str, Any]] = []
         pm_account: dict[str, Any] = {}
 
-        papi_acc = await self._safe_get("/papi/v1/account", default=None)
+        papi_acc: Any = None
+        papi_err: Optional[Exception] = None
+        try:
+            papi_acc = await self.raw_get("/papi/v1/account")
+        except Exception as exc:
+            if _is_fatal_binance_error(exc):
+                raise
+            if isinstance(exc, BinanceApiError) and isinstance(exc.detail, dict):
+                if exc.detail.get("code") in (-1021, -1022, -2014):
+                    raise
+            papi_err = exc
+
         if isinstance(papi_acc, dict) and "accountEquity" in papi_acc:
             pm_account = papi_acc
-            bal_res = await self._safe_get("/papi/v1/balance", default=[])
+            bal_res = await self._safe_get(
+                "/papi/v1/balance",
+                default=[],
+                field_name="futures_balances",
+                failed_fields=failed_fields,
+                warnings=warnings,
+            )
             if isinstance(bal_res, list):
                 futures_balances = [dict(b) for b in bal_res if isinstance(b, dict)]
-            um_acc = await self._safe_get("/papi/v1/um/account", default={})
+            um_acc = await self._safe_get(
+                "/papi/v1/um/account",
+                default={},
+                field_name="futures_positions",
+                failed_fields=failed_fields,
+                warnings=warnings,
+            )
             if isinstance(um_acc, dict):
                 for p in um_acc.get("positions") or []:
                     if abs(float(p.get("positionAmt") or 0)) > 0:
                         futures_positions.append(dict(p))
-            oo_res = await self._safe_get("/papi/v1/um/openOrders", default=[])
+            oo_res = await self._safe_get(
+                "/papi/v1/um/openOrders",
+                default=[],
+                field_name="futures_open_orders",
+                failed_fields=failed_fields,
+                warnings=warnings,
+            )
             if isinstance(oo_res, list):
                 futures_open_orders = [dict(o) for o in oo_res if isinstance(o, dict)]
         else:
-            fapi_acc = await self._safe_get("/fapi/v2/account", default=None)
+            fapi_acc: Any = None
+            try:
+                fapi_acc = await self.raw_get("/fapi/v2/account")
+            except Exception as f_exc:
+                if _is_fatal_binance_error(f_exc):
+                    raise
+                warnings.append(f"futures_account: papi={papi_err}; fapi={f_exc}")
+                for fk in ("pm_account", "futures_balances", "futures_positions", "futures_open_orders"):
+                    if fk not in failed_fields:
+                        failed_fields.append(fk)
             if isinstance(fapi_acc, dict):
                 account_mode = "FAPI"
                 pm_account = {
@@ -334,12 +433,24 @@ class BinanceReadOnlyClient:
                 for a in fapi_acc.get("assets") or []:
                     if abs(float(a.get("walletBalance") or 0)) > 0:
                         futures_balances.append(dict(a))
-                pos_risk = await self._safe_get("/fapi/v2/positionRisk", default=[])
+                pos_risk = await self._safe_get(
+                    "/fapi/v2/positionRisk",
+                    default=[],
+                    field_name="futures_positions",
+                    failed_fields=failed_fields,
+                    warnings=warnings,
+                )
                 if isinstance(pos_risk, list):
                     for p in pos_risk:
                         if abs(float(p.get("positionAmt") or 0)) > 0:
                             futures_positions.append(dict(p))
-                oo_res = await self._safe_get("/fapi/v1/openOrders", default=[])
+                oo_res = await self._safe_get(
+                    "/fapi/v1/openOrders",
+                    default=[],
+                    field_name="futures_open_orders",
+                    failed_fields=failed_fields,
+                    warnings=warnings,
+                )
                 if isinstance(oo_res, list):
                     futures_open_orders = [dict(o) for o in oo_res if isinstance(o, dict)]
 
@@ -387,9 +498,14 @@ class BinanceReadOnlyClient:
                     "taker": str(float(spot_acc.get("takerCommission") or 0) / 10000.0),
                 }
 
-        stock_bundle = await self._fetch_stock_bundle(spot_balances, spot_comm_rates=spot_comm_rates)
+        stock_bundle = await self._fetch_stock_bundle(
+            spot_balances,
+            spot_comm_rates=spot_comm_rates,
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
 
-        return {
+        out: dict[str, Any] = {
             "uid": int((spot_acc or {}).get("uid") or 0),
             "account_mode": account_mode,
             "bnb_burn": dict(bnb_burn) if isinstance(bnb_burn, dict) else {},
@@ -402,12 +518,19 @@ class BinanceReadOnlyClient:
             "futures_open_orders": futures_open_orders,
             "stock_bundle": stock_bundle,
         }
+        if failed_fields:
+            out["_failed_fields"] = failed_fields
+        if warnings:
+            out["_warnings"] = warnings
+        return out
 
     async def _fetch_stock_bundle(
         self,
         spot_balances: Sequence[dict[str, Any]],
         *,
         spot_comm_rates: Optional[dict[str, str]] = None,
+        failed_fields: Optional[list[str]] = None,
+        warnings: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Fetch Binance `/sapi/v1/equity/*` real US stock fills/quotes & Spot bStocks cost basis."""
         now_ms = self._now_ms()
@@ -415,6 +538,9 @@ class BinanceReadOnlyClient:
             "/sapi/v1/equity/trade/history",
             [("startTime", max(0, now_ms - SAPI_30D_WINDOW_MS)), ("endTime", now_ms), ("size", 100)],
             default=[],
+            field_name="stock_bundle",
+            failed_fields=failed_fields,
+            warnings=warnings,
         )
         equity_trades: list[dict[str, Any]] = []
         if isinstance(equity_trades_res, list):
@@ -528,34 +654,129 @@ class BinanceReadOnlyClient:
                 await asyncio.sleep(0.05)
         return out
 
+    async def _fetch_um_symbol_time_windows(
+        self,
+        path: str,
+        sym: str,
+        *,
+        start_ms: int,
+        end_ms: int,
+        id_field: str,
+        time_field: str,
+        page_limit: int,
+        dedup: dict[str, dict[str, Any]],
+    ) -> None:
+        w_cur = max(0, int(start_ms))
+        while w_cur < end_ms:
+            w_end = min(end_ms, w_cur + UM_TRADE_WINDOW_MS)
+            page_start = w_cur
+            for _ in range(15):
+                rows = await self._safe_get(
+                    path,
+                    [("symbol", sym), ("startTime", page_start), ("endTime", w_end), ("limit", page_limit)],
+                    default=[],
+                )
+                if not isinstance(rows, list) or not rows:
+                    break
+                max_t = page_start
+                new_in_page = 0
+                for r in rows:
+                    if not isinstance(r, dict):
+                        continue
+                    rid = str(r.get(id_field) or f"{r.get('orderId')}_{r.get(time_field)}_{r.get('qty') or r.get('origQty')}")
+                    if rid not in dedup:
+                        dedup[rid] = dict(r)
+                        new_in_page += 1
+                    rt = int(r.get(time_field) or 0)
+                    if rt > max_t:
+                        max_t = rt
+                if len(rows) < page_limit or (new_in_page == 0 and max_t <= page_start):
+                    break
+                page_start = max_t if new_in_page > 0 and max_t > page_start else (max_t + 1)
+                if page_start > w_end:
+                    break
+            w_cur = w_end + 1
+
     async def fetch_um_trades_for_symbols(
         self,
         symbols: Sequence[str],
         *,
         account_mode: str = "PAPI",
+        since_sec: Optional[int] = None,
+        do_full: bool = False,
+        max_pages: int = 50,
     ) -> list[dict[str, Any]]:
         path = "/papi/v1/um/userTrades" if account_mode == "PAPI" else "/fapi/v1/userTrades"
+        now_ms = self._now_ms()
         out: list[dict[str, Any]] = []
         for sym in sorted({s.strip().upper() for s in symbols if s and s.strip()}):
-            from_id = 0
-            for _ in range(10):
-                rows = await self._safe_get(
+            sym_dedup: dict[str, dict[str, Any]] = {}
+            if since_sec is not None and since_sec > 0 and not do_full:
+                await self._fetch_um_symbol_time_windows(
                     path,
-                    [("symbol", sym), ("fromId", from_id), ("limit", 1000)],
-                    default=[],
+                    sym,
+                    start_ms=max(0, int(since_sec) * 1000),
+                    end_ms=now_ms,
+                    id_field="id",
+                    time_field="time",
+                    page_limit=1000,
+                    dedup=sym_dedup,
                 )
-                if not isinstance(rows, list) or not rows:
-                    break
-                max_id = from_id
-                for r in rows:
-                    if isinstance(r, dict):
-                        out.append(dict(r))
-                        rid = int(r.get("id") or 0)
-                        if rid > max_id:
-                            max_id = rid
-                if len(rows) < 1000 or max_id <= from_id:
-                    break
-                from_id = max_id + 1
+            else:
+                from_id = 0
+                saturated = False
+                for page_idx in range(max_pages):
+                    rows = await self._safe_get(
+                        path,
+                        [("symbol", sym), ("fromId", from_id), ("limit", 1000)],
+                        default=[],
+                    )
+                    if not isinstance(rows, list) or not rows:
+                        break
+                    max_id = from_id
+                    new_cnt = 0
+                    for r in rows:
+                        if isinstance(r, dict):
+                            rid_int = int(r.get("id") or 0)
+                            rid_key = str(rid_int or f"{r.get('orderId')}_{r.get('time')}_{len(sym_dedup)}")
+                            if rid_key not in sym_dedup:
+                                sym_dedup[rid_key] = dict(r)
+                                new_cnt += 1
+                            if rid_int > max_id:
+                                max_id = rid_int
+                    if len(rows) < 1000 or max_id <= from_id or new_cnt == 0:
+                        break
+                    if page_idx == max_pages - 1:
+                        saturated = True
+                    from_id = max_id + 1
+
+                if saturated:
+                    recent_rows = await self._safe_get(
+                        path,
+                        [("symbol", sym), ("limit", 1000)],
+                        default=[],
+                    )
+                    if isinstance(recent_rows, list):
+                        for r in recent_rows:
+                            if isinstance(r, dict):
+                                rid_key = str(r.get("id") or f"{r.get('orderId')}_{r.get('time')}_{len(sym_dedup)}")
+                                sym_dedup[rid_key] = dict(r)
+                    tail_start = max(
+                        int(since_sec) * 1000 if since_sec else 0,
+                        now_ms - 30 * 86400 * 1000,
+                    )
+                    await self._fetch_um_symbol_time_windows(
+                        path,
+                        sym,
+                        start_ms=max(0, tail_start),
+                        end_ms=now_ms,
+                        id_field="id",
+                        time_field="time",
+                        page_limit=1000,
+                        dedup=sym_dedup,
+                    )
+
+            out.extend(sym_dedup.values())
             if self._owns_client:
                 await asyncio.sleep(0.04)
         return out
@@ -565,29 +786,81 @@ class BinanceReadOnlyClient:
         symbols: Sequence[str],
         *,
         account_mode: str = "PAPI",
+        since_sec: Optional[int] = None,
+        do_full: bool = False,
+        max_pages: int = 30,
     ) -> list[dict[str, Any]]:
         path = "/papi/v1/um/allOrders" if account_mode == "PAPI" else "/fapi/v1/allOrders"
+        now_ms = self._now_ms()
         out: list[dict[str, Any]] = []
         for sym in sorted({s.strip().upper() for s in symbols if s and s.strip()}):
-            from_oid = 0
-            for _ in range(6):
-                rows = await self._safe_get(
+            sym_dedup: dict[str, dict[str, Any]] = {}
+            if since_sec is not None and since_sec > 0 and not do_full:
+                await self._fetch_um_symbol_time_windows(
                     path,
-                    [("symbol", sym), ("orderId", from_oid), ("limit", 500)],
-                    default=[],
+                    sym,
+                    start_ms=max(0, int(since_sec) * 1000),
+                    end_ms=now_ms,
+                    id_field="orderId",
+                    time_field="time",
+                    page_limit=500,
+                    dedup=sym_dedup,
                 )
-                if not isinstance(rows, list) or not rows:
-                    break
-                max_oid = from_oid
-                for r in rows:
-                    if isinstance(r, dict):
-                        out.append(dict(r))
-                        oid_val = int(r.get("orderId") or 0)
-                        if oid_val > max_oid:
-                            max_oid = oid_val
-                if len(rows) < 500 or max_oid <= from_oid:
-                    break
-                from_oid = max_oid + 1
+            else:
+                from_oid = 0
+                saturated = False
+                for page_idx in range(max_pages):
+                    rows = await self._safe_get(
+                        path,
+                        [("symbol", sym), ("orderId", from_oid), ("limit", 500)],
+                        default=[],
+                    )
+                    if not isinstance(rows, list) or not rows:
+                        break
+                    max_oid = from_oid
+                    new_cnt = 0
+                    for r in rows:
+                        if isinstance(r, dict):
+                            oid_val = int(r.get("orderId") or 0)
+                            oid_key = str(oid_val or f"{r.get('time')}_{len(sym_dedup)}")
+                            if oid_key not in sym_dedup:
+                                sym_dedup[oid_key] = dict(r)
+                                new_cnt += 1
+                            if oid_val > max_oid:
+                                max_oid = oid_val
+                    if len(rows) < 500 or max_oid <= from_oid or new_cnt == 0:
+                        break
+                    if page_idx == max_pages - 1:
+                        saturated = True
+                    from_oid = max_oid + 1
+
+                if saturated:
+                    recent_rows = await self._safe_get(
+                        path,
+                        [("symbol", sym), ("limit", 500)],
+                        default=[],
+                    )
+                    if isinstance(recent_rows, list):
+                        for r in recent_rows:
+                            if isinstance(r, dict):
+                                oid_key = str(r.get("orderId") or f"{r.get('time')}_{len(sym_dedup)}")
+                                sym_dedup[oid_key] = dict(r)
+                    tail_start = max(
+                        int(since_sec) * 1000 if since_sec else 0,
+                        now_ms - 30 * 86400 * 1000,
+                    )
+                    await self._fetch_um_symbol_time_windows(
+                        path,
+                        sym,
+                        start_ms=max(0, tail_start),
+                        end_ms=now_ms,
+                        id_field="orderId",
+                        time_field="time",
+                        page_limit=500,
+                        dedup=sym_dedup,
+                    )
+
+            out.extend(sym_dedup.values())
             if self._owns_client:
                 await asyncio.sleep(0.03)
         return out

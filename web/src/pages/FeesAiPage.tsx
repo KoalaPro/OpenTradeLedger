@@ -321,9 +321,9 @@ export function FeesAiPage({
         {ai?.stale && (
           <div
             data-testid="ai-stale-banner"
-            className="otl-status-warn px-3.5 py-2.5 rounded-md text-[13px]"
+            className="otl-status-warn px-3.5 py-2.5 rounded-md text-[13px] sensitive"
           >
-            {(isZh ? ai.stale_reason_zh : ai.stale_reason) || t('ai_stale_notice')}
+            {cur.convertText((isZh ? ai.stale_reason_zh : ai.stale_reason) || t('ai_stale_notice'))}
           </div>
         )}
 

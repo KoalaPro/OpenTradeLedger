@@ -7,6 +7,7 @@ Signature specification (Bybit v5 GET):
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
@@ -16,10 +17,11 @@ from urllib.parse import urlencode
 
 import httpx
 
-from opentradeledger.security.readonly_guard import assert_readonly_request
+from opentradeledger.security.readonly_guard import ReadOnlyGuardError, assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
 SEVEN_DAYS_MS = 7 * 86_400 * 1000
+THIRTY_DAYS_MS = 30 * 86_400 * 1000 - 1000
 
 BYBIT_ALLOWED_GET_PATHS: tuple[str, ...] = (
     "/v5/market/time",
@@ -44,6 +46,78 @@ BYBIT_ALLOWED_GET_PATHS: tuple[str, ...] = (
 
 class BybitApiError(RuntimeError):
     """Raised when Bybit v5 returns retCode != 0 or an HTTP error."""
+
+    def __init__(self, message: str, *, status_code: int = 0, ret_code: Any = None) -> None:
+        self.status_code = status_code
+        self.ret_code = ret_code
+        super().__init__(message)
+
+
+def _is_fatal_bybit_error(exc: BaseException) -> bool:
+    if isinstance(exc, ReadOnlyGuardError):
+        return True
+    if isinstance(exc, (httpx.TransportError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, BybitApiError):
+        if exc.status_code == 429 or exc.status_code >= 500:
+            return True
+        if str(exc.ret_code or "").strip() in {"10006", "10016", "10018", "-1003", "429"}:
+            return True
+    low = str(exc).lower()
+    return any(
+        tok in low
+        for tok in (
+            "http 5",
+            "http 429",
+            "retcode=10006",
+            "retcode=10016",
+            "retcode=10018",
+            "rate limit",
+            "too many visits",
+            "too frequent",
+            "too many",
+            "busy",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "internal server error",
+            "timed out",
+            "timeout",
+        )
+    )
+
+
+def _is_bybit_auth_error(exc: BaseException) -> bool:
+    if isinstance(exc, BybitApiError):
+        if exc.status_code in {401, 403}:
+            return True
+        if str(exc.ret_code or "").strip() in {"10003", "10004", "10005", "10010", "33004"}:
+            return True
+    low = str(exc).lower()
+    return any(
+        tok in low
+        for tok in (
+            "http 401",
+            "http 403",
+            "retcode=10003",
+            "retcode=10004",
+            "retcode=10005",
+            "retcode=10010",
+            "retcode=33004",
+            "invalid api",
+            "error sign",
+            "permission denied",
+            "unmatched ip",
+            "api key expired",
+        )
+    )
+
+
+def _is_bybit_account_type_unsupported(exc: BaseException) -> bool:
+    if isinstance(exc, BybitApiError) and str(exc.ret_code or "").strip() in {"10001", "100028", "110066"}:
+        return True
+    low = str(exc).lower()
+    return any(tok in low for tok in ("accounttype", "account type", "unified", "retcode=10001", "retcode=100028"))
 
 
 def _fmt_bj_ms(ms: int) -> str:
@@ -78,7 +152,7 @@ class BybitReadOnlyClient:
         clock_ms: Optional[Callable[[], int]] = None,
         page_limit: int = 100,
         max_pages: int = 10,
-        max_windows: int = 13,
+        max_windows: int = 52,
     ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
@@ -119,11 +193,16 @@ class BybitReadOnlyClient:
                 resp = await c.get(url, headers=headers)
 
         if resp.status_code >= 400:
-            raise BybitApiError(f"Bybit GET {path} HTTP {resp.status_code}: {resp.text[:240]}")
+            raise BybitApiError(
+                f"Bybit GET {path} HTTP {resp.status_code}: {resp.text[:240]}",
+                status_code=resp.status_code,
+            )
         payload = resp.json()
         if int(payload.get("retCode", -1)) != 0:
             raise BybitApiError(
-                f"Bybit GET {path} retCode={payload.get('retCode')}: {payload.get('retMsg', '')}"
+                f"Bybit GET {path} retCode={payload.get('retCode')}: {payload.get('retMsg', '')}",
+                status_code=resp.status_code,
+                ret_code=payload.get("retCode"),
             )
         result = payload.get("result")
         return result if isinstance(result, dict) else {}
@@ -194,6 +273,7 @@ class BybitReadOnlyClient:
 
         # Step backwards from (now - 7d) in 7-day chunks
         w_end = now_ms - SEVEN_DAYS_MS + 60_000
+        empty_streak = 0
         for _ in range(1, self.max_windows):
             if since_ms > 0 and w_end < since_ms:
                 break
@@ -220,6 +300,72 @@ class BybitReadOnlyClient:
                     except (TypeError, ValueError):
                         pass
                 if new_in_win == 0 and not in_bounds:
+                    break
+                if new_in_win == 0:
+                    empty_streak += 1
+                    if empty_streak >= 8:
+                        break
+                else:
+                    empty_streak = 0
+            else:
+                empty_streak += 1
+                if empty_streak >= 8:
+                    break
+            w_end = w_start - 1
+
+        return list(merged.values())
+
+    async def _paginate_30d_windows(
+        self,
+        path: str,
+        base_params: dict[str, Any],
+        *,
+        id_fn: Callable[[dict[str, Any]], str],
+        limit: int = 50,
+        since_ms: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Paginates Bybit v5 asset deposit/withdrawal history via cursor + 30-day windows up to 1 year."""
+        eff_limit = min(50, max(1, int(limit)))
+        merged: dict[str, dict[str, Any]] = {}
+
+        first_rows = await self._paginate_cursor(
+            path,
+            base_params,
+            list_key="rows",
+            id_fn=id_fn,
+            limit=eff_limit,
+        )
+        for r in first_rows:
+            merged[id_fn(r)] = r
+
+        if self.max_windows <= 1:
+            return list(merged.values())
+
+        now_ms = self._clock_ms()
+        if since_ms > 0 and now_ms - since_ms <= THIRTY_DAYS_MS - 60_000:
+            return list(merged.values())
+
+        w_end = now_ms - THIRTY_DAYS_MS + 60_000
+        max_30d_windows = min(13, self.max_windows)
+        for _ in range(1, max_30d_windows):
+            if since_ms > 0 and w_end < since_ms:
+                break
+            w_start = max(since_ms, w_end - THIRTY_DAYS_MS) if since_ms > 0 else (w_end - THIRTY_DAYS_MS)
+            win_rows = await self._paginate_cursor(
+                path,
+                {**base_params, "startTime": w_start, "endTime": w_end},
+                list_key="rows",
+                id_fn=id_fn,
+                limit=eff_limit,
+            )
+            if win_rows:
+                new_in_win = 0
+                for r in win_rows:
+                    rid = id_fn(r)
+                    if rid not in merged:
+                        merged[rid] = r
+                        new_in_win += 1
+                if new_in_win == 0:
                     break
             w_end = w_start - 1
 
@@ -282,31 +428,31 @@ class BybitReadOnlyClient:
             limit=min(50, limit),
         )
 
-    async def get_deposits(self, limit: int = 50) -> list[dict[str, Any]]:
-        return await self._paginate_cursor(
+    async def get_deposits(self, limit: int = 50, since_ms: int = 0) -> list[dict[str, Any]]:
+        return await self._paginate_30d_windows(
             "/v5/asset/deposit/query-record",
             {},
-            list_key="rows",
             id_fn=lambda r: str(r.get("id") or r.get("txID") or f"{r.get('successAt')}_{r.get('amount')}"),
             limit=min(50, limit),
+            since_ms=since_ms,
         )
 
-    async def get_internal_deposits(self, limit: int = 50) -> list[dict[str, Any]]:
-        return await self._paginate_cursor(
+    async def get_internal_deposits(self, limit: int = 50, since_ms: int = 0) -> list[dict[str, Any]]:
+        return await self._paginate_30d_windows(
             "/v5/asset/deposit/query-internal-record",
             {},
-            list_key="rows",
             id_fn=lambda r: str(r.get("id") or f"{r.get('createdTime')}_{r.get('amount')}"),
             limit=min(50, limit),
+            since_ms=since_ms,
         )
 
-    async def get_withdrawals(self, limit: int = 50) -> list[dict[str, Any]]:
-        return await self._paginate_cursor(
+    async def get_withdrawals(self, limit: int = 50, since_ms: int = 0) -> list[dict[str, Any]]:
+        return await self._paginate_30d_windows(
             "/v5/asset/withdraw/query-record",
             {},
-            list_key="rows",
             id_fn=lambda r: str(r.get("withdrawId") or r.get("txID") or f"{r.get('createTime')}_{r.get('amount')}"),
             limit=min(50, limit),
+            since_ms=since_ms,
         )
 
     async def get_spot_tickers(self) -> dict[str, float]:
@@ -333,18 +479,23 @@ class BybitReadOnlyClient:
         try:
             wallet = await self.get_wallet_balance("UNIFIED")
         except Exception as unified_exc:
+            if _is_fatal_bybit_error(unified_exc) or _is_bybit_auth_error(unified_exc):
+                raise
+            if not _is_bybit_account_type_unsupported(unified_exc):
+                raise
             try:
                 wallet = await self.get_wallet_balance("CONTRACT")
                 warnings.append(f"wallet_unified_fallback: {unified_exc}")
-            except Exception:
+            except Exception as contract_exc:
+                if _is_fatal_bybit_error(contract_exc):
+                    raise contract_exc
                 raise unified_exc
 
         async def _opt(name: str, coro: Any, default: Any) -> Any:
             try:
                 return await coro
             except Exception as exc:
-                msg_low = str(exc).lower()
-                if isinstance(exc, httpx.TransportError) or "http 5" in msg_low or "http 429" in msg_low:
+                if _is_fatal_bybit_error(exc):
                     raise
                 warnings.append(f"{name}: {exc}")
                 failed_fields.append(name)
@@ -358,9 +509,9 @@ class BybitReadOnlyClient:
         executions = await _opt("executions", self.get_executions("linear", since_ms=since_ms), [])
         fee_rates = await _opt("fee_rates", self.get_fee_rate("linear"), [])
         tx_logs = await _opt("tx_logs", self.get_transaction_log("UNIFIED", since_ms=since_ms), [])
-        deposits = await _opt("deposits", self.get_deposits(), [])
-        internal_deposits = await _opt("internal_deposits", self.get_internal_deposits(), [])
-        withdrawals = await _opt("withdrawals", self.get_withdrawals(), [])
+        deposits = await _opt("deposits", self.get_deposits(since_ms=since_ms), [])
+        internal_deposits = await _opt("internal_deposits", self.get_internal_deposits(since_ms=since_ms), [])
+        withdrawals = await _opt("withdrawals", self.get_withdrawals(since_ms=since_ms), [])
         tickers = await _opt("tickers", self.get_spot_tickers(), {})
 
         gross_fee_sum = sum(

@@ -182,6 +182,7 @@ export const zhCN = {
   polarity_global: '绿盈红亏',
   set_currency: '计价与折算币种',
   set_fx_live: '实时参考汇率',
+  set_fx_offline: '离线参考汇率',
   set_privacy_default: '默认开启隐私打码',
   set_goal_title: '启用自定义目标进度条',
   set_goal_target: '目标金额 (USDT)',

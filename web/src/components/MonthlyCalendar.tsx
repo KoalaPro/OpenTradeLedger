@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
 import { pnlTone } from '../lib/format'
@@ -40,6 +40,10 @@ export function MonthlyCalendar({
   const daysInMonth = new Date(year, mon, 0).getDate()
   const firstOffset = (new Date(year, mon - 1, 1).getDay() + 6) % 7
 
+  useEffect(() => {
+    setSelectedDay(prev => (prev !== null && prev > daysInMonth ? null : null))
+  }, [activeMonth, daysInMonth])
+
   const map = useMemo(() => {
     const m = new Map<string, { net_pnl_usd: number; trade_count: number }>()
     days.forEach(d => m.set(d.date, d))
@@ -66,7 +70,11 @@ export function MonthlyCalendar({
   }
 
   const weekdays = locale === 'en' ? ['M', 'T', 'W', 'T', 'F', 'S', 'S'] : ['一', '二', '三', '四', '五', '六', '日']
-  const selectedKey = selectedDay ? `${activeMonth}-${String(selectedDay).padStart(2, '0')}` : ''
+  const effectiveSelectedDay =
+    selectedDay !== null && selectedDay >= 1 && selectedDay <= daysInMonth ? selectedDay : null
+  const selectedKey = effectiveSelectedDay
+    ? `${activeMonth}-${String(effectiveSelectedDay).padStart(2, '0')}`
+    : ''
   const selectedItem = selectedKey ? map.get(selectedKey) : undefined
 
   return (
@@ -133,7 +141,7 @@ export function MonthlyCalendar({
               ? cur.signedPlainMoney(rawPnl, roundedZero ? 2 : cellDecimals)
               : '—'
           const activeRing =
-            selectedDay === c.day ? 'inset 0 0 0 1.5px var(--accent)' : undefined
+            effectiveSelectedDay === c.day ? 'inset 0 0 0 1.5px var(--accent)' : undefined
 
           return (
             <button
@@ -168,7 +176,7 @@ export function MonthlyCalendar({
         })}
       </div>
 
-      {selectedDay !== null && (
+      {effectiveSelectedDay !== null && (
         <div className="otl-panel-swap flex items-center justify-between text-[12px] text-[var(--fg-2)]">
           <span>
             {selectedKey}{' '}

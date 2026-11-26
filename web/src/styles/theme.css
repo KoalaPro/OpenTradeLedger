@@ -203,7 +203,9 @@ header,
 
 button:focus-visible,
 a:focus-visible,
-select:focus-visible {
+select:focus-visible,
+[role="button"]:focus-visible,
+[tabindex="0"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -378,7 +380,11 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 
 :root[data-privacy="on"] .sensitive,
-:root[data-privacy="on"] .recharts-tooltip-item-value {
+.privacy-active .sensitive,
+:root[data-privacy="on"] input.sensitive,
+.privacy-active input.sensitive,
+:root[data-privacy="on"] .recharts-tooltip-item-value,
+.privacy-active .recharts-tooltip-item-value {
   filter: blur(6px);
   user-select: none;
 }
@@ -438,6 +444,39 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   @media (width < 768px) {
     .otl-nav-btn.active {
       background: var(--accent-soft);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .otl-sidebar {
+      padding: 10px 8px;
+      gap: 8px;
+    }
+
+    .otl-primary-nav {
+      display: flex;
+      flex-wrap: wrap;
+      overflow-x: visible;
+      gap: 2px;
+    }
+
+    .otl-primary-nav .otl-nav-btn {
+      flex: 1 1 0%;
+      min-width: 56px;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 2.5px;
+      padding: 5px 3px;
+      font-size: 11.5px;
+      line-height: 1.2;
+    }
+
+    .otl-primary-nav .otl-nav-btn svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
     }
   }
 
@@ -1092,6 +1131,10 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 .otl-collapse-inner {
   overflow: hidden;
   min-height: 0;
+}
+
+.otl-collapse-grid.is-open.is-settled > .otl-collapse-inner {
+  overflow: visible;
 }
 
 .otl-bar-fill {

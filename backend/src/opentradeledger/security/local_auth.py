@@ -179,15 +179,17 @@ class LocalAuthManager:
             return False
 
         state = self._load()
-        if not state.get("enabled"):
-            return True
         if ver != int(state.get("token_version") or 1):
             return False
         secret_hex = str(state.get("secret_hex") or "")
         if not secret_hex:
             return False
+        try:
+            secret_bytes = bytes.fromhex(secret_hex)
+        except ValueError:
+            return False
         body = f"v{ver}.{exp}.{nonce}"
-        expected = hmac.new(bytes.fromhex(secret_hex), body.encode("utf-8"), hashlib.sha256).hexdigest()
+        expected = hmac.new(secret_bytes, body.encode("utf-8"), hashlib.sha256).hexdigest()
         return hmac.compare_digest(sig, expected)
 
     def get_status(self, session_token: str | None = None, *, demo_mode: bool = False) -> dict[str, Any]:

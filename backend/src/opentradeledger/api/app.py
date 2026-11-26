@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import hashlib
+import ipaddress
 import logging
 import math
 import os
@@ -46,7 +48,11 @@ from opentradeledger.core.logo_cache import InstrumentLogos
 from opentradeledger.core.notifier import bark_configured, parse_bark_input
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.sync_manager import CandidateRollbackError, CandidateSaveError, SyncManager
-from opentradeledger.core.venue_health import VenueHealthTracker, humanize_exchange_error
+from opentradeledger.core.venue_health import (
+    IdentityProbeTransientError,
+    VenueHealthTracker,
+    humanize_exchange_error,
+)
 from opentradeledger.core.self_updater import SelfUpdateError, SelfUpdateService
 from opentradeledger.core.version_checker import VersionCheckService
 from opentradeledger.security.local_auth import (
@@ -205,7 +211,33 @@ class AuthDisableRequest(BaseModel):
     current_password: str = ""
 
 
-def _set_session_cookie(resp: Response, token: str, max_age_sec: int, remember: bool) -> None:
+def _is_trusted_local_or_private_host(host: str) -> bool:
+    clean = (host or "").strip().lower()
+    if not clean or clean == "localhost":
+        return True
+    try:
+        ip_obj = ipaddress.ip_address(clean)
+        return bool(ip_obj.is_loopback or ip_obj.is_private)
+    except ValueError:
+        return False
+
+
+def _is_https_request(request: Request | None) -> bool:
+    if request is None:
+        return False
+    if request.url.scheme.lower() == "https":
+        return True
+    xf_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    return xf_proto == "https"
+
+
+def _set_session_cookie(
+    resp: Response,
+    token: str,
+    max_age_sec: int,
+    remember: bool,
+    request: Request | None = None,
+) -> None:
     kwargs: dict[str, Any] = {
         "key": AUTH_COOKIE_NAME,
         "value": token,
@@ -213,6 +245,8 @@ def _set_session_cookie(resp: Response, token: str, max_age_sec: int, remember: 
         "samesite": "lax",
         "path": "/",
     }
+    if _is_https_request(request):
+        kwargs["secure"] = True
     if remember:
         kwargs["max_age"] = max_age_sec
     resp.set_cookie(**kwargs)
@@ -333,7 +367,18 @@ def create_app(
         return await call_next(request)
 
     def _client_key(request: Request) -> str:
-        return request.client.host if request.client and request.client.host else "local"
+        raw_host = request.client.host if request.client and request.client.host else "local"
+        if _is_trusted_local_or_private_host(raw_host):
+            xff = request.headers.get("x-forwarded-for", "").strip()
+            if xff:
+                first_xff = xff.split(",", 1)[0].strip()
+                if first_xff:
+                    return f"{raw_host}|xff:{first_xff}"
+            ua = request.headers.get("user-agent", "").strip()
+            if ua:
+                ua_hash = hashlib.sha256(ua.encode("utf-8")).hexdigest()[:8]
+                return f"{raw_host}|ua:{ua_hash}"
+        return raw_host
 
     @app.get("/api/v1/health")
     async def health(request: Request) -> dict[str, Any]:
@@ -368,7 +413,7 @@ def create_app(
         return _session_status(request.cookies.get(AUTH_COOKIE_NAME))
 
     @app.post("/api/v1/auth/setup")
-    async def auth_setup(body: AuthSetupRequest) -> Response:
+    async def auth_setup(body: AuthSetupRequest, request: Request) -> Response:
         try:
             auth_manager.setup_password(body.password)
         except AuthValidationError as exc:
@@ -376,7 +421,7 @@ def create_app(
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
         st = _session_status(token)
         resp = JSONResponse(content={"ok": True, **st})
-        _set_session_cookie(resp, token, ttl, body.remember)
+        _set_session_cookie(resp, token, ttl, body.remember, request=request)
         return resp
 
     @app.post("/api/v1/auth/skip")
@@ -403,7 +448,7 @@ def create_app(
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
         st = _session_status(token)
         resp = JSONResponse(content={"ok": True, **st})
-        _set_session_cookie(resp, token, ttl, body.remember)
+        _set_session_cookie(resp, token, ttl, body.remember, request=request)
         return resp
 
     @app.post("/api/v1/auth/logout")
@@ -435,7 +480,7 @@ def create_app(
         token, ttl = auth_manager.issue_session_token(remember=body.remember)
         st = _session_status(token)
         resp = JSONResponse(content={"ok": True, **st})
-        _set_session_cookie(resp, token, ttl, body.remember)
+        _set_session_cookie(resp, token, ttl, body.remember, request=request)
         return resp
 
     @app.post("/api/v1/auth/disable")
@@ -573,21 +618,6 @@ def create_app(
 
     async def commit_candidate(cand: ExchangeUpsertRequest, request: Request, *, finish_onboarding: bool) -> Response:
         acct_id, adapter_id, adapter, temp_cred = _prepare_candidate(cand)
-        if cand.create_new and not cand.account_id.strip():
-            disc_uid = temp_cred.remote_uid
-            if not disc_uid:
-                info = await adapter.probe_identity(temp_cred)
-                if isinstance(info, dict):
-                    disc_uid = str(info.get("remote_uid") or "").strip()
-            if disc_uid:
-                det_id = mint_account_id(
-                    adapter_id,
-                    _occupied_account_ids(adapter_id, adapter),
-                    preferred_suffix=deterministic_uid_suffix(adapter_id, disc_uid),
-                    force_secondary=True,
-                )
-                acct_id = det_id
-                temp_cred = temp_cred.model_copy(update={"venue_id": acct_id})
         eff_expected_rev = "absent" if (cand.create_new and not cand.account_id.strip()) else cand.expected_revision
         # Existing users can edit credentials while intentionally viewing the demo.
         # Also finish onboarding for older installations that saved a key before setup.
@@ -596,6 +626,29 @@ def create_app(
             or auth_manager.get_status(request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False)["require_setup"]
         )
         try:
+            if cand.create_new and not cand.account_id.strip():
+                disc_uid = temp_cred.remote_uid
+                if not disc_uid:
+                    info = await adapter.probe_identity(temp_cred)
+                    if isinstance(info, dict):
+                        if adapter.meta.identity_mode == "probe" and info.get("_transient_error"):
+                            raise RuntimeError(str(info["_transient_error"]))
+                        disc_uid = str(info.get("remote_uid") or "").strip()
+                if adapter.meta.identity_mode == "probe" and not disc_uid:
+                    raise AccountIdentityError(
+                        "ACCOUNT_UID_UNAVAILABLE",
+                        exchange_name=adapter.meta.display_name,
+                        exchange_name_zh=adapter.meta.display_name_zh,
+                    )
+                if disc_uid:
+                    det_id = mint_account_id(
+                        adapter_id,
+                        _occupied_account_ids(adapter_id, adapter),
+                        preferred_suffix=deterministic_uid_suffix(adapter_id, disc_uid),
+                        force_secondary=True,
+                    )
+                    acct_id = det_id
+                    temp_cred = temp_cred.model_copy(update={"venue_id": acct_id})
             res = await sync_manager.sync_candidate_and_commit(temp_cred, eff_expected_rev)
         except CredentialEditConflict:
             raise
@@ -733,20 +786,40 @@ def create_app(
                 }
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if "ai_api_key" in patch and not str(patch["ai_api_key"] or "").strip():
+        clear_ai_key = (patch.get("clear_ai_api_key") is True) or (
+            str(patch.get("ai_api_key") or "").strip() == "__CLEAR__"
+        )
+        top_clear_bark = patch.get("clear_bark_push_key") is True
+        patch = {k: v for k, v in patch.items() if k not in {"clear_ai_api_key", "clear_bark_push_key"}}
+        if clear_ai_key:
+            patch = {**patch, "ai_api_key": ""}
+        elif "ai_api_key" in patch and not str(patch["ai_api_key"] or "").strip():
             patch = {k: v for k, v in patch.items() if k != "ai_api_key"}
-        if isinstance(patch.get("notifications"), dict):
-            n_patch = dict(patch["notifications"])
+        if isinstance(patch.get("notifications"), dict) or top_clear_bark:
+            n_patch = dict(patch.get("notifications") or {})
             cur_notifs = dict(current.get("notifications") or {})
-            # If user pasted a full Bark URL into either server or key box, split it before blank-key preservation
-            raw_srv_in = str(n_patch.get("bark_server_url") if "bark_server_url" in n_patch else cur_notifs.get("bark_server_url") or "")
-            raw_key_in = str(n_patch.get("bark_push_key") or "")
-            norm_srv, norm_key = parse_bark_input(raw_srv_in, raw_key_in)
-            n_patch["bark_server_url"] = norm_srv
-            if norm_key:
-                n_patch["bark_push_key"] = norm_key
+            clear_bark_key = (
+                top_clear_bark
+                or (n_patch.get("clear_bark_push_key") is True)
+                or (str(n_patch.get("bark_push_key") or "").strip() == "__CLEAR__")
+            )
+            n_patch.pop("clear_bark_push_key", None)
+            raw_srv_in = str(
+                n_patch.get("bark_server_url") if "bark_server_url" in n_patch else cur_notifs.get("bark_server_url") or ""
+            )
+            if clear_bark_key:
+                norm_srv, _ = parse_bark_input(raw_srv_in, "")
+                n_patch["bark_server_url"] = norm_srv
+                n_patch["bark_push_key"] = ""
             else:
-                n_patch.pop("bark_push_key", None)
+                # If user pasted a full Bark URL into either server or key box, split it before blank-key preservation
+                raw_key_in = str(n_patch.get("bark_push_key") or "")
+                norm_srv, norm_key = parse_bark_input(raw_srv_in, raw_key_in)
+                n_patch["bark_server_url"] = norm_srv
+                if norm_key:
+                    n_patch["bark_push_key"] = norm_key
+                else:
+                    n_patch.pop("bark_push_key", None)
             patch = {**patch, "notifications": {**cur_notifs, **n_patch}}
         ledger_service.update_preferences(patch)
 
@@ -794,7 +867,12 @@ def create_app(
                 if is_c and is_en and h_st.get("status") == "error":
                     error_count += 1
                 raw_sc = store.venue_scope(acct_id)
-                saved_uid = str((c_item.get("masked_uid") if c_item else "") or mask_uid(str(raw_sc.get_kv("account_uid") or "")))
+                cached_uid_raw = (
+                    ad_obj.extract_cached_account_uid(store.for_account(acct_id, ad_id))
+                    if ad_obj is not None
+                    else str(raw_sc.get_kv("account_uid") or "")
+                )
+                saved_uid = str((c_item.get("masked_uid") if c_item else "") or mask_uid(cached_uid_raw))
                 saved_role = str((c_item.get("account_role") if c_item else "") or raw_sc.get_kv("account_role") or "")
                 saved_label = str((c_item.get("label") if c_item else "") or raw_sc.get_kv("account_label") or "")
                 eff_c_item = (
@@ -849,10 +927,12 @@ def create_app(
     async def verify_exchange_before_save(body: ExchangeUpsertRequest) -> Response:
         acct_id, adapter_id, adapter, temp_cred = _prepare_candidate(body)
         existing_cred = vault.get_decrypted(acct_id)
-        has_existing_data = bool(adapter.has_venue_data(store.for_account(acct_id, adapter_id)))
+        scoped_store = store.for_account(acct_id, adapter_id)
+        has_existing_data = bool(adapter.has_venue_data(scoped_store))
         bound_uid = str(
             (existing_cred.remote_uid if existing_cred else "")
             or store.venue_scope(acct_id).get_kv("account_uid")
+            or adapter.extract_cached_account_uid(scoped_store)
             or ""
         ).strip()
         uses_probe_uid = adapter.meta.identity_mode == "probe"
@@ -863,6 +943,7 @@ def create_app(
                 and (
                     existing_cred.api_key.strip() != temp_cred.api_key.strip()
                     or existing_cred.api_secret.strip() != temp_cred.api_secret.strip()
+                    or existing_cred.passphrase.strip() != temp_cred.passphrase.strip()
                 )
             )
             if not bound_uid and is_rotating_existing and existing_cred is not None:
@@ -870,15 +951,42 @@ def create_app(
                 if isinstance(prev_info, dict) and prev_info.get("remote_uid"):
                     bound_uid = str(prev_info["remote_uid"]).strip()
 
-            res = await adapter.test_connection(temp_cred)
+            probed_transient_err = ""
+            try:
+                res = await adapter.test_connection(temp_cred)
+            except IdentityProbeTransientError as t_exc:
+                probed_transient_err = str(t_exc)
+                res = {"ok": True, "venue_id": adapter_id}
+
+            if (
+                uses_probe_uid
+                and probed_transient_err
+                and not bound_uid
+                and not (is_rotating_existing and has_existing_data)
+            ):
+                raise RuntimeError(probed_transient_err)
+
             probed_uid = str((res.get("remote_uid") if isinstance(res, dict) else "") or temp_cred.remote_uid or "").strip()
+            occupied_for_adapter = _occupied_account_ids(adapter_id, adapter)
             if body.create_new and not body.account_id.strip() and probed_uid:
                 acct_id = mint_account_id(
                     adapter_id,
-                    _occupied_account_ids(adapter_id, adapter),
+                    occupied_for_adapter,
                     preferred_suffix=deterministic_uid_suffix(adapter_id, probed_uid),
                     force_secondary=True,
                 )
+            has_other_partitions = bool(occupied_for_adapter - {acct_id})
+            must_verify_uid = bool(
+                uses_probe_uid
+                and (
+                    bound_uid
+                    or body.create_new
+                    or is_secondary_account_id(acct_id)
+                    or has_other_partitions
+                    or is_rotating_existing
+                    or (has_existing_data and existing_cred is None)
+                )
+            )
             sync_manager.check_identity_conflicts(
                 account_id=acct_id,
                 adapter_id=adapter_id,
@@ -887,8 +995,8 @@ def create_app(
                 bound_uid=bound_uid,
                 exchange_name=adapter.meta.display_name,
                 exchange_name_zh=adapter.meta.display_name_zh,
-                require_verified_uid=bool(bound_uid and uses_probe_uid),
-                require_uid_for_existing_data=bool(is_rotating_existing and has_existing_data),
+                require_verified_uid=must_verify_uid,
+                require_uid_for_existing_data=bool(uses_probe_uid and is_rotating_existing and has_existing_data),
             )
             out_payload = {
                 **(res if isinstance(res, dict) else {}),
@@ -924,14 +1032,59 @@ def create_app(
     @app.post("/api/v1/exchanges")
     async def upsert_exchange(request: Request, body: ExchangeUpsertRequest) -> Response:
         acct_id, adapter_id, adapter, temp_cred = _prepare_candidate(body)
-        if adapter_id == "easicoin":
+        if adapter.meta.identity_mode == "sync_bound":
             return await commit_candidate(body, request, finish_onboarding=False)
+
+        uses_probe_uid = adapter.meta.identity_mode == "probe"
+        if body.create_new and uses_probe_uid:
+            probed = await adapter.probe_identity(temp_cred)
+            if isinstance(probed, dict) and probed.get("_transient_error"):
+                diag = humanize_exchange_error(adapter_id, probed["_transient_error"])
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "detail": diag["reason"],
+                        "detail_zh": diag["reason_zh"],
+                        "error_code": diag["code"],
+                        "raw_error": diag["raw"],
+                        "committed": False,
+                    },
+                )
+            disc_uid = str((probed.get("remote_uid") if isinstance(probed, dict) else "") or temp_cred.remote_uid or "").strip()
+            disc_role = str((probed.get("account_role") if isinstance(probed, dict) else "") or temp_cred.account_role or "").strip()
+            if not disc_uid:
+                err = AccountIdentityError(
+                    "ACCOUNT_UID_UNAVAILABLE",
+                    exchange_name=adapter.meta.display_name,
+                    exchange_name_zh=adapter.meta.display_name_zh,
+                )
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "detail": err.reason,
+                        "detail_zh": err.reason_zh,
+                        "error_code": err.code,
+                        "committed": False,
+                    },
+                )
+            if not body.account_id.strip():
+                acct_id = mint_account_id(
+                    adapter_id,
+                    _occupied_account_ids(adapter_id, adapter),
+                    preferred_suffix=deterministic_uid_suffix(adapter_id, disc_uid),
+                    force_secondary=True,
+                )
+            temp_cred = temp_cred.model_copy(
+                update={"venue_id": acct_id, "remote_uid": disc_uid, "account_role": disc_role}
+            )
+
         eff_expected_rev = "absent" if (body.create_new and not body.account_id.strip()) else body.expected_revision
         async with sync_manager.credential_change(acct_id, eff_expected_rev):
             existing_cred = vault.get_decrypted(acct_id)
             bound_uid = str(
                 (existing_cred.remote_uid if existing_cred else "")
                 or store.venue_scope(acct_id).get_kv("account_uid")
+                or adapter.extract_cached_account_uid(store.for_account(acct_id, adapter_id))
                 or ""
             ).strip()
             try:
@@ -943,6 +1096,7 @@ def create_app(
                     bound_uid=bound_uid,
                     exchange_name=adapter.meta.display_name,
                     exchange_name_zh=adapter.meta.display_name_zh,
+                    require_verified_uid=bool(body.create_new and uses_probe_uid),
                 )
             except AccountIdentityError as exc:
                 return JSONResponse(
@@ -955,8 +1109,13 @@ def create_app(
                     },
                 )
             masked = vault.upsert(temp_cred)
+            raw_sc = store.venue_scope(acct_id)
+            if temp_cred.remote_uid:
+                raw_sc.set_kv("account_uid", temp_cred.remote_uid)
+            if temp_cred.account_role:
+                raw_sc.set_kv("account_role", temp_cred.account_role)
             if temp_cred.label:
-                store.venue_scope(acct_id).set_kv("account_label", temp_cred.label)
+                raw_sc.set_kv("account_label", temp_cred.label)
             health_state = (
                 health_tracker.mark_unverified(acct_id)
                 if body.enabled

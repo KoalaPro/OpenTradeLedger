@@ -15,7 +15,7 @@ All notable changes to **OpenTradeLedger (交易账本)** are documented in this
   - 解耦交易所适配器类型（`adapter_id`）与本地账户分区主键（`account_id`）：存量单账号原位保留零迁移，同平台点击「+ 添加账号」即可无限扩展主账户、策略子账户或独立返佣账号，各账号独立轮询、独立 `0.00 U` 闭环核账、独立筛选并自动汇总至全账户总净资产。
   - 自动探测远端脱敏 `UID` 并识别 `主账户` / `子账户` / `链上钱包` 身份徽标（支持 OKX、Bybit、Bitget、HTX、KuCoin、Hyperliquid、币安、Gate、BingX、易币），存量旧账号首次同步或点测试连接时自动回填脱敏 `UID` 与主/子角色；内置 `DUPLICATE_ACCOUNT_UID` 防重复添加（杜绝同一账号两把 Key 导致总净资产翻倍）与 `ACCOUNT_UID_MISMATCH` 换钥防串账保护。
   - 完善多账号细节：支持副账号与新增四平台交易对自动拉取 TradingView 图标、同平台多账号对账瀑布分项唯一键与中英文账户前缀对齐、多账号默认序号标题（如 `Gate #1`）跨页一致展示，以及 Gate U 卡/支付消费与退回（`code=3501 / 3516` 等）准确归入本金出入金而非交易损耗。
-  - 全量验收加固：封存分区纳入 `ARCHIVED_ACCOUNT_UID_EXISTS` 冲突拦截并保留自定义账户备注、身份接口瞬时故障及 `v1.3.7` 旧库首次换绑强制核验原账号 UID 防混账、子账号按 UID 确定性派生分区以在清空重绑后恢复复盘笔记、交易笔记与 AI 复盘提示词严格按账户分区隔离；单接口 `5xx` 故障拒绝覆盖已落库现货余额并准确上报异常；修正 Hyperliquid `spotMeta` 链上现货 `@<index>` 估值（杜绝误取同名永续价格）与 `2,000` 行上限提示、KuCoin 经典仓位字段/数量推断/`pageId` 分页及 Key v3 自动协商、BingX 严格查询参数/ISO 时间戳及充提完成状态过滤、HTX 跨仓成交接口/`real_profit`/类型 `29` 返佣（排除类型 `9/10` 交割流水）及 `id+match_id` 唯一键，并补齐首页异常重试、版本检查失败徽标、IPv6 `[::1]` 本地模型免密与目标进度 `Decimal` 舍入。
+  - 全量验收加固：封存分区纳入 `ARCHIVED_ACCOUNT_UID_EXISTS` 冲突拦截并保留自定义账户备注、「+ 添加账号」身份接口故障阻断重复入账及 `v1.3.7` 旧库首次换绑按历史指纹核验归属防混账、子账号按 UID 确定性派生分区恢复复盘笔记、交易笔记与 AI 复盘提示词严格按账户分区隔离；11 家适配器统一阻断子接口 `5xx/429/超时` 静默抹零已有资产，并将子账户缺权限/分页截断 `warnings` 全链路透出至顶栏「部分同步」徽标与页面横幅；修正 Hyperliquid `spotMeta` 估值、HLP 金库权益与 `userFills`/`userFunding`/`ledgerUpdates` 多页翻页，KuCoin `400009` v3 Key 跨 HTTP 401 自动协商与多页拉取，BingX 官方 v3 裸 JSON 数组兼容与 `status=6` 入账过滤（排除 `status=1` 未入账），HTX 跨仓 `from_id` 分页与 `47h` 增量切片，Bybit 充提状态过滤与 30 天时间窗回溯，MEXC 增量充提同步及币安/Gate/OKX 分页与多币种本金估值；补齐前端周期/平台切换失败原位重试与防笔记串写、设置页常驻解锁、Bark/AI 密钥一键清除、全站 `.sensitive` 隐私遮罩、负零归零、`Decimal` `ROUND_HALF_UP` 舍入及 `390px` 手机端完整导航。
 
 ## 未发布（早期积累已并入 v1.4.0）
 

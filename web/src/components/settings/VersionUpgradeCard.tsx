@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ArrowUpCircle, Check, ChevronDown, Copy, ExternalLink, RefreshCw } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { AlertTriangle, ArrowUpCircle, Check, ChevronDown, Copy, ExternalLink, RefreshCw } from 'lucide-react'
 import { useI18n } from '../../i18n'
 import { api } from '../../lib/api'
 import type { UserSettings, VersionCheckPayload } from '../../lib/types'
@@ -26,35 +26,78 @@ export function VersionUpgradeCard({
   const isZh = locale === 'zh-CN'
 
   const [checkingVersion, setCheckingVersion] = useState(false)
-  const [upgradingStep, setUpgradingStep] = useState<'' | 'downloading' | 'restarting' | 'done'>('')
+  const [manualCheckError, setManualCheckError] = useState('')
+  const [upgradingStep, setUpgradingStep] = useState<
+    '' | 'downloading' | 'restarting' | 'timeout' | 'done'
+  >('')
+  const [pendingTargetVer, setPendingTargetVer] = useState('')
+  const [retryingHealth, setRetryingHealth] = useState(false)
   const [manualGuideOpen, setManualGuideOpen] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string>('')
 
+  useEffect(() => {
+    if (versionStatus && !versionStatus.error) {
+      setManualCheckError('')
+    }
+  }, [versionStatus])
+
+  const finishUpgradeReload = (ver: string) => {
+    setUpgradingStep('done')
+    flashOk(
+      isZh
+        ? `已成功升级至 v${ver}，正在自动加载新版界面…`
+        : `Upgraded to v${ver} · reloading…`,
+      3000,
+    )
+    window.setTimeout(() => {
+      if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') {
+        window.location.reload()
+      }
+    }, 600)
+  }
+
+  const handleRetryHealthAfterTimeout = async () => {
+    if (retryingHealth) return
+    setRetryingHealth(true)
+    setErrorMsg('')
+    try {
+      const targetVer = pendingTargetVer || versionStatus?.latest_version || ''
+      const h = await api.getHealth()
+      if (h?.status === 'ok' && (!targetVer || h.version === targetVer)) {
+        finishUpgradeReload(h.version)
+        return
+      }
+      setErrorMsg(
+        isZh
+          ? '服务仍在重启或尚未切换至目标版本，请稍后再试或手动刷新页面'
+          : 'Service is still restarting or not on target version yet. Please retry shortly.',
+      )
+    } catch {
+      setErrorMsg(
+        isZh
+          ? '暂未连上重启中的服务，容器可能仍在启动中，请稍后重试'
+          : 'Could not reach server yet. Container may still be restarting.',
+      )
+    } finally {
+      setRetryingHealth(false)
+    }
+  }
+
   const handleSelfUpgrade = async () => {
-    if (upgradingStep) return
+    if (upgradingStep && upgradingStep !== 'timeout') return
     setUpgradingStep('downloading')
     setErrorMsg('')
     try {
       const res = await api.triggerSelfUpdate()
       const targetVer = res.updated_to || versionStatus?.latest_version || ''
+      setPendingTargetVer(targetVer)
       setUpgradingStep('restarting')
       const deadline = Date.now() + 25000
       while (Date.now() < deadline) {
         try {
           const h = await api.getHealth()
           if (h?.status === 'ok' && (!targetVer || h.version === targetVer)) {
-            setUpgradingStep('done')
-            flashOk(
-              isZh
-                ? `已成功升级至 v${h.version}，正在自动加载新版界面…`
-                : `Upgraded to v${h.version} · reloading…`,
-              3000,
-            )
-            window.setTimeout(() => {
-              if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') {
-                window.location.reload()
-              }
-            }, 600)
+            finishUpgradeReload(h.version)
             return
           }
         } catch {
@@ -62,10 +105,7 @@ export function VersionUpgradeCard({
         }
         await new Promise(resolve => window.setTimeout(resolve, 900))
       }
-      setUpgradingStep('done')
-      if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') {
-        window.location.reload()
-      }
+      setUpgradingStep('timeout')
     } catch (err) {
       setUpgradingStep('')
       setErrorMsg(err instanceof Error ? err.message : isZh ? '在线升级失败' : 'Self-update failed')
@@ -105,7 +145,14 @@ export function VersionUpgradeCard({
           </span>
         </div>
 
-        {versionStatus?.update_available ? (
+        {manualCheckError || versionStatus?.error ? (
+          <span
+            data-testid="version-status-badge"
+            className="text-[12px] font-semibold text-[var(--err)] shrink-0"
+          >
+            {isZh ? '检测失败' : 'Check Error'}
+          </span>
+        ) : versionStatus?.update_available ? (
           <span
             data-testid="version-status-badge"
             className="text-[12px] font-semibold text-[var(--warn)] shrink-0"
@@ -113,13 +160,6 @@ export function VersionUpgradeCard({
             {isZh
               ? `新版本 v${versionStatus.latest_version}`
               : `New v${versionStatus.latest_version}`}
-          </span>
-        ) : versionStatus?.error ? (
-          <span
-            data-testid="version-status-badge"
-            className="text-[12px] font-semibold text-[var(--err)] shrink-0"
-          >
-            {isZh ? '检测失败' : 'Check Error'}
           </span>
         ) : versionStatus?.checked_sec ? (
           <span
@@ -144,12 +184,18 @@ export function VersionUpgradeCard({
         )}
       </div>
 
-      {versionStatus?.error && (
+      {(manualCheckError || versionStatus?.error) && (
         <div
           data-testid="version-error-box"
           className="pl-3 border-l-2 border-[var(--err)] text-[13px] text-[var(--err)]"
         >
-          {isZh ? versionStatus.error_zh || versionStatus.error : versionStatus.error}
+          {manualCheckError ||
+            (isZh ? versionStatus?.error_zh || versionStatus?.error : versionStatus?.error)}
+          {versionStatus?.stale && !manualCheckError
+            ? isZh
+              ? '（缓存结果可能已过期，请稍后重试检测）'
+              : ' (Cached version info is stale; please retry)'
+            : ''}
         </div>
       )}
 
@@ -179,52 +225,93 @@ export function VersionUpgradeCard({
           )}
 
           <div className="space-y-2">
-            <button
-              type="button"
-              data-testid="one-click-upgrade-btn"
-              disabled={Boolean(upgradingStep)}
-              onClick={() => void handleSelfUpgrade()}
-              className="otl-btn otl-btn-primary w-full h-9 text-[13px]"
-              style={
-                upgradingStep === 'done'
-                  ? { background: 'var(--ok)', color: '#ffffff' }
-                  : undefined
-              }
-            >
-              {upgradingStep === 'done' ? (
-                <>
-                  <Check size={14} />
+            {upgradingStep === 'timeout' ? (
+              <div
+                role="alert"
+                data-testid="upgrade-timeout-box"
+                className="otl-status-warn rounded-md p-3 space-y-2.5 text-[12.5px]"
+              >
+                <div className="flex items-start gap-2 font-medium">
+                  <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                   <span>
                     {isZh
-                      ? `已完成升级至 v${versionStatus.latest_version} · 正在刷新…`
-                      : `Upgraded to v${versionStatus.latest_version} · Reloading…`}
+                      ? `等待新版本 v${pendingTargetVer || versionStatus.latest_version} 就绪已超过 25 秒，容器可能仍在后台重启中（尚未确认升级完成）。`
+                      : `Health check timed out after 25s while waiting for v${pendingTargetVer || versionStatus.latest_version}. The container may still be restarting.`}
                   </span>
-                </>
-              ) : upgradingStep ? (
-                <>
-                  <RefreshCw size={13} className="animate-spin" />
-                  <span>
-                    {upgradingStep === 'downloading'
-                      ? isZh
-                        ? `正在下载并 SHA-256 校验 v${versionStatus.latest_version} 更新包…`
-                        : `Downloading & verifying v${versionStatus.latest_version}…`
-                      : isZh
-                        ? '校验通过 · 正在平滑热重启服务（约 2 秒）…'
-                        : 'Verified · Restarting service (~2s)…'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <ArrowUpCircle size={14} />
-                  <span>
-                    {isZh
-                      ? `一键在线升级至 v${versionStatus.latest_version}（免终端 · 自动保留全部数据）`
-                      : `One-Click Upgrade to v${versionStatus.latest_version} (Preserves All Data)`}
-                  </span>
-                </>
-              )}
-            </button>
-            {upgradingStep && upgradingStep !== 'done' && (
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    data-testid="upgrade-retry-health-btn"
+                    disabled={retryingHealth}
+                    onClick={() => void handleRetryHealthAfterTimeout()}
+                    className="otl-btn otl-btn-primary h-8"
+                  >
+                    <RefreshCw size={12} className={retryingHealth ? 'animate-spin' : ''} />
+                    <span>{isZh ? '重试连接' : 'Retry Connection'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="upgrade-manual-reload-btn"
+                    onClick={() => {
+                      if (typeof window !== 'undefined' && typeof window.location?.reload === 'function') {
+                        window.location.reload()
+                      }
+                    }}
+                    className="otl-btn h-8"
+                  >
+                    <span>{isZh ? '刷新页面' : 'Reload Page'}</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                data-testid="one-click-upgrade-btn"
+                disabled={Boolean(upgradingStep)}
+                onClick={() => void handleSelfUpgrade()}
+                className="otl-btn otl-btn-primary w-full h-9 text-[13px]"
+                style={
+                  upgradingStep === 'done'
+                    ? { background: 'var(--ok)', color: '#ffffff' }
+                    : undefined
+                }
+              >
+                {upgradingStep === 'done' ? (
+                  <>
+                    <Check size={14} />
+                    <span>
+                      {isZh
+                        ? `已完成升级至 v${versionStatus.latest_version} · 正在刷新…`
+                        : `Upgraded to v${versionStatus.latest_version} · Reloading…`}
+                    </span>
+                  </>
+                ) : upgradingStep ? (
+                  <>
+                    <RefreshCw size={13} className="animate-spin" />
+                    <span>
+                      {upgradingStep === 'downloading'
+                        ? isZh
+                          ? `正在下载并 SHA-256 校验 v${versionStatus.latest_version} 更新包…`
+                          : `Downloading & verifying v${versionStatus.latest_version}…`
+                        : isZh
+                          ? '校验通过 · 正在平滑热重启服务（约 2 秒）…'
+                          : 'Verified · Restarting service (~2s)…'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <ArrowUpCircle size={14} />
+                    <span>
+                      {isZh
+                        ? `一键在线升级至 v${versionStatus.latest_version}（免终端 · 自动保留全部数据）`
+                        : `One-Click Upgrade to v${versionStatus.latest_version} (Preserves All Data)`}
+                    </span>
+                  </>
+                )}
+              </button>
+            )}
+            {upgradingStep && upgradingStep !== 'done' && upgradingStep !== 'timeout' && (
               <div className="h-1 w-full rounded-full bg-[var(--track)] overflow-hidden">
                 <div className="otl-ceremony-indeterminate" />
               </div>
@@ -268,16 +355,25 @@ export function VersionUpgradeCard({
             setErrorMsg('')
             try {
               const res = await onCheckVersion(true)
-              if (res?.error) {
+              if (!res) {
+                const failMsg = isZh
+                  ? '检查更新失败，请检查网络连接或代理配置后重试'
+                  : 'Failed to check for updates. Check network or proxy settings.'
+                setManualCheckError(failMsg)
+                setErrorMsg(failMsg)
+              } else if (res.error) {
+                setManualCheckError('')
                 setErrorMsg(isZh ? res.error_zh || res.error : res.error)
-              } else if (res?.update_available) {
+              } else if (res.update_available) {
+                setManualCheckError('')
                 flashOk(
                   isZh
                     ? `检测到新版本 v${res.latest_version}`
                     : `New version v${res.latest_version} available`,
                   3000,
                 )
-              } else if (res) {
+              } else {
+                setManualCheckError('')
                 flashOk(
                   isZh
                     ? `当前 v${res.current_version} 已是最新版本`

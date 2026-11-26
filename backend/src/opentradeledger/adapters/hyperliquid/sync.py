@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
 from opentradeledger.adapters.hyperliquid.client import resolve_hyperliquid_spot_price
-from opentradeledger.core.venue_primitives import STABLECOINS
+from opentradeledger.core.venue_primitives import STABLECOINS, dec
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
@@ -37,6 +38,16 @@ def extract_hyperliquid_snapshot_activity(snap: dict[str, Any]) -> tuple[float, 
         else:
             spot_eq += total_amt * resolve_hyperliquid_spot_price(bal, snap)
 
+    vault_eq = max(
+        0.0,
+        float(
+            sum(
+                (dec(v.get("equity")) for v in (snap.get("vault_equities") or []) if isinstance(v, dict)),
+                Decimal("0"),
+            )
+        ),
+    )
+
     open_count = 0
     for ap in ch.get("assetPositions") or []:
         pos = ap.get("position") if isinstance(ap, dict) and isinstance(ap.get("position"), dict) else ap
@@ -50,7 +61,7 @@ def extract_hyperliquid_snapshot_activity(snap: dict[str, Any]) -> tuple[float, 
         if isinstance(f, dict)
         and ("Close" in str(f.get("dir") or "") or abs(float(f.get("closedPnl") or 0.0)) > 1e-9)
     )
-    return round(perp_eq + spot_eq, 4), open_count > 0, (open_count, closed_count, len(fills))
+    return round(perp_eq + spot_eq + vault_eq, 4), open_count > 0, (open_count, closed_count, len(fills))
 
 
 async def sync_hyperliquid_venue(

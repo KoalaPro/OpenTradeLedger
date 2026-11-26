@@ -354,6 +354,7 @@ class PublicCopyWatcherClient:
         )
 
         latest_all_closed_ms: dict[tuple[str, str], int] = {}
+        latest_symbol_closed_ms: dict[str, int] = {}
         for row in pos_list:
             if not isinstance(row, Mapping):
                 continue
@@ -362,9 +363,11 @@ class PublicCopyWatcherClient:
             sym = str(row.get("symbol") or "").strip().upper()
             side_up = str(row.get("side") or "").strip().upper()
             closed_ts = int(row.get("closed") or row.get("updateTime") or 0)
-            if sym and side_up in ("LONG", "SHORT") and closed_ts > 0:
-                if closed_ts > latest_all_closed_ms.get((sym, side_up), 0):
+            if sym and closed_ts > 0:
+                if side_up in ("LONG", "SHORT") and closed_ts > latest_all_closed_ms.get((sym, side_up), 0):
                     latest_all_closed_ms[(sym, side_up)] = closed_ts
+                if side_up in ("LONG", "SHORT", "BOTH", "") and closed_ts > latest_symbol_closed_ms.get(sym, 0):
+                    latest_symbol_closed_ms[sym] = closed_ts
 
         raw_orders = await self._history_rows(
             BINANCE_ORDER_HISTORY_PATH, {"portfolioId": pid, "startTime": start_ms, "endTime": cur_ms, "pageSize": 100}
@@ -406,30 +409,81 @@ class PublicCopyWatcherClient:
 
         asc_orders = list(reversed(parsed_orders))
         ledgers: dict[tuple[str, str], list[float]] = {}
+        both_ledgers: dict[str, list[float]] = {}
         for rec in asc_orders:
-            if rec.position_side not in ("LONG", "SHORT"):
+            if rec.position_side in ("LONG", "SHORT"):
+                key = (rec.symbol, rec.position_side)
+                if rec.order_time_ms <= latest_all_closed_ms.get(key, 0):
+                    continue
+                st = ledgers.setdefault(key, [0.0, 0.0, 0.0, 0.0])
+                is_open_leg = (rec.position_side == "LONG" and rec.side == "BUY") or (
+                    rec.position_side == "SHORT" and rec.side == "SELL"
+                )
+                if is_open_leg:
+                    if st[0] <= 1e-9:
+                        st[2] = float(rec.order_time_ms)
+                    total_cost = st[0] * st[1] + rec.executed_qty * rec.avg_price
+                    st[0] += rec.executed_qty
+                    st[1] = total_cost / st[0]
+                    st[3] = float(rec.order_time_ms)
+                else:
+                    st[0] = max(0.0, st[0] - rec.executed_qty)
+                    st[3] = float(rec.order_time_ms)
+                    if st[0] <= 1e-8:
+                        st[0] = 0.0
+                        st[1] = 0.0
+                        st[2] = 0.0
+            elif rec.position_side == "BOTH" and rec.side in ("BUY", "SELL"):
+                base_closed_ms = latest_symbol_closed_ms.get(rec.symbol, 0)
+                if base_closed_ms <= 0 or rec.order_time_ms <= base_closed_ms:
+                    continue
+                st_b = both_ledgers.setdefault(rec.symbol, [0.0, 0.0, 0.0, 0.0])
+                delta = rec.executed_qty if rec.side == "BUY" else -rec.executed_qty
+                cur_net = st_b[0]
+                cur_avg = st_b[1]
+                if abs(cur_net) <= 1e-9:
+                    st_b[0] = delta
+                    st_b[1] = rec.avg_price
+                    st_b[2] = float(rec.order_time_ms)
+                    st_b[3] = float(rec.order_time_ms)
+                elif (cur_net > 0 and delta > 0) or (cur_net < 0 and delta < 0):
+                    new_abs = abs(cur_net) + abs(delta)
+                    st_b[1] = (abs(cur_net) * cur_avg + abs(delta) * rec.avg_price) / new_abs
+                    st_b[0] = new_abs if cur_net > 0 else -new_abs
+                    st_b[3] = float(rec.order_time_ms)
+                else:
+                    if abs(delta) < abs(cur_net) - 1e-8:
+                        rem_abs = abs(cur_net) - abs(delta)
+                        st_b[0] = rem_abs if cur_net > 0 else -rem_abs
+                        st_b[3] = float(rec.order_time_ms)
+                    elif abs(abs(delta) - abs(cur_net)) <= 1e-8:
+                        st_b[0] = 0.0
+                        st_b[1] = 0.0
+                        st_b[2] = 0.0
+                        st_b[3] = float(rec.order_time_ms)
+                    else:
+                        flip_abs = abs(delta) - abs(cur_net)
+                        st_b[0] = flip_abs if delta > 0 else -flip_abs
+                        st_b[1] = rec.avg_price
+                        st_b[2] = float(rec.order_time_ms)
+                        st_b[3] = float(rec.order_time_ms)
+
+        for sym_b, (net_q, avg_c, open_ms_b, last_ms_b) in both_ledgers.items():
+            if abs(net_q) <= 1e-8:
                 continue
-            key = (rec.symbol, rec.position_side)
-            if rec.order_time_ms <= latest_all_closed_ms.get(key, 0):
-                continue
-            st = ledgers.setdefault(key, [0.0, 0.0, 0.0, 0.0])
-            is_open_leg = (rec.position_side == "LONG" and rec.side == "BUY") or (
-                rec.position_side == "SHORT" and rec.side == "SELL"
-            )
-            if is_open_leg:
-                if st[0] <= 1e-9:
-                    st[2] = float(rec.order_time_ms)
-                total_cost = st[0] * st[1] + rec.executed_qty * rec.avg_price
-                st[0] += rec.executed_qty
-                st[1] = total_cost / st[0]
-                st[3] = float(rec.order_time_ms)
+            eff_side = "LONG" if net_q > 0 else "SHORT"
+            abs_q = abs(net_q)
+            if (sym_b, eff_side) in ledgers and ledgers[(sym_b, eff_side)][0] > 1e-8:
+                prev_q, prev_avg, prev_open, prev_last = ledgers[(sym_b, eff_side)]
+                tot_q = prev_q + abs_q
+                ledgers[(sym_b, eff_side)] = [
+                    tot_q,
+                    (prev_q * prev_avg + abs_q * avg_c) / tot_q,
+                    min(prev_open, open_ms_b) if prev_open > 0 else open_ms_b,
+                    max(prev_last, last_ms_b),
+                ]
             else:
-                st[0] = max(0.0, st[0] - rec.executed_qty)
-                st[3] = float(rec.order_time_ms)
-                if st[0] <= 1e-8:
-                    st[0] = 0.0
-                    st[1] = 0.0
-                    st[2] = 0.0
+                ledgers[(sym_b, eff_side)] = [abs_q, avg_c, open_ms_b, last_ms_b]
 
         inferred: list[InferredOpenPosition] = []
         for (sym, pside), (qty, avg_cost, opened_ms, last_ms) in ledgers.items():
@@ -460,11 +514,17 @@ class PublicCopyWatcherClient:
             )
 
         inferred.sort(key=lambda p: p.notional_usd, reverse=True)
+        uncertain_syms = {
+            o.symbol
+            for o in parsed_orders
+            if o.position_side not in ("LONG", "SHORT", "BOTH")
+            or (o.position_side == "BOTH" and latest_symbol_closed_ms.get(o.symbol, 0) <= 0)
+        }
         return LeadTradeActivity(
             inferred_positions=tuple(inferred),
             recent_orders=tuple(parsed_orders[: max(1, recent_limit)]),
             orders=tuple(parsed_orders),
-            uncertain_symbols=tuple(sorted({o.symbol for o in parsed_orders if o.position_side not in ("LONG", "SHORT")})),
+            uncertain_symbols=tuple(sorted(uncertain_syms)),
         )
 
 
