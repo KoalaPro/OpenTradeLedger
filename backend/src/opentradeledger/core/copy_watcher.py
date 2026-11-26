@@ -328,15 +328,41 @@ class PublicCopyWatcherClient:
         return 0.0
 
     async def _history_rows(self, path: str, query: dict[str, Any]) -> list:
-        response = await self._public_post(f"{self.web_base_url}{path}", query)
         endpoint = path.rsplit("/", 1)[-1]
-        if response.status_code != 200:
-            raise CopyWatcherError(f"Binance {endpoint} HTTP {response.status_code} for {query['portfolioId']}")
-        payload = response.json()
-        data = payload.get("data") if isinstance(payload, Mapping) and payload.get("code") == "000000" else None
-        if not isinstance(data, Mapping) or not isinstance(data.get("list"), list):
-            raise CopyWatcherError(f"Binance {endpoint} unavailable for {query['portfolioId']}")
-        return data["list"]
+        pid = query["portfolioId"]
+        for attempt in range(2):
+            response = await self._public_post(f"{self.web_base_url}{path}", query)
+            if response.status_code in {429, 500, 502, 503, 504}:
+                if attempt == 0:
+                    if self._owns_client:
+                        await asyncio.sleep(0.35)
+                    continue
+                raise CopyWatcherError(f"Binance {endpoint} HTTP {response.status_code} for {pid}")
+            if response.status_code != 200:
+                raise CopyWatcherError(f"Binance {endpoint} HTTP {response.status_code} for {pid}")
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise CopyWatcherError(f"Binance {endpoint} returned invalid JSON for {pid}") from exc
+            code = str(payload.get("code") or "").strip() if isinstance(payload, Mapping) else ""
+            if code in {"11012005", "-1003", "429"}:
+                if attempt == 0:
+                    if self._owns_client:
+                        await asyncio.sleep(0.35)
+                    continue
+                msg = str(payload.get("message") or payload.get("msg") or "system is currently busy").strip()
+                raise CopyWatcherError(f"Binance {endpoint} busy (code={code}): {msg}")
+            data = payload.get("data") if isinstance(payload, Mapping) and code == "000000" else None
+            if not isinstance(data, Mapping) or not isinstance(data.get("list"), list):
+                msg = (
+                    str(payload.get("message") or payload.get("msg") or "").strip()
+                    if isinstance(payload, Mapping)
+                    else ""
+                )
+                detail = f" (code={code}: {msg})" if (code and code != "000000") else ""
+                raise CopyWatcherError(f"Binance {endpoint} unavailable for {pid}{detail}")
+            return data["list"]
+        raise CopyWatcherError(f"Binance {endpoint} unavailable for {pid}")
 
     async def fetch_trade_activity(
         self,
@@ -531,6 +557,11 @@ class PublicCopyWatcherClient:
 def humanize_watcher_error(exc: Exception) -> tuple[str, str]:
     raw = str(exc or "Failed to query Binance public copy-trading endpoint")
     low = raw.lower()
+    if "11012005" in low or "system is currently busy" in low or "busy (code=" in low:
+        return (
+            f"Binance public order-history service is temporarily busy ({raw}); retry shortly (previous position snapshot preserved).",
+            "币安公开订单历史服务繁忙（11012005），请稍后重试（已保留上次调仓快照）",
+        )
     if any(k in low for k in ("network error", "timeout", "connect", "ssl", "eof")):
         return (
             f"Cannot reach Binance public copy-trading API ({raw}). If running on a NAS in mainland China, configure an HTTP proxy in Settings.",

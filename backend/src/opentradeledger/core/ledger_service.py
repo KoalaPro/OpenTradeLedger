@@ -450,13 +450,71 @@ class LedgerService:
         # 1. Gather cross-venue spot ticker fallback map uniformly across all active account partitions
         vault_creds = self.vault.list_decrypted()
         creds_by_acct = {c.venue_id.lower(): c for c in vault_creds}
-        account_targets: list[tuple[BaseExchangeAdapter, str]] = []
+        all_live_or_archived_ids: set[str] = set(creds_by_acct.keys())
+        candidate_targets: list[tuple[BaseExchangeAdapter, str]] = []
+        active_accts_by_adapter: dict[str, list[tuple[BaseExchangeAdapter, str]]] = defaultdict(list)
+        unattributed_archived_by_adapter: dict[str, list[tuple[BaseExchangeAdapter, str]]] = defaultdict(list)
+
         for adapter, acct_id in self._iter_account_targets():
+            ad_id = adapter.meta.venue_id.lower()
+            scoped_check = self.store.for_account(acct_id, ad_id)
+            try:
+                has_data = bool(adapter.has_venue_data(scoped_check))
+            except Exception:
+                has_data = False
+            if has_data:
+                all_live_or_archived_ids.add(acct_id)
             if acct_id in creds_by_acct and not creds_by_acct[acct_id].enabled:
                 continue
             if is_secondary_account_id(acct_id) and bool(self.store.venue_scope(acct_id).get_kv("duplicate_uid_conflict")):
                 continue
-            account_targets.append((adapter, acct_id))
+            candidate_targets.append((adapter, acct_id))
+            if acct_id in creds_by_acct:
+                active_accts_by_adapter[ad_id].append((adapter, acct_id))
+            elif has_data:
+                raw_sc = self.store.venue_scope(acct_id)
+                saved_uid = str(
+                    raw_sc.get_kv("account_uid")
+                    or adapter.extract_cached_account_uid(scoped_check)
+                    or ""
+                ).strip()
+                if not saved_uid:
+                    unattributed_archived_by_adapter[ad_id].append((adapter, acct_id))
+
+        suppressed_archived_ids: set[str] = set()
+        for ad_id, arch_list in unattributed_archived_by_adapter.items():
+            act_list = active_accts_by_adapter.get(ad_id)
+            if not arch_list or not act_list:
+                continue
+            active_fps: set[str] = set()
+            for act_adapter, act_id in act_list:
+                try:
+                    active_fps.update(
+                        act_adapter.extract_archive_record_fingerprints(
+                            self.store.for_account(act_id, ad_id),
+                            include_legacy_fallback=not is_secondary_account_id(act_id),
+                        )
+                    )
+                except Exception:
+                    continue
+            if not active_fps:
+                continue
+            for arch_adapter, arch_id in arch_list:
+                try:
+                    arch_fps = arch_adapter.extract_archive_record_fingerprints(
+                        self.store.for_account(arch_id, ad_id),
+                        include_legacy_fallback=not is_secondary_account_id(arch_id),
+                    )
+                except Exception:
+                    continue
+                if arch_fps and (arch_fps & active_fps):
+                    suppressed_archived_ids.add(arch_id)
+
+        account_targets: list[tuple[BaseExchangeAdapter, str]] = [
+            (adapter, acct_id)
+            for adapter, acct_id in candidate_targets
+            if acct_id not in suppressed_archived_ids
+        ]
 
         global_spot_prices: dict[str, float] = {}
         for adapter, acct_id in account_targets:
@@ -471,10 +529,12 @@ class LedgerService:
                     global_spot_prices.setdefault(sym, px)
 
         # 2. Compute each active account's self-contained ledger bundle independently
+        journals = dict(journals)
         raw_bundles: list[tuple[BaseExchangeAdapter, str, VenueLedgerBundle]] = []
         isolated_build_errors: list[tuple[BaseExchangeAdapter, str, str]] = []
         sibling_counts: dict[str, int] = defaultdict(int)
         for adapter, acct_id in account_targets:
+            ad_id = adapter.meta.venue_id.lower()
             scoped_store = self.store.for_account(acct_id, adapter.meta.venue_id)
             scoped_journals = scope_journals_for_account(journals, acct_id)
             try:
@@ -491,8 +551,30 @@ class LedgerService:
                 )
                 continue
             if bundle is not None:
+                if is_secondary_account_id(acct_id) and bundle.trades and journals:
+                    ad_pref = f"{ad_id}__"
+                    has_orphan_candidate = any(
+                        str(jk).lower().startswith(ad_pref)
+                        and len(str(jk).split("__", 2)) >= 3
+                        and f"{str(jk).split('__', 2)[0].lower()}__{str(jk).split('__', 2)[1].lower()}"
+                        not in all_live_or_archived_ids
+                        for jk in journals.keys()
+                    )
+                    if has_orphan_candidate:
+                        raw_tids = {
+                            str(tr.get("trade_id") or "")
+                            for tr in bundle.trades
+                            if tr.get("trade_id")
+                        }
+                        if raw_tids and self.store.claim_orphan_secondary_journals(
+                            ad_id,
+                            acct_id,
+                            all_live_or_archived_ids,
+                            raw_tids,
+                        ) > 0:
+                            journals = self.store.load_journals(demo_mode=False)
                 raw_bundles.append((adapter, acct_id, bundle))
-                sibling_counts[adapter.meta.venue_id.lower()] += 1
+                sibling_counts[ad_id] += 1
 
         ordinals: dict[str, int] = defaultdict(int)
         active_entries: list[tuple[BaseExchangeAdapter, VenueLedgerBundle]] = []

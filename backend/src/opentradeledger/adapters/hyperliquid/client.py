@@ -8,6 +8,7 @@ Security guarantee:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import math
 import time
 from typing import Any, Callable, Optional
 
@@ -39,6 +40,22 @@ class HyperliquidApiError(RuntimeError):
     """Raised when Hyperliquid `/info` returns an HTTP error or unexpected payload."""
 
 
+def _is_valid_hl_num(val: Any) -> bool:
+    if val is None or isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return math.isfinite(float(val))
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return False
+        try:
+            return math.isfinite(float(s))
+        except ValueError:
+            return False
+    return False
+
+
 def _fmt_bj_ms(ms: int) -> str:
     if not ms:
         return ""
@@ -56,7 +73,7 @@ class HyperliquidReadOnlyClient:
         client: Optional[httpx.AsyncClient] = None,
         timeout_sec: float = 14.0,
         clock_ms: Optional[Callable[[], int]] = None,
-        max_fill_pages: int = 5,
+        max_fill_pages: int = 10,
     ) -> None:
         norm_addr = normalize_evm_address(wallet_address)
         if not norm_addr:
@@ -89,11 +106,30 @@ class HyperliquidReadOnlyClient:
 
     async def get_clearinghouse_state(self) -> dict[str, Any]:
         res = await self.request_info({"type": "clearinghouseState", "user": self.wallet_address})
-        return res if isinstance(res, dict) else {}
+        if (
+            not isinstance(res, dict)
+            or not isinstance(res.get("marginSummary"), dict)
+            or "accountValue" not in res["marginSummary"]
+            or not _is_valid_hl_num(res["marginSummary"].get("accountValue"))
+            or ("assetPositions" in res and not isinstance(res.get("assetPositions"), list))
+        ):
+            raise HyperliquidApiError("Malformed clearinghouseState payload")
+        return res
 
     async def get_spot_state(self) -> dict[str, Any]:
         res = await self.request_info({"type": "spotClearinghouseState", "user": self.wallet_address})
-        return res if isinstance(res, dict) else {}
+        if not isinstance(res, dict) or "balances" not in res or not isinstance(res["balances"], list):
+            raise HyperliquidApiError("Malformed spotClearinghouseState payload")
+        for bal in res["balances"]:
+            if (
+                not isinstance(bal, dict)
+                or not isinstance(bal.get("coin"), str)
+                or not bal["coin"].strip()
+                or "total" not in bal
+                or not _is_valid_hl_num(bal.get("total"))
+            ):
+                raise HyperliquidApiError("Malformed spotClearinghouseState payload")
+        return res
 
     async def get_subaccounts(self) -> list[dict[str, str]]:
         res = await self.request_info({"type": "subAccounts", "user": self.wallet_address})
@@ -141,7 +177,14 @@ class HyperliquidReadOnlyClient:
 
     async def get_vault_equities(self) -> list[dict[str, Any]]:
         res = await self.request_info({"type": "userVaultEquities", "user": self.wallet_address})
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+        if not isinstance(res, list):
+            raise HyperliquidApiError("Malformed userVaultEquities payload")
+        out: list[dict[str, Any]] = []
+        for r in res:
+            if not isinstance(r, dict) or "equity" not in r or not _is_valid_hl_num(r.get("equity")):
+                raise HyperliquidApiError("Malformed userVaultEquities payload")
+            out.append(r)
+        return out
 
     @staticmethod
     def _fill_unique_key(r: dict[str, Any]) -> str:
@@ -168,12 +211,35 @@ class HyperliquidReadOnlyClient:
             if len(first_page) < 2000 or not first_ts_list:
                 return list(collected.values())
 
-            low_bound = 0
-            high_bound = min(first_ts_list)
-            if min(first_ts_list) == max(first_ts_list):
-                high_bound = max(0, high_bound - 1)
+            boundary_ts = min(first_ts_list)
+            first_at_boundary_keys = {
+                self._fill_unique_key(r)
+                for r in first_page
+                if int(r.get("time") or 0) == boundary_ts
+            }
 
             truncated = False
+            same_ms_res = await self.request_info(
+                {
+                    "type": "userFillsByTime",
+                    "user": self.wallet_address,
+                    "startTime": boundary_ts,
+                    "endTime": boundary_ts,
+                }
+            )
+            same_ms_rows = [r for r in same_ms_res if isinstance(r, dict)] if isinstance(same_ms_res, list) else []
+            same_ms_keys: set[str] = set()
+            for r in same_ms_rows:
+                fk = self._fill_unique_key(r)
+                collected[fk] = r
+                if int(r.get("time") or 0) == boundary_ts:
+                    same_ms_keys.add(fk)
+
+            if len(same_ms_rows) >= 2000 and not (first_at_boundary_keys & same_ms_keys):
+                truncated = True
+
+            low_bound = 0
+            high_bound = boundary_ts - 1
             for page_idx in range(self.max_fill_pages):
                 if high_bound < low_bound:
                     break
@@ -187,7 +253,7 @@ class HyperliquidReadOnlyClient:
                 )
                 valid_rows = [r for r in page_res if isinstance(r, dict)] if isinstance(page_res, list) else []
                 if not valid_rows:
-                    if page_idx == 0:
+                    if page_idx == 0 and not same_ms_rows:
                         truncated = True
                     break
 
@@ -204,30 +270,21 @@ class HyperliquidReadOnlyClient:
                 if len(valid_rows) < 2000 or new_cnt == 0 or not page_ts_list:
                     break
 
-                if page_idx == self.max_fill_pages - 1 or len(collected) >= 10_000:
-                    truncated = True
-                    break
-
                 p_min = min(page_ts_list)
                 p_max = max(page_ts_list)
                 if p_min == p_max:
-                    if p_min <= low_bound:
-                        low_bound = p_max + 1
-                    else:
-                        high_bound = p_min - 1
+                    truncated = True
+                    low_bound = p_max + 1
                 else:
-                    first_r_ts = int(valid_rows[0].get("time") or 0)
-                    last_r_ts = int(valid_rows[-1].get("time") or 0)
-                    if p_max < high_bound and (first_r_ts <= last_r_ts or p_min <= low_bound):
-                        low_bound = p_max
-                    else:
-                        high_bound = p_min if p_min < high_bound else (p_min - 1)
+                    low_bound = p_max
 
-            if len(collected) >= 10_000:
-                truncated = True
+                if page_idx == self.max_fill_pages - 1 and low_bound <= high_bound:
+                    truncated = True
+                    break
+
             if truncated and warnings_out is not None:
                 warnings_out.append(
-                    "Hyperliquid userFills reached 2,000 per-page Info API cap (10,000 max history ceiling); older trades may be truncated."
+                    "Hyperliquid userFills reached 2,000 per-page Info API cap; older trades may be truncated."
                 )
             return list(collected.values())
 
@@ -377,11 +434,6 @@ class HyperliquidReadOnlyClient:
         warnings: list[str] = []
         failed_fields: list[str] = []
         clearinghouse = await self.get_clearinghouse_state()
-        spot = await self.get_spot_state()
-        raw_mids = await self.get_raw_all_mids()
-        fills = await self.get_user_fills(since_ms=since_ms, warnings_out=warnings)
-        funding = await self.get_user_funding(since_ms=since_ms, warnings_out=warnings)
-        ledger_updates = await self.get_ledger_updates(since_ms=since_ms, warnings_out=warnings)
 
         async def _opt_aux(name: str, coro: Any, default: Any) -> Any:
             try:
@@ -393,6 +445,12 @@ class HyperliquidReadOnlyClient:
                 warnings.append(f"{name}: {exc}")
                 failed_fields.append(name)
                 return default
+
+        spot = await _opt_aux("spot", self.get_spot_state(), {"balances": []})
+        raw_mids = await self.get_raw_all_mids()
+        fills = await self.get_user_fills(since_ms=since_ms, warnings_out=warnings)
+        funding = await self.get_user_funding(since_ms=since_ms, warnings_out=warnings)
+        ledger_updates = await self.get_ledger_updates(since_ms=since_ms, warnings_out=warnings)
 
         spot_meta = await _opt_aux("spot_meta", self.get_spot_meta(), {})
         subaccounts = await _opt_aux("subaccounts", self.get_subaccounts(), [])

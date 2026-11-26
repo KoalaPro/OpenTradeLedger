@@ -10,6 +10,7 @@ from opentradeledger.adapters.base import (
     ExchangeCapabilities,
     VenueLedgerBundle,
     VenueSyncOutcome,
+    _clean_uid_candidate,
 )
 from opentradeledger.adapters.binance.accounting import (
     build_binance_fee_matrix_row,
@@ -143,8 +144,10 @@ class BinanceAdapter(BaseExchangeAdapter):
                 "read_only": len(non_readonly_perms) == 0,
                 "account_type": acct_type,
             }
-            if isinstance(account, dict) and account.get("uid") not in (None, "", 0):
-                out["remote_uid"] = str(account["uid"]).strip()
+            if isinstance(account, dict):
+                uid = _clean_uid_candidate(account.get("uid"))
+                if uid:
+                    out["remote_uid"] = uid
             if non_readonly_perms:
                 out["permission_warning"] = (
                     f"API key has write permissions enabled ({', '.join(non_readonly_perms)}); "
@@ -208,8 +211,8 @@ class OkxAdapter(BaseExchangeAdapter):
                 cfg_rows = await client.request_readonly("GET", "/api/v5/account/config")
                 if isinstance(cfg_rows, list) and cfg_rows and isinstance(cfg_rows[0], dict):
                     cfg = cfg_rows[0]
-                    uid = str(cfg.get("uid") or "").strip()
-                    main_uid = str(cfg.get("mainUid") or "").strip()
+                    uid = _clean_uid_candidate(cfg.get("uid"))
+                    main_uid = _clean_uid_candidate(cfg.get("mainUid"))
                     if uid:
                         out["remote_uid"] = uid
                         if main_uid:
@@ -269,8 +272,8 @@ class BybitAdapter(BaseExchangeAdapter):
             try:
                 key_info = await client.get_api_key_info()
                 if isinstance(key_info, dict):
-                    uid = str(key_info.get("userID") or "").strip()
-                    if uid and uid != "0":
+                    uid = _clean_uid_candidate(key_info.get("userID"))
+                    if uid:
                         out["remote_uid"] = uid
                     is_master = key_info.get("isMaster")
                     if isinstance(is_master, bool):
@@ -334,11 +337,23 @@ class GateAdapter(BaseExchangeAdapter):
             out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "has_balance": total_amt is not None}
             try:
                 det = await client.raw_get("/account/detail")
-                if isinstance(det, dict) and det.get("user_id") not in (None, "", 0):
-                    out["remote_uid"] = str(det["user_id"]).strip()
+                if isinstance(det, dict):
+                    uid = _clean_uid_candidate(det.get("user_id"))
+                    if uid:
+                        out["remote_uid"] = uid
             except Exception as det_exc:
                 if is_transient_upstream_error(det_exc):
                     raise IdentityProbeTransientError(str(det_exc)) from det_exc
+            if not out.get("remote_uid"):
+                try:
+                    fut = await client.raw_get("/futures/usdt/accounts")
+                    if isinstance(fut, dict):
+                        f_uid = _clean_uid_candidate(fut.get("user"))
+                        if f_uid:
+                            out["remote_uid"] = f_uid
+                except Exception as fut_exc:
+                    if is_transient_upstream_error(fut_exc):
+                        raise IdentityProbeTransientError(str(fut_exc)) from fut_exc
             try:
                 subs = await client.raw_get("/sub_accounts")
                 if isinstance(subs, list):
@@ -428,8 +443,8 @@ class BitgetAdapter(BaseExchangeAdapter):
             try:
                 info = await client.get("/api/v2/spot/account/info")
                 if isinstance(info, dict):
-                    uid = str(info.get("userId") or "").strip()
-                    parent_id = str(info.get("parentId") or "").strip()
+                    uid = _clean_uid_candidate(info.get("userId"))
+                    parent_id = _clean_uid_candidate(info.get("parentId"))
                     if uid:
                         out["remote_uid"] = uid
                         out["account_role"] = "subaccount" if (parent_id and parent_id != uid) else "master"
@@ -482,8 +497,10 @@ class MexcAdapter(BaseExchangeAdapter):
             account = await client.spot_request("GET", "/api/v3/account", signed=True)
             balances = account.get("balances") if isinstance(account, dict) else []
             out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "balances": len(balances or [])}
-            if isinstance(account, dict) and account.get("uid") not in (None, "", 0):
-                out["remote_uid"] = str(account["uid"]).strip()
+            if isinstance(account, dict):
+                uid = _clean_uid_candidate(account.get("uid"))
+                if uid:
+                    out["remote_uid"] = uid
             return out
         finally:
             if hasattr(client, "aclose"):
@@ -658,13 +675,13 @@ class KucoinAdapter(BaseExchangeAdapter):
                 if is_transient_upstream_error(u_exc):
                     raise IdentityProbeTransientError(str(u_exc)) from u_exc
             raw_uid = (
-                key_info.get("uid")
-                or key_info.get("userId")
-                or uinfo.get("uid")
-                or uinfo.get("userId")
+                _clean_uid_candidate(key_info.get("uid"))
+                or _clean_uid_candidate(key_info.get("userId"))
+                or _clean_uid_candidate(uinfo.get("uid"))
+                or _clean_uid_candidate(uinfo.get("userId"))
             )
-            if raw_uid not in (None, "", 0):
-                out["remote_uid"] = str(raw_uid).strip()
+            if raw_uid:
+                out["remote_uid"] = raw_uid
                 if isinstance(key_info.get("isMaster"), bool):
                     out["account_role"] = "master" if key_info["isMaster"] else "subaccount"
                 elif key_info.get("subName") or uinfo.get("isSub") or uinfo.get("parentUid"):
@@ -727,7 +744,7 @@ class BingxAdapter(BaseExchangeAdapter):
             bals = await client.get_swap_balance()
             out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "accounts": len(bals)}
             try:
-                uid = await client.get_uid()
+                uid = _clean_uid_candidate(await client.get_uid())
                 if uid:
                     out["remote_uid"] = uid
             except Exception as uid_exc:
@@ -790,8 +807,9 @@ class HtxAdapter(BaseExchangeAdapter):
                 if is_transient_upstream_error(id_exc):
                     raise IdentityProbeTransientError(str(id_exc)) from id_exc
             out: dict[str, Any] = {"ok": True, "venue_id": self.meta.venue_id, "read_only": True, "accounts": count}
-            if ident.get("remote_uid"):
-                out["remote_uid"] = ident["remote_uid"]
+            h_uid = _clean_uid_candidate(ident.get("remote_uid"))
+            if h_uid:
+                out["remote_uid"] = h_uid
             if ident.get("account_role"):
                 out["account_role"] = ident["account_role"]
             return out

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.binance.client import BinanceApiError
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
@@ -129,6 +130,34 @@ async def sync_binance_venue(
     live = dict(live) if isinstance(live, dict) else {}
     failed_fields = [str(x) for x in (live.pop("_failed_fields", None) or ()) if x]
     warnings = [str(w) for w in (live.get("_warnings") or ()) if w]
+    for pw in getattr(client, "_pagination_warnings", None) or ():
+        if pw and str(pw) not in warnings:
+            warnings.append(str(pw))
+    if warnings:
+        live["_warnings"] = warnings
+    has_prev_pm = isinstance(prev_live, dict) and bool(prev_live.get("pm_account"))
+    has_malformed_futures = "pm_account" in failed_fields and any("Malformed" in w for w in warnings)
+    if not isinstance(prev_live, dict):
+        if (
+            has_malformed_futures
+            or {"spot_balances", "pm_account"}.issubset(set(failed_fields))
+            or (
+                any(k in failed_fields for k in ("spot_balances", "wallet_balances"))
+                and any("malformed response structure" in w for w in warnings)
+                and "pm_account" in failed_fields
+            )
+        ):
+            raise BinanceApiError(
+                200,
+                "/papi/v1/account",
+                "; ".join(warnings) or "Malformed Binance account balance payload",
+            )
+    elif has_malformed_futures and not has_prev_pm and not prev_live.get("wallet_balances"):
+        raise BinanceApiError(
+            200,
+            "/papi/v1/account",
+            "; ".join(warnings) or "Malformed Binance futures balance payload",
+        )
     if isinstance(prev_live, dict) and failed_fields:
         for fk in failed_fields:
             if fk in prev_live and prev_live[fk]:

@@ -91,12 +91,23 @@ async def sync_bitget_venue(
     scope.set_kv("backfill_completed", True)
 
     eq_val = 0.0
-    uta_obj = live.get("uta_assets") or {}
+    uta_obj = live.get("uta_assets")
     if isinstance(uta_obj, dict):
         eq_val = float(uta_obj.get("accountEquity") or uta_obj.get("usdtEquity") or 0.0)
+    elif isinstance(uta_obj, list):
+        for ua_item in uta_obj:
+            if isinstance(ua_item, dict):
+                eq_val += float(
+                    ua_item.get("accountEquity")
+                    or ua_item.get("usdtEquity")
+                    or ua_item.get("equity")
+                    or 0.0
+                )
     for fa_item in live.get("funding_assets") or []:
         c_fa = str(fa_item.get("coin") or "").upper()
-        q_fa = float(fa_item.get("balance") or fa_item.get("available") or 0.0)
+        q_fa = float(fa_item.get("balance") or fa_item.get("available") or 0.0) + float(
+            fa_item.get("frozen") or 0.0 if fa_item.get("balance") is None else 0.0
+        )
         if q_fa > 0:
             px_fa = (
                 1.0

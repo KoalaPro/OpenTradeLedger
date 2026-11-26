@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.gate.client import GateApiHttpError
 from opentradeledger.core.venue_primitives import fmt_bj
 
 if TYPE_CHECKING:
@@ -116,6 +117,12 @@ async def sync_gate_venue(
     live_bundle = dict(live_bundle) if isinstance(live_bundle, dict) else {}
     failed_fields = [str(x) for x in (live_bundle.pop("_failed_fields", None) or ()) if x]
     warnings = [str(w) for w in (live_bundle.get("_warnings") or ()) if w]
+    if not isinstance(prev_live, dict) and {"wallet_total", "unified", "futures_account"}.issubset(set(failed_fields)):
+        raise GateApiHttpError(
+            200,
+            "/wallet/total_balance",
+            "; ".join(warnings) or "Malformed Gate balance payload",
+        )
     if isinstance(prev_live, dict) and failed_fields:
         for fk in failed_fields:
             if fk in prev_live and prev_live[fk]:
@@ -126,11 +133,49 @@ async def sync_gate_venue(
     scope.set_kv("gate_decimal_trades_v2", True)
 
     wt_g = live_bundle.get("wallet_total") or {}
-    det_g = wt_g.get("details") or {}
+    wt_tot_obj = wt_g.get("total") if isinstance(wt_g, dict) else None
+    has_wt_amount = isinstance(wt_tot_obj, dict) and wt_tot_obj.get("amount") is not None
+    det_g = (wt_g.get("details") or {}) if isinstance(wt_g, dict) else {}
     stk_assets_g = live_bundle.get("stock_assets") or {}
-    eq_now = float((wt_g.get("total") or {}).get("amount") or 0.0)
     q_now = float((det_g.get("quant") or {}).get("amount") or 0.0)
-    s_now = float(stk_assets_g.get("equity") or (det_g.get("tradfi_spot") or {}).get("amount") or 0.0)
+    s_now = float(
+        stk_assets_g.get("equity")
+        or stk_assets_g.get("total_equity")
+        or (det_g.get("tradfi_spot") or {}).get("amount")
+        or 0.0
+    )
+    if has_wt_amount:
+        eq_now = float(wt_tot_obj.get("amount") or 0.0)
+    else:
+        uni_g = live_bundle.get("unified") or {}
+        fa_g = live_bundle.get("futures_account") or {}
+        uni_eq_g = float(
+            uni_g.get("unified_account_total_equity")
+            or uni_g.get("total_equity_usd")
+            or 0.0
+        )
+        if uni_eq_g <= 0 and isinstance(uni_g.get("balances"), dict):
+            for ccy_u, b_u in uni_g["balances"].items():
+                if not isinstance(b_u, dict):
+                    continue
+                eq_u = float(b_u.get("equity_usd") or 0.0)
+                if eq_u > 0:
+                    uni_eq_g += eq_u
+                elif str(ccy_u).strip().upper() in ("USDT", "USDC", "USD1", "FDUSD", "USD"):
+                    uni_eq_g += float(b_u.get("equity") or 0.0) or (
+                        float(b_u.get("available") or 0.0) + float(b_u.get("freeze") or b_u.get("locked") or 0.0)
+                    )
+        fa_eq_g = (
+            float(fa_g.get("total") or 0.0) + float(fa_g.get("unrealised_pnl") or 0.0)
+            if isinstance(fa_g, dict) and fa_g.get("total") is not None
+            else float(fa_g.get("available") or 0.0) if isinstance(fa_g, dict) else 0.0
+        )
+        uni_credit_g = bool(
+            (isinstance(fa_g, dict) and fa_g.get("enable_credit"))
+            or str(uni_g.get("mode") or "").strip().lower() in {"multi_currency", "portfolio", "single_currency"}
+        )
+        core_eq_g = max(uni_eq_g, fa_eq_g) if (uni_credit_g or uni_eq_g > 0) else (uni_eq_g + fa_eq_g)
+        eq_now = core_eq_g + q_now + s_now
     if eq_now > 0:
         day_bj = fmt_bj(now_s, "%Y-%m-%d")
         scope.upsert_records(

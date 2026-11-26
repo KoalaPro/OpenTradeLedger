@@ -626,6 +626,8 @@ def create_app(
             or auth_manager.get_status(request.cookies.get(AUTH_COOKIE_NAME), demo_mode=False)["require_setup"]
         )
         try:
+            if adapter.meta.identity_mode == "probe" and (cand.create_new or is_secondary_account_id(acct_id)):
+                await sync_manager.backfill_unattributed_sibling_uids(adapter_id, exclude_acct_id=acct_id)
             if cand.create_new and not cand.account_id.strip():
                 disc_uid = temp_cred.remote_uid
                 if not disc_uid:
@@ -685,12 +687,19 @@ def create_app(
 
         # Optional batch import of selected on-chain sub-accounts (e.g. Hyperliquid subAccounts)
         if res.get("committed") and cand.include_subaccounts and adapter.meta.auth_mode == "wallet_address":
+            existing_wallet_addrs: set[str] = {temp_cred.api_key.strip().lower()}
+            for c_rec in vault.list_for_adapter(adapter_id):
+                if c_rec.api_key.strip():
+                    existing_wallet_addrs.add(c_rec.api_key.strip().lower())
+                if c_rec.remote_uid.strip():
+                    existing_wallet_addrs.add(c_rec.remote_uid.strip().lower())
             added_subs: list[str] = []
             failed_subs: list[dict[str, str]] = []
             for sub in cand.include_subaccounts:
                 sub_addr = normalize_evm_address(str(sub.get("address") or sub.get("subAccountUser") or ""))
-                if not sub_addr or sub_addr == temp_cred.api_key:
+                if not sub_addr or sub_addr.lower() in existing_wallet_addrs:
                     continue
+                existing_wallet_addrs.add(sub_addr.lower())
                 sub_name = str(sub.get("name") or sub.get("label") or "").strip() or f"Sub {sub_addr[:6]}"
                 occ = _occupied_account_ids(adapter_id, adapter)
                 sub_acct_id = mint_account_id(
@@ -951,6 +960,9 @@ def create_app(
                 if isinstance(prev_info, dict) and prev_info.get("remote_uid"):
                     bound_uid = str(prev_info["remote_uid"]).strip()
 
+            if uses_probe_uid and (body.create_new or is_secondary_account_id(acct_id)):
+                await sync_manager.backfill_unattributed_sibling_uids(adapter_id, exclude_acct_id=acct_id)
+
             probed_transient_err = ""
             try:
                 res = await adapter.test_connection(temp_cred)
@@ -975,18 +987,7 @@ def create_app(
                     preferred_suffix=deterministic_uid_suffix(adapter_id, probed_uid),
                     force_secondary=True,
                 )
-            has_other_partitions = bool(occupied_for_adapter - {acct_id})
-            must_verify_uid = bool(
-                uses_probe_uid
-                and (
-                    bound_uid
-                    or body.create_new
-                    or is_secondary_account_id(acct_id)
-                    or has_other_partitions
-                    or is_rotating_existing
-                    or (has_existing_data and existing_cred is None)
-                )
-            )
+            must_verify_uid = bool(uses_probe_uid)
             sync_manager.check_identity_conflicts(
                 account_id=acct_id,
                 adapter_id=adapter_id,
@@ -1037,6 +1038,22 @@ def create_app(
 
         uses_probe_uid = adapter.meta.identity_mode == "probe"
         if body.create_new and uses_probe_uid:
+            try:
+                await sync_manager.backfill_unattributed_sibling_uids(adapter_id, exclude_acct_id=acct_id)
+            except IdentityProbeTransientError as t_exc:
+                diag = humanize_exchange_error(adapter_id, t_exc)
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "detail": diag["reason"],
+                        "detail_zh": diag["reason_zh"],
+                        "error_code": diag["code"],
+                        "raw_error": diag["raw"],
+                        "committed": False,
+                    },
+                )
+            if sync_manager.has_unattributed_data_partitions(adapter_id, exclude_acct_id=acct_id):
+                return await commit_candidate(body, request, finish_onboarding=False)
             probed = await adapter.probe_identity(temp_cred)
             if isinstance(probed, dict) and probed.get("_transient_error"):
                 diag = humanize_exchange_error(adapter_id, probed["_transient_error"])
@@ -1135,14 +1152,27 @@ def create_app(
         scoped_store = store.for_account(vid, adapter_id)
         async with sync_manager.credential_change(vid, expected_revision):
             existing_c = vault.get_decrypted(vid)
+            raw_sc = store.venue_scope(vid)
             if keep_data and existing_c is not None:
-                raw_sc = store.venue_scope(vid)
-                if existing_c.label:
+                if existing_c.label and raw_sc.get_kv("account_label") != existing_c.label:
                     raw_sc.set_kv("account_label", existing_c.label)
-                if existing_c.remote_uid:
+                if existing_c.remote_uid and raw_sc.get_kv("account_uid") != existing_c.remote_uid:
                     raw_sc.set_kv("account_uid", existing_c.remote_uid)
-                if existing_c.account_role:
+                if existing_c.account_role and raw_sc.get_kv("account_role") != existing_c.account_role:
                     raw_sc.set_kv("account_role", existing_c.account_role)
+            elif (not keep_data) and is_secondary_account_id(vid):
+                known_uid = str(
+                    (existing_c.remote_uid if existing_c is not None else "")
+                    or raw_sc.get_kv("account_uid")
+                    or (adapter.extract_cached_account_uid(scoped_store) if adapter is not None else "")
+                    or ""
+                ).strip()
+                if known_uid:
+                    det_suffix = deterministic_uid_suffix(adapter_id, known_uid)
+                    if det_suffix:
+                        det_id = f"{adapter_id}__{det_suffix}"
+                        if det_id != vid:
+                            store.migrate_account_journal_prefix(vid, det_id)
             had_cred = vault.delete(vid)
             had_data = bool(adapter and adapter.has_venue_data(scoped_store))
             if not had_cred and not had_data:

@@ -100,7 +100,11 @@ def build_bingx_venue_ledger(
         if not isinstance(sb, dict):
             continue
         ccy = str(sb.get("asset") or "").strip().upper()
-        qty = float(sb.get("free") or 0.0) + float(sb.get("locked") or 0.0)
+        qty = (
+            float(sb.get("free") or 0.0) + float(sb.get("locked") or 0.0)
+            if ("free" in sb or "locked" in sb)
+            else float(sb.get("balance") or 0.0)
+        )
         if not ccy or qty <= 0:
             continue
         u_val = _coin_usd(ccy, qty)

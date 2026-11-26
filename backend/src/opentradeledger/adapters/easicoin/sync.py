@@ -87,18 +87,41 @@ async def sync_easicoin_venue(
         key_fn=lambda r: str(r.get("order_id") or ""),
         ts_fn=lambda r: float(r.get("created_time") or 0),
     )
+    existing_transfers = scope.load_records("transfers")
+    legacy_noid_keys = {
+        transfer_record_id(ar)
+        for ar in existing_transfers
+        if not (ar.get("transfer_id") or ar.get("id"))
+    }
+    comp_counts: dict[str, int] = {}
+    for tr in transfers:
+        ck = transfer_record_id(tr)
+        comp_counts[ck] = comp_counts.get(ck, 0) + 1
+
+    def _transfer_upsert_key(r: Any) -> str:
+        ck = transfer_record_id(r)
+        tid = str(r.get("transfer_id") or r.get("id") or "").strip()
+        if tid and (ck not in legacy_noid_keys or comp_counts.get(ck, 0) > 1):
+            return f"tr_{tid}"
+        return ck
+
     scope.upsert_records(
         "transfers",
         transfers,
-        key_fn=transfer_record_id,
+        key_fn=_transfer_upsert_key,
         ts_fn=lambda r: float(r.get("time") or 0),
     )
     prev_live = scope.get_kv("live_bundle")
     live = dict(live) if isinstance(live, dict) else {}
     failed_fields = [str(x) for x in (live.pop("_failed_fields", None) or ()) if x]
     warnings = [str(w) for w in (live.get("_warnings") or ()) if w]
+    for tw in getattr(client, "_transfer_warnings", None) or ():
+        if tw and str(tw) not in warnings:
+            warnings.append(str(tw))
+    if warnings:
+        live["_warnings"] = warnings
     if not has_unattributed_snapshot and isinstance(prev_live, dict) and failed_fields:
-        prev_uid_chk = account_uid(prev_live.get("userid"))
+        prev_uid_chk = account_uid(prev_live.get("userid") or prev_live.get("uid"))
         if not prev_uid_chk or prev_uid_chk == uid:
             for fk in failed_fields:
                 if fk in prev_live and prev_live[fk]:

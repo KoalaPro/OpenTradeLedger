@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
-from opentradeledger.adapters.kucoin.client import kucoin_position_unique_key
+from opentradeledger.adapters.kucoin.client import KucoinApiError, kucoin_position_unique_key
 from opentradeledger.core.venue_primitives import STABLECOINS
 
 if TYPE_CHECKING:
@@ -23,7 +23,12 @@ KUCOIN_MERGE_SPECS = {
 def extract_kucoin_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, tuple[int, ...]]:
     tickers = snap.get("tickers") if isinstance(snap.get("tickers"), dict) else {}
     fut_ov = snap.get("futures_overview") if isinstance(snap.get("futures_overview"), dict) else {}
-    equity_usd = float(fut_ov.get("accountEquity") or 0.0)
+    fut_raw = (
+        fut_ov.get("accountEquity")
+        if fut_ov.get("accountEquity") is not None
+        else (fut_ov.get("marginBalance") if fut_ov.get("marginBalance") is not None else fut_ov.get("availableBalance"))
+    )
+    equity_usd = float(fut_raw or 0.0)
 
     for acct in snap.get("spot_accounts") or []:
         if not isinstance(acct, dict):
@@ -32,7 +37,11 @@ def extract_kucoin_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool,
         if acct_type in {"contract", "futures"}:
             continue
         ccy = str(acct.get("currency") or "").strip().upper()
-        bal = float(acct.get("balance") or 0.0)
+        bal = (
+            float(acct["balance"])
+            if acct.get("balance") is not None
+            else (float(acct.get("available") or 0.0) + float(acct.get("holds") or 0.0))
+        )
         if not ccy or bal <= 0:
             continue
         equity_usd += bal if ccy in STABLECOINS else (bal * float(tickers.get(ccy) or 0.0))
@@ -60,6 +69,20 @@ async def sync_kucoin_venue(
     last_sync_ms = int(existing_snap.get("_last_sync_ms") or 0)
     since_ms = max(0, last_sync_ms - 2 * 86_400_000) if (last_sync_ms > 0 and not force_full) else 0
     raw_snap = await client.fetch_full_snapshot(since_ms=since_ms)
+    failed_fields = [str(k) for k in (raw_snap.get("_failed_fields") or ()) if k]
+    raw_warnings = [str(w) for w in (raw_snap.get("warnings") or ())]
+    if not existing_snap:
+        for w in raw_warnings:
+            if "malformed" in w.lower():
+                raise KucoinApiError(w)
+    else:
+        for fk in failed_fields:
+            if fk in existing_snap and existing_snap[fk] is not None:
+                raw_snap[fk] = existing_snap[fk]
+            else:
+                for w in raw_warnings:
+                    if w.startswith(f"{fk}:") and "malformed" in w.lower():
+                        raise KucoinApiError(w)
     snap = store.upsert_plugin_snapshot("kucoin", raw_snap, merge_specs=KUCOIN_MERGE_SPECS)
     eq_usd, has_open, fp_after = extract_kucoin_snapshot_activity(snap)
     new_closed = 0

@@ -93,6 +93,47 @@ function normSymbol(s?: string): string {
   return !s || s.toUpperCase() === 'ALL' ? 'ALL' : s.toUpperCase()
 }
 
+const ONBOARDING_WARNING_STORAGE_KEY = 'otl_onboarding_warning_v1'
+
+type OnboardingFailedSubaccount = {
+  address: string
+  name: string
+  error?: string
+  error_zh?: string
+}
+
+function readStoredOnboardingWarning(): OnboardingFailedSubaccount[] {
+  try {
+    const raw = window.sessionStorage.getItem(ONBOARDING_WARNING_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is OnboardingFailedSubaccount =>
+        Boolean(
+          item &&
+            typeof item === 'object' &&
+            typeof item.address === 'string' &&
+            typeof item.name === 'string',
+        ),
+    )
+  } catch {
+    return []
+  }
+}
+
+function writeStoredOnboardingWarning(items: OnboardingFailedSubaccount[]): void {
+  try {
+    if (items.length > 0) {
+      window.sessionStorage.setItem(ONBOARDING_WARNING_STORAGE_KEY, JSON.stringify(items))
+    } else {
+      window.sessionStorage.removeItem(ONBOARDING_WARNING_STORAGE_KEY)
+    }
+  } catch {
+    /* sessionStorage may be unavailable in restricted environments */
+  }
+}
+
 export default function App() {
   const [hash, setHash] = useState(() => typeof window !== 'undefined' ? window.location.hash : '')
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -133,9 +174,13 @@ export default function App() {
   } | null>(null)
   const [dashboardLoading, setDashboardLoading] = useState(false)
   const [bootstrapLoading, setBootstrapLoading] = useState(false)
-  const [onboardingWarning, setOnboardingWarning] = useState<
-    Array<{ address: string; name: string; error?: string; error_zh?: string }>
-  >([])
+  const [onboardingWarning, setOnboardingWarningState] = useState<OnboardingFailedSubaccount[]>(
+    () => (typeof window !== 'undefined' ? readStoredOnboardingWarning() : []),
+  )
+  const updateOnboardingWarning = useCallback((next: OnboardingFailedSubaccount[]) => {
+    setOnboardingWarningState(next)
+    writeStoredOnboardingWarning(next)
+  }, [])
   const authGateLocaleRef = useRef<Locale | null>(null)
   const [adapters, setAdapters] = useState<ExchangeAdapterInfo[]>([])
   const [exchangeErrorCount, setExchangeErrorCount] = useState(0)
@@ -420,13 +465,60 @@ export default function App() {
   }
 
   const handleSaveJournal = async (tradeId: string, tags: string[], note: string) => {
+    const nextTags = [...tags]
     try {
       await api.saveJournal(tradeId, tags, note, data?.demo_mode)
     } catch (e) {
       handlePossibleAuthError(e)
       throw e
     }
-    await loadAll()
+    setData(prev =>
+      prev
+        ? {
+            ...prev,
+            trades: prev.trades.map(tr =>
+              tr.trade_id === tradeId ? { ...tr, tags: nextTags, note } : tr,
+            ),
+          }
+        : prev,
+    )
+    if (!allowed.current) return
+    const epoch = ledgerEpoch.current
+    const id = ++dashboardRequest.current
+    const query = { ...currentQuery.current }
+    void api
+      .getDashboard(query.rangeKey, query.effVenue, query.effSymbol)
+      .then(dash => {
+        if (epoch !== ledgerEpoch.current || id !== dashboardRequest.current || !allowed.current) return
+        setData(
+          dash.trades.some(tr => tr.trade_id === tradeId)
+            ? {
+                ...dash,
+                trades: dash.trades.map(tr =>
+                  tr.trade_id === tradeId &&
+                  !tr.note &&
+                  (!tr.tags || tr.tags.length === 0) &&
+                  (note || nextTags.length > 0)
+                    ? { ...tr, tags: nextTags, note }
+                    : tr,
+                ),
+              }
+            : dash,
+        )
+        setAppliedScope({
+          rangeKey: dash.range_key || query.rangeKey,
+          venueFilter: normVenue(dash.venue_filter ?? query.effVenue),
+          symbolFilter: normSymbol(dash.symbol_filter ?? query.effSymbol),
+        })
+      })
+      .catch(e => {
+        handlePossibleAuthError(e)
+      })
+      .finally(() => {
+        if (id === dashboardRequest.current) {
+          setDashboardLoading(false)
+        }
+      })
   }
 
   const handleGenerateAi = async (mode: 'auto' | 'ai' | 'local_rules' = 'auto') => {
@@ -682,7 +774,7 @@ export default function App() {
                                 : f.error_zh || f.error || '同步失败'
                             return (
                               <li key={f.address}>
-                                <strong>{f.name}</strong> ({shortAddr})：{reason}
+                                <strong>{f.name}</strong> (<span className="sensitive">{shortAddr}</span>)：{reason}
                               </li>
                             )
                           })}
@@ -693,7 +785,7 @@ export default function App() {
                       type="button"
                       data-testid="dismiss-onboarding-warning-btn"
                       aria-label={settings.locale === 'en' ? 'Dismiss' : '关闭提示'}
-                      onClick={() => setOnboardingWarning([])}
+                      onClick={() => updateOnboardingWarning([])}
                       className="otl-btn-ghost h-6 w-6 px-0 justify-center shrink-0"
                     >
                       <X size={14} />
@@ -834,7 +926,7 @@ export default function App() {
                           }
                         }}
                         onUpsertExchange={async (body, onStep) => {
-                          setOnboardingWarning([])
+                          updateOnboardingWarning([])
                           onStep?.('verifying')
                           const verRes = await api.verifyExchange(body)
                           onStep?.('syncing')
@@ -859,7 +951,7 @@ export default function App() {
                             )
                           }
                           if (syncRes.failed_subaccounts && syncRes.failed_subaccounts.length > 0) {
-                            setOnboardingWarning(syncRes.failed_subaccounts)
+                            updateOnboardingWarning(syncRes.failed_subaccounts)
                           }
                           if (syncRes.auth_status) {
                             session.changed(syncRes.auth_status)
@@ -901,6 +993,9 @@ export default function App() {
                           session.beginChange()
                           try {
                             await api.setDemoMode(enabled)
+                            if (enabled) {
+                              updateOnboardingWarning([])
+                            }
                             session.notifyOtherTabs()
                           } catch (e) {
                             if (!handlePossibleAuthError(e)) setError(e instanceof Error ? e.message : 'Failed to switch ledger')

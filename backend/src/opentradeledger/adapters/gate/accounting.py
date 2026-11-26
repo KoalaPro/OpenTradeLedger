@@ -887,18 +887,59 @@ def build_gate_venue_ledger(
 
     # Live balances & open positions
     wt = live_bundle.get("wallet_total") or {}
-    wt_total = wt.get("total") or {}
-    wt_details = wt.get("details") or {}
+    wt_total = wt.get("total") if isinstance(wt, Mapping) else None
+    has_valid_wt_total = isinstance(wt_total, Mapping) and wt_total.get("amount") is not None
+    wt_total = wt_total if isinstance(wt_total, Mapping) else {}
+    wt_details = (wt.get("details") or {}) if isinstance(wt, Mapping) else {}
     fa = live_bundle.get("futures_account") or {}
     uni = live_bundle.get("unified") or {}
     stk_assets = live_bundle.get("stock_assets") or {}
 
-    gate_total_equity_usd = dec(wt_total.get("amount"))
-    unified_equity_usd = dec(uni.get("unified_account_total_equity") or (wt_details.get("spot") or {}).get("amount"))
+    unified_equity_usd = dec(
+        uni.get("unified_account_total_equity")
+        or uni.get("total_equity_usd")
+        or (wt_details.get("spot") or {}).get("amount")
+    )
+    if unified_equity_usd <= 0 and isinstance(uni, Mapping) and isinstance(uni.get("balances"), Mapping):
+        bal_sum = Decimal("0")
+        for ccy_k, b_row in uni["balances"].items():
+            if not isinstance(b_row, Mapping):
+                continue
+            eq_u_dec = dec(b_row.get("equity_usd"))
+            if eq_u_dec > 0:
+                bal_sum += eq_u_dec
+            elif str(ccy_k).strip().upper() in USD_CASH_ASSETS:
+                q_dec = dec(b_row.get("equity"))
+                if q_dec <= 0:
+                    q_dec = dec(b_row.get("available")) + dec(b_row.get("freeze") or b_row.get("locked"))
+                bal_sum += q_dec
+        unified_equity_usd = bal_sum
     gate_futures_available_usd = dec(fa.get("available"))
     quant_equity_usd = dec((wt_details.get("quant") or {}).get("amount"))
-    stock_equity_usd = dec(stk_assets.get("equity") or (wt_details.get("tradfi_spot") or {}).get("amount"))
+    stock_equity_usd = dec(
+        stk_assets.get("equity")
+        or stk_assets.get("total_equity")
+        or (wt_details.get("tradfi_spot") or {}).get("amount")
+    )
     finance_equity_usd = dec((wt_details.get("finance") or {}).get("amount"))
+    if has_valid_wt_total:
+        gate_total_equity_usd = dec(wt_total.get("amount"))
+    else:
+        fa_fallback_eq = (
+            dec(fa.get("total")) + dec(fa.get("unrealised_pnl"))
+            if (isinstance(fa, Mapping) and fa.get("total") is not None)
+            else gate_futures_available_usd
+        )
+        uni_is_credit = bool(
+            (isinstance(fa, Mapping) and fa.get("enable_credit"))
+            or str(uni.get("mode") or "").strip().lower() in {"multi_currency", "portfolio", "single_currency"}
+        )
+        base_core_eq = (
+            max(unified_equity_usd, fa_fallback_eq)
+            if (uni_is_credit or unified_equity_usd > 0)
+            else (unified_equity_usd + fa_fallback_eq)
+        )
+        gate_total_equity_usd = base_core_eq + quant_equity_usd + stock_equity_usd + finance_equity_usd
 
     sl_protected_contracts: set[str] = set()
     for po in live_bundle.get("futures_price_orders") or []:

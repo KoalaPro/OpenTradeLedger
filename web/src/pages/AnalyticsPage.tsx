@@ -65,6 +65,10 @@ export function AnalyticsPage({
   const activeWholeRoi = rangeKey === 'all' ? s.whole_roi_pct : (s.range_whole_roi_pct ?? s.whole_roi_pct)
   const activeBusinessItems =
     rangeKey === 'all' ? data.reconciliation.items : (data.reconciliation.range_items ?? data.reconciliation.items)
+  const ddAbs = Math.abs(Number(s.max_drawdown_usd) || 0)
+  const ddFormatted = cur.money(ddAbs)
+  const ddZeroFormatted = cur.money(0)
+  const isZeroDrawdown = ddFormatted === ddZeroFormatted
 
   const handleSaveGoal = async () => {
     if (!onUpdateSettings) return
@@ -318,9 +322,10 @@ export function AnalyticsPage({
           }
         />
         <KpiCard
+          testId="kpi-max-drawdown"
           label={locale === 'en' ? 'Max Drawdown' : '区间最大回撤'}
-          value={`-${cur.money(s.max_drawdown_usd)}`}
-          valueClass="txt-neg"
+          value={isZeroDrawdown ? ddZeroFormatted : `-${ddFormatted}`}
+          valueClass={isZeroDrawdown ? 'txt-flat' : 'txt-neg'}
           sub={locale === 'en' ? 'Peak-to-trough cumulative' : '按累计净值峰值回落计算'}
         />
         <KpiCard

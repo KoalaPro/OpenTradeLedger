@@ -22,7 +22,7 @@ from opentradeledger.core.account_partition import (
 from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.notifier import bark_configured, dispatch_notification
 from opentradeledger.core.store import LedgerStore
-from opentradeledger.core.venue_health import VenueHealthTracker
+from opentradeledger.core.venue_health import IdentityProbeTransientError, VenueHealthTracker
 from opentradeledger.core.venue_primitives import STABLECOINS
 from opentradeledger.security.vault import CredentialEditConflict, CredentialVault
 
@@ -224,6 +224,100 @@ class SyncManager:
         if adapter is not None and adapter.has_venue_data(self.store.for_account(ad_id, ad_id)):
             occupied.add(ad_id)
         return occupied
+
+    def _live_or_archived_account_ids(self, adapter_id: str, adapter: Any) -> set[str]:
+        ad_id = parse_adapter_id(adapter_id)
+        live_ids = {c.venue_id.strip().lower() for c in self.vault.list_for_adapter(ad_id)}
+        if adapter is None:
+            return live_ids
+        for cand_acct in {ad_id, *self.store.list_partition_account_ids(ad_id)}:
+            if cand_acct in live_ids:
+                continue
+            if adapter.has_venue_data(self.store.for_account(cand_acct, ad_id)):
+                live_ids.add(cand_acct)
+        return live_ids
+
+    async def backfill_unattributed_sibling_uids(
+        self,
+        adapter_id: str,
+        *,
+        exclude_acct_id: str = "",
+    ) -> None:
+        """Probe any active UID-less sibling credentials on `adapter_id` before allowing secondary account creation."""
+        ad_id = parse_adapter_id(adapter_id)
+        adapter = self.registry.get(ad_id)
+        if adapter is None or adapter.meta.identity_mode != "probe":
+            return
+        excl = (exclude_acct_id or "").strip().lower()
+        for other_cred in self.vault.list_decrypted():
+            other_acct = other_cred.venue_id.strip().lower()
+            if other_acct == excl or other_cred.effective_adapter_id != ad_id:
+                continue
+            other_sc = self.store.venue_scope(other_acct)
+            other_scoped = self.store.for_account(other_acct, ad_id)
+            existing_uid = str(
+                other_cred.remote_uid
+                or other_sc.get_kv("account_uid")
+                or adapter.extract_cached_account_uid(other_scoped)
+                or ""
+            ).strip()
+            if existing_uid:
+                continue
+            other_info = await adapter.probe_identity(other_cred)
+            if isinstance(other_info, dict):
+                if other_info.get("_transient_error"):
+                    raise IdentityProbeTransientError(str(other_info["_transient_error"]))
+                found_uid = str(other_info.get("remote_uid") or "").strip()
+                found_role = str(other_info.get("account_role") or other_cred.account_role or "").strip()
+                if found_uid:
+                    other_sc.set_kv("account_uid", found_uid)
+                    other_sc.set_kv("identity_backfilled_v1", True)
+                    if found_role:
+                        other_sc.set_kv("account_role", found_role)
+                    self.vault.upsert(
+                        other_cred.model_copy(
+                            update={
+                                "remote_uid": found_uid,
+                                "account_role": found_role,
+                            }
+                        )
+                    )
+
+    def has_unattributed_data_partitions(
+        self,
+        adapter_id: str,
+        *,
+        exclude_acct_id: str = "",
+    ) -> bool:
+        """Return True if any active or archived partition under `adapter_id` has data without a resolved UID."""
+        ad_id = parse_adapter_id(adapter_id)
+        adapter = self.registry.get(ad_id)
+        if adapter is None:
+            return False
+        excl = (exclude_acct_id or "").strip().lower()
+        active_creds = {
+            c.venue_id.strip().lower(): c
+            for c in self.vault.list_decrypted()
+            if c.effective_adapter_id == ad_id
+        }
+        cand_partitions = {ad_id, *self.store.list_partition_account_ids(ad_id)} | set(active_creds.keys())
+        for other_acct in sorted(cand_partitions):
+            if other_acct == excl:
+                continue
+            other_scoped = self.store.for_account(other_acct, ad_id)
+            if not adapter.has_venue_data(other_scoped):
+                continue
+            other_cred = active_creds.get(other_acct)
+            other_sc = self.store.venue_scope(other_acct)
+            other_uid = str(
+                (other_cred.remote_uid if other_cred else "")
+                or other_sc.get_kv("account_uid")
+                or adapter.extract_cached_account_uid(other_scoped)
+                or ""
+            ).strip()
+            if not other_uid:
+                return True
+        return False
 
     def check_identity_conflicts(
         self,
@@ -617,20 +711,12 @@ class SyncManager:
                     if isinstance(prev_info, dict) and prev_info.get("remote_uid"):
                         prev_bound_uid = str(prev_info["remote_uid"]).strip()
 
+                if uses_probe_uid and is_secondary_account_id(acct_id):
+                    await self.backfill_unattributed_sibling_uids(adapter_id, exclude_acct_id=acct_id)
+
                 probed = await adapter.probe_identity(cred)
                 early_uid = str(probed.get("remote_uid") or getattr(cred, "remote_uid", "") or "").strip()
-                occupied_for_adapter = self._occupied_for_adapter(adapter_id, adapter)
-                has_other_partitions = bool(occupied_for_adapter - {acct_id})
-                must_verify_uid = bool(
-                    uses_probe_uid
-                    and (
-                        prev_bound_uid
-                        or is_secondary_account_id(acct_id)
-                        or has_other_partitions
-                        or is_rotating_existing
-                        or (has_existing_data and existing_cred is None)
-                    )
-                )
+                must_verify_uid = bool(uses_probe_uid)
                 if (
                     uses_probe_uid
                     and isinstance(probed, dict)
@@ -730,6 +816,61 @@ class SyncManager:
                     require_uid_for_existing_data=bool(uses_probe_uid and is_rotating_existing and has_existing_data),
                 )
 
+                if (uses_probe_uid or uses_sync_uid) and is_secondary_account_id(acct_id):
+                    active_creds_by_acct = {
+                        c.venue_id.strip().lower(): c
+                        for c in self.vault.list_decrypted()
+                        if c.effective_adapter_id == adapter_id
+                    }
+                    candidate_partitions = (
+                        {adapter_id, *self.store.list_partition_account_ids(adapter_id)}
+                        | set(active_creds_by_acct.keys())
+                    )
+                    fresh_fps: set[str] | None = None
+                    for other_acct in sorted(candidate_partitions):
+                        if other_acct == acct_id:
+                            continue
+                        other_scoped = self.store.for_account(other_acct, adapter_id)
+                        if not adapter.has_venue_data(other_scoped):
+                            continue
+                        other_cred = active_creds_by_acct.get(other_acct)
+                        other_sc = self.store.venue_scope(other_acct)
+                        other_uid = str(
+                            (other_cred.remote_uid if other_cred else "")
+                            or other_sc.get_kv("account_uid")
+                            or adapter.extract_cached_account_uid(other_scoped)
+                            or ""
+                        ).strip()
+                        if other_uid:
+                            continue
+                        if fresh_fps is None:
+                            fresh_fps = adapter.extract_archive_record_fingerprints(
+                                scoped_store,
+                                include_legacy_fallback=False,
+                            )
+                        other_fps = adapter.extract_archive_record_fingerprints(
+                            other_scoped,
+                            include_legacy_fallback=not is_secondary_account_id(other_acct),
+                        )
+                        if bool(other_fps and fresh_fps and (other_fps & fresh_fps)) or (not other_fps):
+                            other_label = str(
+                                (other_cred.label if other_cred else "")
+                                or other_sc.get_kv("account_label")
+                                or other_acct
+                            ).strip()
+                            err_code = (
+                                "DUPLICATE_ACCOUNT_UID"
+                                if other_cred is not None
+                                else "ARCHIVED_ACCOUNT_UID_EXISTS"
+                            )
+                            raise AccountIdentityError(
+                                err_code,
+                                masked_uid=mask_uid(resolved_uid),
+                                existing_label=other_label,
+                                exchange_name=adapter.meta.display_name,
+                                exchange_name_zh=adapter.meta.display_name_zh,
+                            )
+
                 if raw_scope.get_kv("duplicate_uid_conflict"):
                     raw_scope.set_kv("duplicate_uid_conflict", False)
                 if resolved_uid:
@@ -789,6 +930,24 @@ class SyncManager:
                 if probed.get("subaccounts"):
                     result["subaccounts"] = probed["subaccounts"]
                 result["credential"] = self.vault.upsert(updated_cred)
+                if is_secondary_account_id(acct_id):
+                    try:
+                        live_or_arch = self._live_or_archived_account_ids(adapter_id, adapter) | {acct_id}
+                        tmp_bundle = adapter.build_venue_ledger(scoped_store, journals={}, now_s=float(now_s))
+                        raw_tids = {
+                            str(tr.get("trade_id") or "")
+                            for tr in (tmp_bundle.trades if tmp_bundle is not None else ())
+                            if tr.get("trade_id")
+                        }
+                        if raw_tids:
+                            self.store.claim_orphan_secondary_journals(
+                                adapter_id,
+                                acct_id,
+                                live_or_arch,
+                                raw_tids,
+                            )
+                    except Exception as claim_exc:
+                        logger.debug("Optional orphan secondary journal claim skipped for %s: %s", acct_id, claim_exc)
                 self.ledger_service.last_sync_ms = now_ms
                 return result
             except EasiCoinIdentityError:

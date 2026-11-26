@@ -13,6 +13,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import math
 import time
 from typing import Any, Callable, Optional
 from urllib.parse import urlencode
@@ -44,6 +45,22 @@ KUCOIN_ALLOWED_GET_PATHS: tuple[str, ...] = (
 
 class KucoinApiError(RuntimeError):
     """Raised when KuCoin returns code != '200000' or an HTTP error."""
+
+
+def _is_valid_kucoin_num(val: Any) -> bool:
+    if val is None or isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return math.isfinite(float(val))
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return False
+        try:
+            return math.isfinite(float(s))
+        except ValueError:
+            return False
+    return False
 
 
 def _fmt_bj_ms(ms: int) -> str:
@@ -192,11 +209,42 @@ class KucoinReadOnlyClient:
 
     async def get_spot_accounts(self) -> list[dict[str, Any]]:
         res = await self.request_readonly("GET", "/api/v1/accounts", futures=False)
-        return res if isinstance(res, list) else []
+        if not isinstance(res, list):
+            raise KucoinApiError("Malformed KuCoin spot accounts payload")
+        out: list[dict[str, Any]] = []
+        for r in res:
+            if (
+                not isinstance(r, dict)
+                or not isinstance(r.get("currency"), str)
+                or not r["currency"].strip()
+            ):
+                raise KucoinApiError("Malformed KuCoin spot accounts payload")
+            has_num = False
+            for k in ("balance", "available"):
+                if k in r:
+                    if not _is_valid_kucoin_num(r.get(k)):
+                        raise KucoinApiError("Malformed KuCoin spot accounts payload")
+                    has_num = True
+            if "holds" in r and not _is_valid_kucoin_num(r.get("holds")):
+                raise KucoinApiError("Malformed KuCoin spot accounts payload")
+            if not has_num:
+                raise KucoinApiError("Malformed KuCoin spot accounts payload")
+            out.append(r)
+        return out
 
     async def get_futures_overview(self, currency: str = "USDT") -> dict[str, Any]:
         res = await self.request_readonly("GET", "/api/v1/account-overview", {"currency": currency}, futures=True)
-        return res if isinstance(res, dict) else {}
+        if not isinstance(res, dict):
+            raise KucoinApiError("Malformed KuCoin futures overview payload")
+        has_num = False
+        for k in ("accountEquity", "marginBalance", "availableBalance"):
+            if k in res:
+                if not _is_valid_kucoin_num(res.get(k)):
+                    raise KucoinApiError("Malformed KuCoin futures overview payload")
+                has_num = True
+        if not has_num:
+            raise KucoinApiError("Malformed KuCoin futures overview payload")
+        return res
 
     async def get_positions(self) -> list[dict[str, Any]]:
         res = await self.request_readonly("GET", "/api/v1/positions", futures=True)
@@ -205,45 +253,84 @@ class KucoinReadOnlyClient:
     async def get_history_positions(
         self,
         *,
+        since_ms: int = 0,
         page_limit: int = 25,
         warnings_out: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         dedup: dict[str, dict[str, Any]] = {}
         max_p = max(1, int(page_limit))
         truncated = False
-        for page in range(1, max_p + 1):
-            res = await self.request_readonly(
-                "GET",
-                "/api/v1/history-positions",
-                {"pageId": page, "limit": 250},
-                futures=True,
-            )
-            items = res.get("items") if isinstance(res, dict) else (res if isinstance(res, list) else [])
-            if not isinstance(items, list) or not items:
-                break
-            valid_rows = [r for r in items if isinstance(r, dict)]
-            if not valid_rows:
-                break
-            new_cnt = 0
-            for idx, r in enumerate(valid_rows):
-                pk = kucoin_position_unique_key(r, fallback_idx=idx)
-                if pk not in dedup:
-                    dedup[pk] = r
-                    new_cnt += 1
-            if new_cnt == 0:
-                break
-            if isinstance(res, dict):
-                if res.get("hasMore") is False:
-                    break
-                if res.get("totalPage") is not None and page >= int(res.get("totalPage") or 1):
-                    break
-                if res.get("totalPage") is None and res.get("hasMore") is None and len(valid_rows) < 250:
-                    break
-            elif len(valid_rows) < 250:
-                break
+        now_ms = self._clock_ms()
+        window_ms = 7 * 86_400_000
+        if since_ms > 0:
+            eff_now = max(int(since_ms), int(now_ms))
+            lower_bound = int(since_ms)
+            max_windows = max(1, min(53, int((eff_now - lower_bound) // window_ms) + 2))
+        else:
+            eff_now = max(0, int(now_ms))
+            lower_bound = max(0, eff_now - 91 * 86_400_000)
+            max_windows = 13
 
-            if page == max_p:
-                truncated = True
+        w_to = eff_now
+        abort_windows = False
+        for win_idx in range(max_windows):
+            if abort_windows or w_to < lower_bound:
+                break
+            w_from = max(lower_bound, w_to - window_ms)
+            saw_older_than_win0 = False
+
+            for page in range(1, max_p + 1):
+                res = await self.request_readonly(
+                    "GET",
+                    "/api/v1/history-positions",
+                    {"from": w_from, "to": w_to, "limit": 250, "pageId": page},
+                    futures=True,
+                )
+                items = res.get("items") if isinstance(res, dict) else (res if isinstance(res, list) else [])
+                if not isinstance(items, list) or not items:
+                    break
+                valid_rows = [r for r in items if isinstance(r, dict)]
+                if not valid_rows:
+                    break
+                new_cnt = 0
+                row_ts_list: list[int] = []
+                for idx, r in enumerate(valid_rows):
+                    pk = kucoin_position_unique_key(r, fallback_idx=idx)
+                    if pk not in dedup:
+                        dedup[pk] = r
+                        new_cnt += 1
+                    rts = _kucoin_ts_ms(r.get("closeTime") or r.get("closeTimestamp") or r.get("updatedAt"))
+                    if rts > 0:
+                        row_ts_list.append(rts)
+
+                if win_idx == 0 and any(0 < rts < w_from - 60_000 for rts in row_ts_list):
+                    saw_older_than_win0 = True
+                if (
+                    win_idx >= 1
+                    and page == 1
+                    and new_cnt == 0
+                    and (not row_ts_list or all(rts < w_from - 60_000 or rts > w_to + 60_000 for rts in row_ts_list))
+                ):
+                    abort_windows = True
+                    break
+                if new_cnt == 0:
+                    break
+                if isinstance(res, dict):
+                    if res.get("hasMore") is False:
+                        break
+                    if res.get("totalPage") is not None and page >= int(res.get("totalPage") or 1):
+                        break
+                    if res.get("totalPage") is None and res.get("hasMore") is None and len(valid_rows) < 250:
+                        break
+                elif len(valid_rows) < 250:
+                    break
+
+                if page == max_p:
+                    truncated = True
+
+            if saw_older_than_win0 or w_from <= lower_bound:
+                break
+            w_to = w_from
 
         if truncated and warnings_out is not None:
             warnings_out.append(
@@ -488,7 +575,11 @@ class KucoinReadOnlyClient:
                 return default
 
         positions = await _opt("positions", self.get_positions(), [])
-        history_positions = await _opt("history_positions", self.get_history_positions(warnings_out=warnings), [])
+        history_positions = await _opt(
+            "history_positions",
+            self.get_history_positions(since_ms=since_ms, warnings_out=warnings),
+            [],
+        )
         fills = await _opt("fills", self.get_futures_fills(since_ms=since_ms, warnings_out=warnings), [])
         tx_history = await _opt(
             "tx_history",

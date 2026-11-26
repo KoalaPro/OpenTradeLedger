@@ -281,15 +281,26 @@ class MexcReadOnlyClient:
         spot_err: Optional[Exception] = None
         try:
             sp_acc = await self.spot_request("GET", "/api/v3/account", signed=True)
-            if isinstance(sp_acc, Mapping):
-                for b in sp_acc.get("balances") or []:
-                    free_v = float(b.get("free") or 0.0)
-                    lock_v = float(b.get("locked") or 0.0)
-                    if free_v + lock_v > 0:
-                        asset_u = str(b.get("asset") or "").strip().upper()
-                        spot_balances.append(dict(b))
-                        if asset_u and asset_u not in ("USDT", "USDC", "USDE", "FDUSD", "USD"):
-                            non_stable_coins.add(asset_u)
+            if (
+                not isinstance(sp_acc, Mapping)
+                or "balances" not in sp_acc
+                or not isinstance(sp_acc["balances"], list)
+                or any(
+                    not isinstance(b, Mapping)
+                    or "asset" not in b
+                    or not any(k in b for k in ("free", "locked", "balance"))
+                    for b in sp_acc["balances"]
+                )
+            ):
+                raise MexcApiError("Malformed MEXC spot account payload", status_code=200)
+            for b in sp_acc["balances"]:
+                free_v = float(b.get("free") if b.get("free") is not None else (b.get("balance") or 0.0))
+                lock_v = float(b.get("locked") or 0.0)
+                if free_v + lock_v > 0:
+                    asset_u = str(b.get("asset") or "").strip().upper()
+                    spot_balances.append(dict(b))
+                    if asset_u and asset_u not in ("USDT", "USDC", "USDE", "FDUSD", "USD"):
+                        non_stable_coins.add(asset_u)
         except Exception as exc:
             if _is_fatal_mexc_error(exc):
                 raise
@@ -311,6 +322,20 @@ class MexcReadOnlyClient:
             return_exceptions=True,
         )
 
+        raw_fut_list: Optional[list[Any]] = None
+        if not isinstance(fut_assets_res, BaseException):
+            if isinstance(fut_assets_res, Mapping) and "data" in fut_assets_res and isinstance(fut_assets_res["data"], list):
+                raw_fut_list = fut_assets_res["data"]
+            elif isinstance(fut_assets_res, list):
+                raw_fut_list = fut_assets_res
+            if raw_fut_list is None or any(
+                not isinstance(a, Mapping)
+                or not any(k in a for k in ("currency", "equity", "availableBalance"))
+                for a in raw_fut_list
+            ):
+                fut_assets_res = MexcApiError("Malformed MEXC futures assets payload", status_code=200)
+                raw_fut_list = None
+
         for f_name, f_res in (
             ("futures_assets", fut_assets_res),
             ("futures_positions", open_pos_res),
@@ -327,8 +352,8 @@ class MexcReadOnlyClient:
             raise spot_err
 
         futures_assets: list[dict[str, Any]] = []
-        if isinstance(fut_assets_res, Mapping) and isinstance(fut_assets_res.get("data"), list):
-            for a in fut_assets_res["data"]:
+        if raw_fut_list is not None:
+            for a in raw_fut_list:
                 if any(
                     abs(float(a.get(k) or 0.0)) > 0
                     for k in ("equity", "cashBalance", "availableBalance", "bonus", "unrealized", "positionMargin")

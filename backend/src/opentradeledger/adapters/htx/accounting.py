@@ -84,7 +84,12 @@ def build_htx_venue_ledger(
     for acc in snap.get("swap_accounts") or []:
         if not isinstance(acc, dict):
             continue
-        mb = float(acc.get("margin_balance") or 0.0)
+        mb_raw = (
+            acc.get("margin_balance")
+            if acc.get("margin_balance") is not None
+            else (acc.get("margin_static") if acc.get("margin_static") is not None else acc.get("margin_available"))
+        )
+        mb = float(mb_raw or 0.0)
         av = float(acc.get("margin_available") or acc.get("withdraw_available") or mb)
         fut_equity += mb
         avail_margin += av

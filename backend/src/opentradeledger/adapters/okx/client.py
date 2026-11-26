@@ -175,6 +175,11 @@ class OkxReadOnlyClient:
                 status_code=resp.status_code,
             )
         payload = resp.json()
+        if not isinstance(payload, dict):
+            raise OkxApiError(
+                f"Malformed OKX payload on {path}",
+                status_code=resp.status_code,
+            )
         code = str(payload.get("code", "0"))
         if code != "0":
             raise OkxApiError(
@@ -182,8 +187,12 @@ class OkxReadOnlyClient:
                 status_code=resp.status_code,
                 code=code,
             )
-        data = payload.get("data")
-        return data if isinstance(data, list) else []
+        if "data" not in payload or not isinstance(payload["data"], list):
+            raise OkxApiError(
+                f"Malformed OKX payload on {path}",
+                status_code=resp.status_code,
+            )
+        return payload["data"]
 
     async def _paginate_after(
         self,
@@ -246,10 +255,36 @@ class OkxReadOnlyClient:
         return list(collected.values())
 
     async def get_account_balance(self) -> list[dict[str, Any]]:
-        return await self.request_readonly("GET", "/api/v5/account/balance")
+        try:
+            res = await self.request_readonly("GET", "/api/v5/account/balance")
+        except OkxApiError as exc:
+            if "Malformed OKX payload" in str(exc):
+                raise OkxApiError("Malformed OKX account balance payload", status_code=exc.status_code) from exc
+            raise
+        if not isinstance(res, list) or (
+            res
+            and (
+                not isinstance(res[0], dict)
+                or ("totalEq" not in res[0] and "details" not in res[0])
+                or ("details" in res[0] and not isinstance(res[0]["details"], list))
+            )
+        ):
+            raise OkxApiError("Malformed OKX account balance payload")
+        return res
 
     async def get_funding_balances(self) -> list[dict[str, Any]]:
-        return await self.request_readonly("GET", "/api/v5/asset/balances")
+        try:
+            res = await self.request_readonly("GET", "/api/v5/asset/balances")
+        except OkxApiError as exc:
+            if "Malformed OKX payload" in str(exc):
+                raise OkxApiError("Malformed OKX funding balance payload", status_code=exc.status_code) from exc
+            raise
+        if not isinstance(res, list) or any(
+            not isinstance(item, dict) or ("bal" not in item and "availBal" not in item)
+            for item in res
+        ):
+            raise OkxApiError("Malformed OKX funding balance payload")
+        return res
 
     async def get_positions(self, inst_type: str = "SWAP") -> list[dict[str, Any]]:
         return await self.request_readonly("GET", "/api/v5/account/positions", {"instType": inst_type})

@@ -40,6 +40,34 @@ UM_TRADE_WINDOW_MS = 7 * 86400 * 1000 - 1000
 CAPITAL_WINDOW_MS = 89 * 86400 * 1000
 SAPI_30D_WINDOW_MS = 29 * 86400 * 1000
 SAPI_150D_WINDOW_MS = 150 * 86400 * 1000
+_MISSING = object()
+
+
+def _is_valid_binance_wallet_balances(res: Any) -> bool:
+    if not isinstance(res, list):
+        return False
+    return all(isinstance(w, dict) and ("balance" in w or "walletName" in w) for w in res)
+
+
+def _is_valid_binance_spot_account(res: Any) -> bool:
+    if not isinstance(res, dict) or not isinstance(res.get("balances"), list):
+        return False
+    return all(
+        isinstance(b, dict) and ("asset" in b or "free" in b or "locked" in b)
+        for b in res["balances"]
+    )
+
+
+def _is_valid_binance_papi_account(res: Any) -> bool:
+    return isinstance(res, dict) and any(
+        k in res for k in ("accountEquity", "actualEquity", "totalAvailableBalance", "uniMMR")
+    )
+
+
+def _is_valid_binance_fapi_account(res: Any) -> bool:
+    return isinstance(res, dict) and any(
+        k in res for k in ("totalMarginBalance", "totalWalletBalance", "assets")
+    )
 
 _SPOT_FALLBACK_BASES = (
     "https://api.binance.com",
@@ -164,6 +192,7 @@ class BinanceReadOnlyClient:
         self._custom_clock_ms = clock_ms
         self._time_offset_ms: int = 0
         self._last_time_sync_mono: float = 0.0
+        self._pagination_warnings: list[str] = []
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_sec, connect=5.0),
@@ -345,17 +374,44 @@ class BinanceReadOnlyClient:
         return out
 
     async def fetch_live_overview_bundle(self) -> dict[str, Any]:
+        self._pagination_warnings = []
         warnings: list[str] = []
         failed_fields: list[str] = []
-        spot_acc = await self.raw_get("/api/v3/account", [("omitZeroBalances", "true")])
-        wallet_bal = await self._safe_get(
+        spot_acc: Any = {}
+        try:
+            raw_spot = await self.raw_get("/api/v3/account", [("omitZeroBalances", "true")])
+            if not _is_valid_binance_spot_account(raw_spot):
+                failed_fields.append("spot_balances")
+                warnings.append("spot_balances: malformed response structure")
+            else:
+                spot_acc = raw_spot
+        except Exception as sp_exc:
+            if _is_fatal_binance_error(sp_exc):
+                raise
+            if isinstance(sp_exc, BinanceApiError) and isinstance(sp_exc.detail, dict):
+                if sp_exc.detail.get("code") in (-1021, -1022, -2014):
+                    raise
+            failed_fields.append("spot_balances")
+            warnings.append(f"spot_balances: {sp_exc}")
+
+        raw_wallet_bal = await self._safe_get(
             "/sapi/v1/asset/wallet/balance",
             [("quoteAsset", "USDT")],
-            default=[],
+            default=_MISSING,
             field_name="wallet_balances",
             failed_fields=failed_fields,
             warnings=warnings,
         )
+        if raw_wallet_bal is _MISSING:
+            wallet_bal: list[dict[str, Any]] = []
+        elif not _is_valid_binance_wallet_balances(raw_wallet_bal):
+            if "wallet_balances" not in failed_fields:
+                failed_fields.append("wallet_balances")
+            warnings.append("wallet_balances: malformed response structure")
+            wallet_bal = []
+        else:
+            wallet_bal = raw_wallet_bal
+
         bnb_burn = await self._safe_get(
             "/sapi/v1/bnbBurn",
             default={},
@@ -374,6 +430,9 @@ class BinanceReadOnlyClient:
         papi_err: Optional[Exception] = None
         try:
             papi_acc = await self.raw_get("/papi/v1/account")
+            if not _is_valid_binance_papi_account(papi_acc):
+                papi_err = BinanceApiError(200, "/papi/v1/account", "Malformed PAPI account payload")
+                papi_acc = None
         except Exception as exc:
             if _is_fatal_binance_error(exc):
                 raise
@@ -382,8 +441,10 @@ class BinanceReadOnlyClient:
                     raise
             papi_err = exc
 
-        if isinstance(papi_acc, dict) and "accountEquity" in papi_acc:
-            pm_account = papi_acc
+        if _is_valid_binance_papi_account(papi_acc):
+            pm_account = dict(papi_acc)
+            if "accountEquity" not in pm_account and "actualEquity" in pm_account:
+                pm_account["accountEquity"] = str(pm_account.get("actualEquity") or "0")
             bal_res = await self._safe_get(
                 "/papi/v1/balance",
                 default=[],
@@ -415,23 +476,36 @@ class BinanceReadOnlyClient:
                 futures_open_orders = [dict(o) for o in oo_res if isinstance(o, dict)]
         else:
             fapi_acc: Any = None
+            fapi_err: Optional[Exception] = None
             try:
                 fapi_acc = await self.raw_get("/fapi/v2/account")
+                if not _is_valid_binance_fapi_account(fapi_acc):
+                    fapi_err = BinanceApiError(200, "/fapi/v2/account", "Malformed FAPI account payload")
+                    fapi_acc = None
             except Exception as f_exc:
                 if _is_fatal_binance_error(f_exc):
                     raise
-                warnings.append(f"futures_account: papi={papi_err}; fapi={f_exc}")
+                if isinstance(f_exc, BinanceApiError) and isinstance(f_exc.detail, dict):
+                    if f_exc.detail.get("code") in (-1021, -1022, -2014):
+                        raise
+                fapi_err = f_exc
+            if fapi_acc is None:
+                warnings.append(f"futures_account: papi={papi_err}; fapi={fapi_err}")
                 for fk in ("pm_account", "futures_balances", "futures_positions", "futures_open_orders"):
                     if fk not in failed_fields:
                         failed_fields.append(fk)
-            if isinstance(fapi_acc, dict):
+            else:
                 account_mode = "FAPI"
                 pm_account = {
-                    "accountEquity": str(fapi_acc.get("totalMarginBalance") or "0"),
+                    "accountEquity": str(
+                        fapi_acc.get("totalMarginBalance")
+                        if fapi_acc.get("totalMarginBalance") is not None
+                        else (fapi_acc.get("totalWalletBalance") or "0")
+                    ),
                     "totalAvailableBalance": str(fapi_acc.get("availableBalance") or "0"),
                 }
                 for a in fapi_acc.get("assets") or []:
-                    if abs(float(a.get("walletBalance") or 0)) > 0:
+                    if isinstance(a, dict) and abs(float(a.get("walletBalance") or 0)) > 0:
                         futures_balances.append(dict(a))
                 pos_risk = await self._safe_get(
                     "/fapi/v2/positionRisk",
@@ -667,10 +741,11 @@ class BinanceReadOnlyClient:
         dedup: dict[str, dict[str, Any]],
     ) -> None:
         w_cur = max(0, int(start_ms))
+        cursor_param = "fromId" if id_field == "id" else "orderId"
         while w_cur < end_ms:
             w_end = min(end_ms, w_cur + UM_TRADE_WINDOW_MS)
             page_start = w_cur
-            for _ in range(15):
+            for _ in range(100):
                 rows = await self._safe_get(
                     path,
                     [("symbol", sym), ("startTime", page_start), ("endTime", w_end), ("limit", page_limit)],
@@ -678,7 +753,9 @@ class BinanceReadOnlyClient:
                 )
                 if not isinstance(rows, list) or not rows:
                     break
-                max_t = page_start
+                min_t: Optional[int] = None
+                max_t = 0
+                max_id_int = -1
                 new_in_page = 0
                 for r in rows:
                     if not isinstance(r, dict):
@@ -688,11 +765,85 @@ class BinanceReadOnlyClient:
                         dedup[rid] = dict(r)
                         new_in_page += 1
                     rt = int(r.get(time_field) or 0)
+                    if min_t is None or rt < min_t:
+                        min_t = rt
                     if rt > max_t:
                         max_t = rt
-                if len(rows) < page_limit or (new_in_page == 0 and max_t <= page_start):
+                    try:
+                        rid_val = int(r.get(id_field))  # type: ignore[arg-type]
+                        if rid_val > max_id_int:
+                            max_id_int = rid_val
+                    except (TypeError, ValueError):
+                        pass
+
+                if len(rows) < page_limit:
                     break
-                page_start = max_t if new_in_page > 0 and max_t > page_start else (max_t + 1)
+                if new_in_page == 0 and max_t < page_start:
+                    # Static mock ignoring startTime and returning rows strictly older than page_start
+                    break
+
+                eff_max_t = max(max_t, page_start)
+                if (min_t is not None and min_t == max_t) or (new_in_page == 0 and max_t <= page_start):
+                    id_cursor_advanced = False
+                    max_seen_rt = eff_max_t
+                    if max_id_int >= 0:
+                        cur_from_id = max_id_int + 1
+                        for _ in range(50):
+                            id_rows = await self._safe_get(
+                                path,
+                                [("symbol", sym), (cursor_param, cur_from_id), ("limit", page_limit)],
+                                default=[],
+                            )
+                            if not isinstance(id_rows, list) or not id_rows:
+                                break
+                            batch_max_id = -1
+                            exceeded_w_end = False
+                            progressed_id = 0
+                            for ir in id_rows:
+                                if not isinstance(ir, dict):
+                                    continue
+                                irt = int(ir.get(time_field) or 0)
+                                ir_id_val = -1
+                                try:
+                                    ir_id_val = int(ir.get(id_field))  # type: ignore[arg-type]
+                                except (TypeError, ValueError):
+                                    pass
+                                if ir_id_val >= cur_from_id:
+                                    id_cursor_advanced = True
+                                    progressed_id += 1
+                                if ir_id_val > batch_max_id:
+                                    batch_max_id = ir_id_val
+                                if start_ms <= irt <= w_end:
+                                    ir_key = str(
+                                        ir.get(id_field)
+                                        or f"{ir.get('orderId')}_{ir.get(time_field)}_{ir.get('qty') or ir.get('origQty')}"
+                                    )
+                                    if ir_key not in dedup:
+                                        dedup[ir_key] = dict(ir)
+                                    if irt > max_seen_rt:
+                                        max_seen_rt = irt
+                                elif irt > w_end:
+                                    exceeded_w_end = True
+                            if (
+                                exceeded_w_end
+                                or len(id_rows) < page_limit
+                                or batch_max_id < cur_from_id
+                                or progressed_id == 0
+                            ):
+                                break
+                            cur_from_id = batch_max_id + 1
+
+                    if not id_cursor_advanced:
+                        warn_msg = (
+                            f"{path}({sym}): same-millisecond page limit ({page_limit}) reached at {eff_max_t}; "
+                            f"{cursor_param} cursor did not advance"
+                        )
+                        if warn_msg not in self._pagination_warnings:
+                            self._pagination_warnings.append(warn_msg)
+                    page_start = max(eff_max_t, max_seen_rt) + 1
+                else:
+                    page_start = max_t if (new_in_page > 0 and max_t > page_start) else (eff_max_t + 1)
+
                 if page_start > w_end:
                     break
             w_cur = w_end + 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.bingx.client import BingxApiError
 from opentradeledger.core.venue_primitives import STABLECOINS
 
 if TYPE_CHECKING:
@@ -32,7 +33,11 @@ def extract_bingx_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, 
         if not isinstance(sb, dict):
             continue
         ccy = str(sb.get("asset") or "").strip().upper()
-        qty = float(sb.get("free") or 0.0) + float(sb.get("locked") or 0.0)
+        qty = (
+            float(sb.get("free") or 0.0) + float(sb.get("locked") or 0.0)
+            if ("free" in sb or "locked" in sb)
+            else float(sb.get("balance") or 0.0)
+        )
         if not ccy or qty <= 0:
             continue
         equity_usd += qty if ccy in STABLECOINS else (qty * float(tickers.get(ccy) or 0.0))
@@ -60,6 +65,20 @@ async def sync_bingx_venue(
     last_sync_ms = int(existing_snap.get("_last_sync_ms") or 0)
     since_ms = max(0, last_sync_ms - 2 * 86_400_000) if (last_sync_ms > 0 and not force_full) else 0
     raw_snap = await client.fetch_full_snapshot(since_ms=since_ms)
+    failed_fields = [str(k) for k in (raw_snap.get("_failed_fields") or ()) if k]
+    raw_warnings = [str(w) for w in (raw_snap.get("warnings") or ())]
+    if not existing_snap:
+        for w in raw_warnings:
+            if "malformed" in w.lower():
+                raise BingxApiError(w)
+    else:
+        for fk in failed_fields:
+            if fk in existing_snap and existing_snap[fk] is not None:
+                raw_snap[fk] = existing_snap[fk]
+            else:
+                for w in raw_warnings:
+                    if w.startswith(f"{fk}:") and "malformed" in w.lower():
+                        raise BingxApiError(w)
     snap = store.upsert_plugin_snapshot("bingx", raw_snap, merge_specs=BINGX_MERGE_SPECS)
     eq_usd, has_open, fp_after = extract_bingx_snapshot_activity(snap)
     new_closed = 0

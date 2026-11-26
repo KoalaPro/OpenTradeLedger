@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from opentradeledger.adapters.base import VenueSyncOutcome
-from opentradeledger.adapters.htx.client import htx_match_realized_pnl, htx_match_unique_key
+from opentradeledger.adapters.htx.client import HtxApiError, htx_match_realized_pnl, htx_match_unique_key
 from opentradeledger.core.venue_primitives import STABLECOINS
 
 if TYPE_CHECKING:
@@ -24,7 +24,12 @@ def extract_htx_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, tu
     equity_usd = 0.0
     for acc in snap.get("swap_accounts") or []:
         if isinstance(acc, dict):
-            equity_usd += float(acc.get("margin_balance") or 0.0)
+            mb = (
+                acc.get("margin_balance")
+                if acc.get("margin_balance") is not None
+                else (acc.get("margin_static") if acc.get("margin_static") is not None else acc.get("margin_available"))
+            )
+            equity_usd += float(mb or 0.0)
 
     spot_agg: dict[str, float] = {}
     for row in snap.get("spot_balances") or []:
@@ -73,6 +78,20 @@ async def sync_htx_venue(
     last_sync_ms = int(existing_snap.get("_last_sync_ms") or 0)
     since_ms = max(0, last_sync_ms - 36 * 3600 * 1000) if (last_sync_ms > 0 and not force_full) else 0
     raw_snap = await client.fetch_full_snapshot(since_ms=since_ms)
+    failed_fields = [str(k) for k in (raw_snap.get("_failed_fields") or ()) if k]
+    raw_warnings = [str(w) for w in (raw_snap.get("warnings") or ())]
+    if not existing_snap:
+        for w in raw_warnings:
+            if "malformed" in w.lower():
+                raise HtxApiError(w)
+    else:
+        for fk in failed_fields:
+            if fk in existing_snap and existing_snap[fk] is not None:
+                raw_snap[fk] = existing_snap[fk]
+            else:
+                for w in raw_warnings:
+                    if w.startswith(f"{fk}:") and "malformed" in w.lower():
+                        raise HtxApiError(w)
     snap = store.upsert_plugin_snapshot("htx", raw_snap, merge_specs=HTX_MERGE_SPECS)
     eq_usd, has_open, fp_after = extract_htx_snapshot_activity(snap)
     new_closed = 0

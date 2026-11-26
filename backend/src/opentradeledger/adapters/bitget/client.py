@@ -28,6 +28,40 @@ logger = logging.getLogger("gate_manual.bitget")
 
 BG_WINDOW_MS = 29 * 86400 * 1000
 BG_TAX_WINDOW_MS = 7 * 86400 * 1000 - 1000
+_MISSING = object()
+
+
+def _is_valid_bitget_uta_assets(res: Any) -> bool:
+    if isinstance(res, dict):
+        return any(k in res for k in ("accountEquity", "usdtEquity", "available", "assets"))
+    if isinstance(res, list):
+        return all(
+            isinstance(item, dict)
+            and any(k in item for k in ("accountEquity", "usdtEquity", "equity", "available", "coin"))
+            for item in res
+        )
+    return False
+
+
+def _is_valid_bitget_funding_assets(res: Any) -> bool:
+    if not isinstance(res, list):
+        return False
+    return all(
+        isinstance(item, dict)
+        and "coin" in item
+        and any(k in item for k in ("balance", "available", "frozen"))
+        for item in res
+    )
+
+
+def _is_valid_bitget_spot_assets(res: Any) -> bool:
+    if not isinstance(res, list):
+        return False
+    return all(
+        isinstance(item, dict)
+        and any(k in item for k in ("coin", "available", "frozen", "locked", "usdtBalance"))
+        for item in res
+    )
 
 _ALLOWED_GET_PATHS = frozenset(
     {
@@ -55,6 +89,7 @@ _ALLOWED_GET_PATHS = frozenset(
         "/api/v2/tax/future-record",
         # Classic Account (v2) fallback & wallet deposit/withdraw
         "/api/v2/spot/account/info",
+        "/api/v2/spot/account/assets",
         "/api/v2/account/all-account-balance",
         "/api/v2/common/trade-rate",
         "/api/v2/mix/account/accounts",
@@ -222,9 +257,27 @@ class BitgetReadOnlyClient:
             if code == "429" and attempt < 3:
                 await asyncio.sleep((0.65 * (attempt + 1)) if self._owns_client else 0.01)
                 continue
-            if resp.status_code >= 400 or (signed and code and code != "00000"):
+            if resp.status_code >= 400:
                 raise BitgetApiError(resp.status_code, path, code, body)
-            return body.get("data") if isinstance(body, dict) and "data" in body else body
+            if signed:
+                if not isinstance(body, dict) or code != "00000" or "data" not in body:
+                    raise BitgetApiError(
+                        resp.status_code,
+                        path,
+                        code or "MALFORMED",
+                        body,
+                    )
+                data = body["data"]
+            else:
+                if isinstance(body, dict) and code and code != "00000":
+                    raise BitgetApiError(resp.status_code, path, code, body)
+                data = body.get("data") if isinstance(body, dict) and "data" in body else body
+
+            if path == "/api/v3/account/assets" and not _is_valid_bitget_uta_assets(data):
+                raise BitgetApiError(resp.status_code, path, "MALFORMED", "Malformed Bitget UTA assets payload")
+            if path == "/api/v2/spot/account/assets" and not _is_valid_bitget_spot_assets(data):
+                raise BitgetApiError(resp.status_code, path, "MALFORMED", "Malformed Bitget Classic spot assets payload")
+            return data
 
         raise BitgetApiError(429, path, "429", "Bitget rate limit exceeded")
 
@@ -284,6 +337,8 @@ class BitgetReadOnlyClient:
 
         try:
             uta_assets = await self.get("/api/v3/account/assets")
+            if not _is_valid_bitget_uta_assets(uta_assets):
+                raise BitgetApiError(200, "/api/v3/account/assets", "MALFORMED", "Malformed Bitget UTA assets payload")
             account_mode = "UTA"
         except Exception as exc:
             if _is_fatal_bitget_error(exc):
@@ -292,6 +347,7 @@ class BitgetReadOnlyClient:
                 exc.status_code == 401
                 or exc.code
                 in (
+                    "MALFORMED",
                     "40012",
                     "40009",
                     "400172",
@@ -322,7 +378,7 @@ class BitgetReadOnlyClient:
             )
             funding_assets = await self._safe_get(
                 "/api/v3/account/funding-assets",
-                default=[],
+                default=_MISSING,
                 field_name="funding_assets",
                 failed_fields=failed_fields,
                 warnings=warnings,
@@ -358,7 +414,15 @@ class BitgetReadOnlyClient:
                 uid_val = str(settings.get("uid") or settings.get("userId") or "")
             if not uid_val and isinstance(uta_assets, dict):
                 uid_val = str(uta_assets.get("uid") or uta_assets.get("userId") or "")
-            funding_list = [dict(a) for a in (funding_assets or []) if isinstance(a, dict)]
+            if funding_assets is _MISSING:
+                funding_list: list[dict[str, Any]] = []
+            elif not _is_valid_bitget_funding_assets(funding_assets):
+                if "funding_assets" not in failed_fields:
+                    failed_fields.append("funding_assets")
+                warnings.append("funding_assets: malformed response structure")
+                funding_list = []
+            else:
+                funding_list = [dict(a) for a in funding_assets]
             stock_bundle = await self._fetch_stock_bundle(
                 account_mode="UTA",
                 uta_assets=uta_assets,
@@ -395,19 +459,57 @@ class BitgetReadOnlyClient:
         )
         all_bal = await self._safe_get(
             "/api/v2/account/all-account-balance",
-            default=[],
+            default=_MISSING,
             field_name="classic_balances",
             failed_fields=failed_fields,
             warnings=warnings,
         )
+        if all_bal is not _MISSING and not isinstance(all_bal, list):
+            if "classic_balances" not in failed_fields:
+                failed_fields.append("classic_balances")
+            warnings.append("classic_balances: malformed response structure")
+            all_bal = []
+        elif all_bal is _MISSING:
+            all_bal = []
+
+        spot_v2_assets = await self._safe_get(
+            "/api/v2/spot/account/assets",
+            default=_MISSING,
+            field_name="spot_assets",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        if spot_v2_assets is not _MISSING and not _is_valid_bitget_spot_assets(spot_v2_assets):
+            if "spot_assets" not in failed_fields:
+                failed_fields.append("spot_assets")
+            warnings.append("spot_assets: malformed response structure")
+            spot_v2_assets = []
+        elif spot_v2_assets is _MISSING:
+            spot_v2_assets = []
+
         mix_acc = await self._safe_get(
             "/api/v2/mix/account/accounts",
             [("productType", "USDT-FUTURES")],
-            default=[],
+            default=_MISSING,
             field_name="futures_accounts",
             failed_fields=failed_fields,
             warnings=warnings,
         )
+        if mix_acc is not _MISSING and not isinstance(mix_acc, list):
+            if "futures_accounts" not in failed_fields:
+                failed_fields.append("futures_accounts")
+            warnings.append("futures_accounts: malformed response structure")
+            mix_acc = []
+        elif mix_acc is _MISSING:
+            mix_acc = []
+
+        if {"classic_balances", "spot_assets", "futures_accounts"}.issubset(set(failed_fields)):
+            raise BitgetApiError(
+                200,
+                "/api/v2/spot/account/assets",
+                "MALFORMED",
+                "; ".join(warnings) or "Malformed Bitget Classic balance payload",
+            )
         mix_pos = await self._safe_get(
             "/api/v2/mix/position/all-position",
             [("productType", "USDT-FUTURES"), ("marginCoin", "USDT")],

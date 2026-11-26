@@ -358,6 +358,18 @@ class BaseExchangeAdapter(ABC):
                 cand = _clean_uid_candidate(fut.get("user"))
                 if cand:
                     return cand
+            spot_acc = lb.get("spot_account")
+            if isinstance(spot_acc, Mapping):
+                cand = _clean_uid_candidate(spot_acc.get("uid"))
+                if cand:
+                    return cand
+            for info_k in ("spot_info", "account_info"):
+                info_obj = lb.get(info_k)
+                if isinstance(info_obj, Mapping):
+                    for uid_k in ("userId", "uid", "user_id"):
+                        cand = _clean_uid_candidate(info_obj.get(uid_k))
+                        if cand:
+                            return cand
         return ""
 
     def extract_archive_record_fingerprints(

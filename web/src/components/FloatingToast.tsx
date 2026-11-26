@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { AlertTriangle, Check, X } from 'lucide-react'
 
@@ -7,9 +7,10 @@ interface ToastItemProps {
   tone: 'ok' | 'err'
   testId: string
   onDismiss: () => void
+  renderText?: (text: string) => ReactNode
 }
 
-function ToastItem({ message, tone, testId, onDismiss }: ToastItemProps) {
+function ToastItem({ message, tone, testId, onDismiss, renderText }: ToastItemProps) {
   const [rendered, setRendered] = useState(Boolean(message))
   const [displayedMsg, setDisplayedMsg] = useState(message)
   const [closing, setClosing] = useState(false)
@@ -67,7 +68,7 @@ function ToastItem({ message, tone, testId, onDismiss }: ToastItemProps) {
       ) : (
         <AlertTriangle size={15} className="shrink-0 mt-0.5" style={{ color: 'var(--err)' }} />
       )}
-      <span className="flex-1 leading-snug">{activeText}</span>
+      <span className="flex-1 leading-snug">{renderText ? renderText(activeText) : activeText}</span>
       <button
         type="button"
         data-no-ripple="true"
@@ -88,6 +89,7 @@ export function FloatingToastViewport({
   onClearError,
   okTestId = 'settings-ok-banner',
   errTestId = 'settings-error-banner',
+  renderError,
 }: {
   statusMsg: string
   errorMsg: string
@@ -95,6 +97,7 @@ export function FloatingToastViewport({
   onClearError: () => void
   okTestId?: string
   errTestId?: string
+  renderError?: (text: string) => ReactNode
 }) {
   const viewportNode = (
     <div
@@ -102,7 +105,13 @@ export function FloatingToastViewport({
       className="fixed bottom-5 right-5 z-[60] flex flex-col gap-2 max-w-[400px] w-[calc(100vw-2.5rem)] sm:w-auto pointer-events-none"
     >
       <ToastItem message={statusMsg} tone="ok" testId={okTestId} onDismiss={onClearStatus} />
-      <ToastItem message={errorMsg} tone="err" testId={errTestId} onDismiss={onClearError} />
+      <ToastItem
+        message={errorMsg}
+        tone="err"
+        testId={errTestId}
+        onDismiss={onClearError}
+        renderText={renderError}
+      />
     </div>
   )
 

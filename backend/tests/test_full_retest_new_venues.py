@@ -22,6 +22,7 @@ from opentradeledger.adapters.htx.sync import sync_htx_venue
 from opentradeledger.adapters.hyperliquid.client import (
     HYPERLIQUID_ALLOWED_INFO_TYPES,
     HYPERLIQUID_ALLOWED_POST_TYPES,
+    HyperliquidApiError,
     HyperliquidReadOnlyClient,
 )
 from opentradeledger.adapters.hyperliquid.sync import sync_hyperliquid_venue
@@ -229,10 +230,10 @@ def test_htx_from_id_pagination_48h_chunking_point_exclusion_and_withdraw_states
     now_ms = 1_760_000_000_000
     hour_ms = 3600 * 1000
 
-    # 120 match rows (60 open/close pairs -> 60 closed trades) spanning 100 hours ago to 1 hour ago
+    # 120 match rows (60 open/close pairs -> 60 closed trades): 8 pairs 100h ago (>48h) + 52 pairs (104 rows > 2 pages) in last 40h
     matches_db: list[dict[str, Any]] = []
     for i in range(60):
-        base_t = now_ms - (100 * hour_ms) + i * (90 * 60_000)
+        base_t = (now_ms - (100 * hour_ms) + i * (30 * 60_000)) if i < 8 else (now_ms - (40 * hour_ms) + (i - 8) * (30 * 60_000))
         matches_db.append(
             {
                 "id": 1000 + i * 2,
@@ -676,11 +677,23 @@ def test_kucoin_http_401_v3_key_negotiation_and_multipage_fills_tx_cashflows_par
 
     async def _run() -> None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(kc_handler)) as hc:
-            client = KucoinReadOnlyClient(api_key="k", api_secret="s", passphrase="p", key_version="2", client=hc)
+            client = KucoinReadOnlyClient(
+                api_key="k",
+                api_secret="s",
+                passphrase="p",
+                key_version="2",
+                client=hc,
+                clock_ms=lambda: now_ms,
+            )
             outcome = await sync_kucoin_venue(client, store, now_s=now_ms // 1000, force_full=True)
             assert client.key_version == "3"
             assert outcome.equity_usd == 1190.0
-            assert seen_hist_params == [{"pageId": "1", "limit": "250"}]
+            assert 1 <= len(seen_hist_params) <= 2  # Static mock ignoring from/to broken cleanly on window #2!
+            for hp in seen_hist_params:
+                assert set(hp.keys()) == {"from", "to", "pageId", "limit"}
+                assert "currentPage" not in hp and "pageSize" not in hp
+                assert hp["pageId"] == "1" and hp["limit"] == "250"
+                assert 0 < int(hp["to"]) - int(hp["from"]) <= 7 * 86_400_000
 
             snap = store.venue_scope("kucoin").get_kv("snapshot")
             assert len(snap["fills"]) == 140
@@ -709,3 +722,505 @@ def test_kucoin_http_401_v3_key_negotiation_and_multipage_fills_tx_cashflows_par
     assert kc_card["trade_count"] == 1
     assert round(dash["trades"][0]["total_rebate_usd"], 2) == 1.35  # 135 * 0.01 from multi-page tx_history!
     assert dash["reconciliation"]["residual_usd"] == 0.0
+
+
+def test_four_venues_malformed_http200_balance_payloads_rejected_and_never_shrink_known_equity(tmp_path: Path) -> None:
+    """HTTP 200 with malformed balance schemas (e.g. {'unexpected': 'invalid balance record'}) must raise ApiError,
+    block initial-bind snapshot poisoning, and NEVER shrink cached known equity on subsequent syncs."""
+    now_ms = 1_760_000_000_000
+    hl_wallet = "0x" + "d" * 40
+    bad_obj = {"unexpected": "invalid balance record"}
+
+    state = {
+        "bx_swap_bad": False,
+        "bx_spot_bad": False,
+        "htx_swap_bad": False,
+        "htx_spot_bad": False,
+        "hl_ch_bad": False,
+        "hl_spot_bad": False,
+        "hl_vault_bad": False,
+        "kc_spot_bad": False,
+        "kc_fut_bad": False,
+    }
+
+    def bx_handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        if p in {"/openApi/swap/v3/user/balance", "/openApi/swap/v2/user/balance"}:
+            if state["bx_swap_bad"]:
+                return httpx.Response(200, json={"code": 0, "data": bad_obj})
+            return httpx.Response(200, json={"code": 0, "data": [{"asset": "USDT", "equity": "100.0", "availableMargin": "100.0"}]})
+        if p == "/openApi/spot/v1/account/balance":
+            if state["bx_spot_bad"]:
+                return httpx.Response(200, json={"code": 0, "data": bad_obj})
+            return httpx.Response(200, json={"code": 0, "data": {"balances": [{"asset": "USDT", "free": "25.0", "locked": "0"}]}})
+        if p == "/openApi/wallets/v1/capital/deposit/hisrec":
+            return httpx.Response(200, json={"code": 0, "data": [{"id": "bd1", "coin": "USDT", "amount": "125.0", "status": 6, "insertTime": now_ms}]})
+        return httpx.Response(200, json={"code": 0, "data": []})
+
+    def htx_handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        if p == "/linear-swap-api/v1/swap_cross_account_info":
+            if state["htx_swap_bad"]:
+                return httpx.Response(200, json={"status": "ok", "data": bad_obj})
+            return httpx.Response(200, json={"status": "ok", "data": [{"margin_balance": "100.0", "margin_available": "100.0"}]})
+        if p == "/v1/account/accounts":
+            if state["htx_spot_bad"]:
+                return httpx.Response(200, json={"status": "ok", "data": bad_obj})
+            return httpx.Response(200, json={"status": "ok", "data": [{"id": 9, "type": "spot"}]})
+        if p == "/v1/account/accounts/9/balance":
+            return httpx.Response(200, json={"status": "ok", "data": {"list": [{"currency": "usdt", "type": "trade", "balance": "30.0"}]}})
+        if p == "/v1/query/deposit-withdraw":
+            if req.url.params.get("type") == "deposit":
+                return httpx.Response(200, json={"status": "ok", "data": [{"id": 1, "currency": "usdt", "amount": "130.0", "state": "safe", "created-at": now_ms}]})
+            return httpx.Response(200, json={"status": "ok", "data": []})
+        return httpx.Response(200, json={"status": "ok", "data": []})
+
+    def hl_handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content.decode("utf-8"))
+        tp = body.get("type")
+        if tp == "clearinghouseState":
+            if state["hl_ch_bad"]:
+                return httpx.Response(200, json=bad_obj)
+            return httpx.Response(200, json={"marginSummary": {"accountValue": "100.0", "withdrawable": "100.0"}, "assetPositions": []})
+        if tp == "spotClearinghouseState":
+            if state["hl_spot_bad"]:
+                return httpx.Response(200, json=bad_obj)
+            return httpx.Response(200, json={"balances": [{"coin": "USDC", "token": 0, "total": "35.0"}]})
+        if tp == "userVaultEquities":
+            if state["hl_vault_bad"]:
+                return httpx.Response(200, json=bad_obj)
+            return httpx.Response(200, json=[{"vaultAddress": "0x" + "8" * 40, "equity": "15.0"}])
+        if tp == "allMids":
+            return httpx.Response(200, json={"BTC": "95000.0"})
+        if tp == "spotMeta":
+            return httpx.Response(200, json={"tokens": [{"name": "USDC", "index": 0}], "universe": []})
+        if tp == "userNonFundingLedgerUpdates":
+            return httpx.Response(200, json=[{"hash": "0xdep1", "time": now_ms, "delta": {"type": "deposit", "usdc": "150.0"}}])
+        return httpx.Response(200, json=[])
+
+    def kc_handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        if p == "/api/v1/accounts":
+            if state["kc_spot_bad"]:
+                return httpx.Response(200, json={"code": "200000", "data": bad_obj})
+            return httpx.Response(200, json={"code": "200000", "data": [{"type": "main", "currency": "USDT", "balance": "40.0"}]})
+        if p == "/api/v1/account-overview":
+            if state["kc_fut_bad"]:
+                return httpx.Response(200, json={"code": "200000", "data": bad_obj})
+            return httpx.Response(200, json={"code": "200000", "data": {"accountEquity": 100.0, "availableBalance": 100.0}})
+        if p == "/api/v1/deposits":
+            return httpx.Response(200, json={"code": "200000", "data": {"items": [{"walletTxId": "kd1", "currency": "USDT", "amount": "140.0", "createdAt": now_ms}]}})
+        return httpx.Response(200, json={"code": "200000", "data": {"items": [], "dataList": [], "ticker": []}})
+
+    init_store = LedgerStore(tmp_path / "init_reject")
+    good_store = LedgerStore(tmp_path / "known_assets")
+    vault = CredentialVault(tmp_path / "known_assets")
+    reg = build_default_registry()
+
+    async def _run() -> None:
+        async with (
+            httpx.AsyncClient(transport=httpx.MockTransport(bx_handler)) as bx_hc,
+            httpx.AsyncClient(transport=httpx.MockTransport(htx_handler)) as htx_hc,
+            httpx.AsyncClient(transport=httpx.MockTransport(hl_handler)) as hl_hc,
+            httpx.AsyncClient(transport=httpx.MockTransport(kc_handler)) as kc_hc,
+        ):
+            bx = BingxReadOnlyClient(api_key="k", api_secret="s", client=bx_hc, clock_ms=lambda: now_ms)
+            htx = HtxReadOnlyClient(api_key="k", api_secret="s", client=htx_hc, clock_ms=lambda: now_ms)
+            hl = HyperliquidReadOnlyClient(wallet_address=hl_wallet, client=hl_hc, clock_ms=lambda: now_ms)
+            kc = KucoinReadOnlyClient(api_key="k", api_secret="s", passphrase="p", client=kc_hc, clock_ms=lambda: now_ms)
+
+            # 1) Direct client calls & initial sync (`not existing_snap`) MUST reject HTTP 200 malformed schemas!
+            state["bx_spot_bad"] = True
+            with pytest.raises(BingxApiError, match="Malformed"):
+                await bx.get_spot_balances()
+            with pytest.raises(BingxApiError, match="Malformed"):
+                await sync_bingx_venue(bx, init_store, now_s=now_ms // 1000, force_full=True)
+            assert init_store.venue_scope("bingx").get_kv("snapshot") is None
+            state["bx_spot_bad"] = False
+
+            state["bx_swap_bad"] = True
+            with pytest.raises(BingxApiError, match="Malformed"):
+                await bx.get_swap_balance()
+            state["bx_swap_bad"] = False
+
+            state["htx_spot_bad"] = True
+            with pytest.raises(HtxApiError, match="Malformed"):
+                await htx.get_spot_balances()
+            with pytest.raises(HtxApiError, match="Malformed"):
+                await sync_htx_venue(htx, init_store, now_s=now_ms // 1000, force_full=True)
+            assert init_store.venue_scope("htx").get_kv("snapshot") is None
+            state["htx_spot_bad"] = False
+
+            state["htx_swap_bad"] = True
+            with pytest.raises(HtxApiError, match="Malformed"):
+                await htx.get_swap_accounts()
+            state["htx_swap_bad"] = False
+
+            state["hl_spot_bad"] = True
+            with pytest.raises(HyperliquidApiError, match="Malformed"):
+                await hl.get_spot_state()
+            with pytest.raises(HyperliquidApiError, match="Malformed"):
+                await sync_hyperliquid_venue(hl, init_store, now_s=now_ms // 1000, force_full=True)
+            assert init_store.venue_scope("hyperliquid").get_kv("snapshot") is None
+            state["hl_spot_bad"] = False
+
+            state["hl_ch_bad"] = True
+            with pytest.raises(HyperliquidApiError, match="Malformed"):
+                await hl.get_clearinghouse_state()
+            state["hl_ch_bad"] = False
+
+            state["hl_vault_bad"] = True
+            with pytest.raises(HyperliquidApiError, match="Malformed"):
+                await hl.get_vault_equities()
+            with pytest.raises(HyperliquidApiError, match="Malformed"):
+                await sync_hyperliquid_venue(hl, init_store, now_s=now_ms // 1000, force_full=True)
+            state["hl_vault_bad"] = False
+
+            state["kc_spot_bad"] = True
+            with pytest.raises(KucoinApiError, match="Malformed"):
+                await kc.get_spot_accounts()
+            with pytest.raises(KucoinApiError, match="Malformed"):
+                await sync_kucoin_venue(kc, init_store, now_s=now_ms // 1000, force_full=True)
+            assert init_store.venue_scope("kucoin").get_kv("snapshot") is None
+            state["kc_spot_bad"] = False
+
+            state["kc_fut_bad"] = True
+            with pytest.raises(KucoinApiError, match="Malformed"):
+                await kc.get_futures_overview()
+            state["kc_fut_bad"] = False
+
+            # 2) Seed valid known assets across all 4 venues: 125 + 130 + 150 + 140 = 545.00 U
+            assert (await sync_bingx_venue(bx, good_store, now_s=now_ms // 1000, force_full=True)).equity_usd == 125.0
+            assert (await sync_htx_venue(htx, good_store, now_s=now_ms // 1000, force_full=True)).equity_usd == 130.0
+            assert (await sync_hyperliquid_venue(hl, good_store, now_s=now_ms // 1000, force_full=True)).equity_usd == 150.0
+            assert (await sync_kucoin_venue(kc, good_store, now_s=now_ms // 1000, force_full=True)).equity_usd == 140.0
+
+            # 3) Flip sub-wallets to HTTP 200 malformed payloads -> cached sub-wallet balances MUST be preserved!
+            state["bx_spot_bad"] = True
+            state["htx_spot_bad"] = True
+            state["hl_spot_bad"] = True
+            state["hl_vault_bad"] = True
+            state["kc_spot_bad"] = True
+
+            o_bx = await sync_bingx_venue(bx, good_store, now_s=now_ms // 1000 + 60, force_full=False)
+            o_htx = await sync_htx_venue(htx, good_store, now_s=now_ms // 1000 + 60, force_full=False)
+            o_hl = await sync_hyperliquid_venue(hl, good_store, now_s=now_ms // 1000 + 60, force_full=False)
+            o_kc = await sync_kucoin_venue(kc, good_store, now_s=now_ms // 1000 + 60, force_full=False)
+
+            assert o_bx.equity_usd == 125.0 and any("Malformed" in w for w in o_bx.warnings)
+            assert o_htx.equity_usd == 130.0 and any("Malformed" in w for w in o_htx.warnings)
+            assert o_hl.equity_usd == 150.0 and any("Malformed" in w for w in o_hl.warnings)
+            assert o_kc.equity_usd == 140.0 and any("Malformed" in w for w in o_kc.warnings)
+
+    asyncio.run(_run())
+
+    svc = LedgerService(good_store, vault, reg, default_demo_mode=False)
+    dash = svc.get_dashboard(range_key="all")
+    assert dash["summary"]["total_equity_usd"] == 545.00
+    assert dash["reconciliation"]["residual_usd"] == 0.0
+
+
+def test_kucoin_91d_7d_windowed_history_positions_fetches_today_and_20d_old_close(tmp_path: Path) -> None:
+    """KuCoin GET /api/v1/history-positions defaults to 7d and caps single queries at 7*24h; 13x7d windowing must
+    recover both today's closed trade and a 20-day-old closed trade across an empty intermediate window."""
+    now_ms = 1_760_000_000_000
+    day_ms = 86_400_000
+    seven_days_ms = 7 * day_ms
+
+    positions_db = [
+        {
+            "closeId": "700000000099900001",
+            "symbol": "ETHUSDTM",
+            "side": "long",
+            "closeSize": 10,
+            "multiplier": 0.1,
+            "openPrice": 3000.0,
+            "closePrice": 3050.0,
+            "openTime": now_ms - 7200_000,
+            "closeTime": now_ms - 3600_000,
+            "tradeFee": 1.0,
+            "fundingFee": 0.0,
+            "pnl": 49.0,
+        },
+        {
+            "closeId": "700000000036305466",
+            "symbol": "XBTUSDTM",
+            "side": "short",
+            "closeSize": 10,
+            "multiplier": 0.001,
+            "openPrice": 95000.0,
+            "closePrice": 92000.0,
+            "openTime": now_ms - 20 * day_ms - 3600_000,
+            "closeTime": now_ms - 20 * day_ms,
+            "tradeFee": 1.5,
+            "fundingFee": 0.5,
+            "pnl": 29.0,
+        },
+    ]
+
+    queried_windows: list[tuple[int, int]] = []
+
+    def kc_strict_7d_handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        q = dict(req.url.params)
+        if p == "/api/v1/accounts":
+            return httpx.Response(200, json={"code": "200000", "data": []})
+        if p == "/api/v1/account-overview":
+            return httpx.Response(200, json={"code": "200000", "data": {"accountEquity": 1078.0, "availableBalance": 1078.0}})
+        if p == "/api/v1/deposits":
+            return httpx.Response(200, json={"code": "200000", "data": {"items": [{"walletTxId": "d1", "currency": "USDT", "amount": "1000.0", "createdAt": now_ms - 30 * day_ms}]}})
+        if p == "/api/v1/history-positions":
+            assert set(q.keys()) == {"from", "to", "limit", "pageId"}
+            w_from = int(q["from"])
+            w_to = int(q["to"])
+            if w_to - w_from > seven_days_ms:
+                return httpx.Response(400, json={"code": "400100", "msg": "time range exceeds 7 days"})
+            queried_windows.append((w_from, w_to))
+            pg = int(q["pageId"])
+            matched = [r for r in positions_db if w_from <= int(r["closeTime"]) <= w_to]
+            chunk = matched[(pg - 1) * 250 : pg * 250]
+            return httpx.Response(200, json={"code": "200000", "data": {"items": chunk, "hasMore": False}})
+        return httpx.Response(200, json={"code": "200000", "data": {"items": [], "dataList": [], "ticker": []}})
+
+    store = LedgerStore(tmp_path)
+    vault = CredentialVault(tmp_path)
+    reg = build_default_registry()
+
+    async def _run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(kc_strict_7d_handler)) as hc:
+            client = KucoinReadOnlyClient(api_key="k", api_secret="s", passphrase="p", client=hc, clock_ms=lambda: now_ms)
+            outcome = await sync_kucoin_venue(client, store, now_s=now_ms // 1000, force_full=True)
+            assert outcome.equity_usd == 1078.0
+            assert len(queried_windows) == 13  # Scanned full 91 days across empty intermediate windows!
+
+    asyncio.run(_run())
+
+    svc = LedgerService(store, vault, reg, default_demo_mode=False)
+    dash = svc.get_dashboard(range_key="all")
+    assert len(dash["trades"]) == 2
+    tids = {t["trade_id"] for t in dash["trades"]}
+    assert any("700000000036305466" in tid for tid in tids)
+    assert any("700000000099900001" in tid for tid in tids)
+    assert dash["reconciliation"]["residual_usd"] == 0.0
+
+
+def test_htx_90d_47h_windowed_matches_and_financials_fetch_today_and_20d_old_trades(tmp_path: Path) -> None:
+    """HTX exact endpoints only return last 10 days when start_time/end_time are omitted; initial sync must slice
+    90 days into <=48h windows and recover 20-day-old matches (81101/81102) and financial records."""
+    now_ms = 1_760_000_000_000
+    day_ms = 86_400_000
+    hour_ms = 3600_000
+
+    matches_all = [
+        {
+            "id": 91101,
+            "match_id": 91101,
+            "contract_code": "ETH-USDT",
+            "direction": "buy",
+            "offset": "open",
+            "trade_price": "3000",
+            "trade_turnover": "3000",
+            "trade_volume": "1",
+            "trade_fee": "-0.5",
+            "real_profit": "0",
+            "role": "maker",
+            "create_date": now_ms - 2 * hour_ms,
+        },
+        {
+            "id": 91102,
+            "match_id": 91102,
+            "contract_code": "ETH-USDT",
+            "direction": "sell",
+            "offset": "close",
+            "trade_price": "3020",
+            "trade_turnover": "3020",
+            "trade_volume": "1",
+            "trade_fee": "-0.5",
+            "real_profit": "20.0",
+            "role": "taker",
+            "create_date": now_ms - hour_ms,
+        },
+        {
+            "id": 81101,
+            "match_id": 81101,
+            "contract_code": "BTC-USDT",
+            "direction": "buy",
+            "offset": "open",
+            "trade_price": "90000",
+            "trade_turnover": "9000",
+            "trade_volume": "1",
+            "trade_fee": "-1.0",
+            "real_profit": "0",
+            "role": "maker",
+            "create_date": now_ms - 20 * day_ms - hour_ms,
+        },
+        {
+            "id": 81102,
+            "match_id": 81102,
+            "contract_code": "BTC-USDT",
+            "direction": "sell",
+            "offset": "close",
+            "trade_price": "90500",
+            "trade_turnover": "9050",
+            "trade_volume": "1",
+            "trade_fee": "-1.0",
+            "real_profit": "50.0",
+            "role": "taker",
+            "create_date": now_ms - 20 * day_ms,
+        },
+    ]
+    fin_all = [
+        {
+            "id": 70001,
+            "type": 30,
+            "amount": "-0.25",
+            "contract_code": "BTC-USDT",
+            "ts": now_ms - 20 * day_ms - 1800_000,
+        }
+    ]
+
+    def htx_90d_handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        if p == "/linear-swap-api/v1/swap_cross_account_info":
+            return httpx.Response(200, json={"status": "ok", "data": [{"margin_balance": "1066.75", "margin_available": "1066.75"}]})
+        if p == "/v1/account/accounts":
+            return httpx.Response(200, json={"status": "ok", "data": []})
+        if p == "/v1/query/deposit-withdraw":
+            if req.url.params.get("type") == "deposit":
+                return httpx.Response(200, json={"status": "ok", "data": [{"id": 1, "currency": "usdt", "amount": "1000.0", "state": "safe", "created-at": now_ms - 30 * day_ms}]})
+            return httpx.Response(200, json={"status": "ok", "data": []})
+        if p == "/linear-swap-api/v1/swap_cross_matchresults_exact":
+            body = json.loads(req.content.decode("utf-8"))
+            # Real HTX defaults to last 10 days if start_time/end_time omitted, and enforces <= 48h when provided!
+            s_t = int(body["start_time"]) if body.get("start_time") is not None else (now_ms - 10 * day_ms)
+            e_t = int(body["end_time"]) if body.get("end_time") is not None else now_ms
+            if body.get("start_time") is not None and (e_t - s_t > 48 * hour_ms):
+                return httpx.Response(200, json={"status": "error", "err_code": 1056, "err_msg": "exceeds 48h"})
+            rows = [r for r in matches_all if s_t <= int(r["create_date"]) <= e_t]
+            return httpx.Response(200, json={"status": "ok", "data": {"trades": rows}})
+        if p == "/linear-swap-api/v1/swap_financial_record_exact":
+            body = json.loads(req.content.decode("utf-8"))
+            s_t = int(body["start_time"]) if body.get("start_time") is not None else (now_ms - 10 * day_ms)
+            e_t = int(body["end_time"]) if body.get("end_time") is not None else now_ms
+            if body.get("start_time") is not None and (e_t - s_t > 48 * hour_ms):
+                return httpx.Response(200, json={"status": "error", "err_code": 1056, "err_msg": "exceeds 48h"})
+            rows = [r for r in fin_all if s_t <= int(r["ts"]) <= e_t]
+            return httpx.Response(200, json={"status": "ok", "data": {"financial_record": rows}})
+        return httpx.Response(200, json={"status": "ok", "data": []})
+
+    store = LedgerStore(tmp_path)
+    vault = CredentialVault(tmp_path)
+    reg = build_default_registry()
+
+    async def _run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(htx_90d_handler)) as hc:
+            client = HtxReadOnlyClient(api_key="k", api_secret="s", client=hc, clock_ms=lambda: now_ms)
+            outcome = await sync_htx_venue(client, store, now_s=now_ms // 1000, force_full=True)
+            assert outcome.equity_usd == 1066.75
+
+    asyncio.run(_run())
+
+    svc = LedgerService(store, vault, reg, default_demo_mode=False)
+    dash = svc.get_dashboard(range_key="all")
+    assert len(dash["trades"]) == 2
+    by_sym = {t["symbol"]: t for t in dash["trades"]}
+    assert set(by_sym.keys()) == {"ETH_USDT", "BTC_USDT"}
+    assert by_sym["BTC_USDT"]["funding_pnl_usd"] == -0.25
+    assert dash["reconciliation"]["residual_usd"] == 0.0
+
+
+def test_hyperliquid_2001_same_millisecond_closes_and_boundary_overlap_zero_drop(tmp_path: Path) -> None:
+    """When 2,001 closes occur in the exact same millisecond T, userFills returns descending 12001..10002 while
+    userFillsByTime(T, T) returns ascending 10001..12000; union must capture all 2,001 closes including tid=10001!"""
+    wallet = "0x" + "e" * 40
+    burst_ts = 1_760_000_000_000
+
+    # 2,001 closes all at exact timestamp `burst_ts` (tid=10001..12001)
+    same_ms_2001 = [
+        {
+            "tid": 10001 + i,
+            "oid": 10001 + i,
+            "coin": "SOL",
+            "px": "202.0",
+            "sz": "0.1",
+            "side": "A",
+            "dir": "Close Long",
+            "closedPnl": "0.2",
+            "fee": "0.01",
+            "crossed": True,
+            "time": burst_ts,
+        }
+        for i in range(2001)
+    ]
+
+    def hl_2001_handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content.decode("utf-8"))
+        tp = body.get("type")
+        if tp == "clearinghouseState":
+            return httpx.Response(200, json={"marginSummary": {"accountValue": "1380.19", "withdrawable": "1380.19"}, "assetPositions": []})
+        if tp == "spotClearinghouseState":
+            return httpx.Response(200, json={"balances": []})
+        if tp == "userVaultEquities":
+            return httpx.Response(200, json=[])
+        if tp == "allMids":
+            return httpx.Response(200, json={"SOL": "202.0"})
+        if tp == "userFills":
+            # Latest 2,000 in descending order -> tid 12001 down to 10002 (drops earliest tid=10001!)
+            return httpx.Response(200, json=list(reversed(same_ms_2001[-2000:])))
+        if tp == "userFillsByTime":
+            s_t = int(body.get("startTime") or 0)
+            e_t = body.get("endTime")
+            rows = [r for r in same_ms_2001 if int(r["time"]) >= s_t and (e_t is None or int(r["time"]) <= int(e_t))]
+            # Earliest 2,000 in ascending order -> tid 10001 up to 12000!
+            return httpx.Response(200, json=rows[:2000])
+        if tp == "userNonFundingLedgerUpdates":
+            return httpx.Response(200, json=[{"hash": "0xd1", "time": burst_ts - 60_000, "delta": {"type": "deposit", "usdc": "1000.0"}}])
+        return httpx.Response(200, json=[])
+
+    store = LedgerStore(tmp_path)
+    vault = CredentialVault(tmp_path)
+    reg = build_default_registry()
+
+    async def _run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(hl_2001_handler)) as hc:
+            client = HyperliquidReadOnlyClient(wallet_address=wallet, client=hc)
+            outcome = await sync_hyperliquid_venue(client, store, now_s=burst_ts // 1000, force_full=True)
+            assert not any("2,000" in w for w in outcome.warnings)
+
+        # Also verify >4,000 fills in a single millisecond (disjoint prefix 2,000 & suffix 2,000) flags truncation!
+        same_ms_4005 = [
+            {"tid": 50000 + i, "oid": 50000 + i, "coin": "SOL", "px": "200", "sz": "0.1", "side": "A", "dir": "Close Long", "closedPnl": "0.1", "fee": "0", "time": burst_ts}
+            for i in range(4005)
+        ]
+
+        def hl_4005_handler(req: httpx.Request) -> httpx.Response:
+            body = json.loads(req.content.decode("utf-8"))
+            tp = body.get("type")
+            if tp == "userFills":
+                return httpx.Response(200, json=list(reversed(same_ms_4005[-2000:])))
+            if tp == "userFillsByTime":
+                s_t = int(body.get("startTime") or 0)
+                e_t = body.get("endTime")
+                rows = [r for r in same_ms_4005 if int(r["time"]) >= s_t and (e_t is None or int(r["time"]) <= int(e_t))]
+                return httpx.Response(200, json=rows[:2000])
+            return httpx.Response(200, json=[])
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(hl_4005_handler)) as hc2:
+            c2 = HyperliquidReadOnlyClient(wallet_address=wallet, client=hc2)
+            warns_4005: list[str] = []
+            got_4005 = await c2.get_user_fills(since_ms=0, warnings_out=warns_4005)
+            assert len(got_4005) == 4000
+            assert any("2,000" in w for w in warns_4005)
+
+    asyncio.run(_run())
+
+    snap = store.venue_scope("hyperliquid").get_kv("snapshot")
+    assert len(snap["fills"]) == 2001
+    assert any(int(f["tid"]) == 10001 for f in snap["fills"])
+
+    svc = LedgerService(store, vault, reg, default_demo_mode=False)
+    dash = svc.get_dashboard(range_key="all")
+    assert len(dash["trades"]) == 2001
+    assert any("hl_10001_" in t["trade_id"] for t in dash["trades"])
+    assert dash["reconciliation"]["residual_usd"] == 0.0
+

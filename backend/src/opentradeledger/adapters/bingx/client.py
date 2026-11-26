@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import math
 import time
 from typing import Any, Callable, Optional
 from urllib.parse import urlencode
@@ -42,6 +43,55 @@ BINGX_ALLOWED_GET_PATHS: tuple[str, ...] = (
 
 class BingxApiError(RuntimeError):
     """Raised when BingX OpenAPI returns code != 0 or an HTTP error."""
+
+
+def _is_valid_bingx_num(val: Any) -> bool:
+    if val is None or isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return math.isfinite(float(val))
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return False
+        try:
+            return math.isfinite(float(s))
+        except ValueError:
+            return False
+    return False
+
+
+def _validate_bingx_swap_item(row: Any) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        raise BingxApiError("Malformed BingX swap balance payload")
+    if "asset" in row and (not isinstance(row.get("asset"), str) or not row["asset"].strip()):
+        raise BingxApiError("Malformed BingX swap balance payload")
+    has_num = False
+    for key in ("equity", "balance"):
+        if key in row:
+            if not _is_valid_bingx_num(row.get(key)):
+                raise BingxApiError("Malformed BingX swap balance payload")
+            has_num = True
+    if not has_num:
+        raise BingxApiError("Malformed BingX swap balance payload")
+    return row
+
+
+def _validate_bingx_spot_item(row: Any) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        raise BingxApiError("Malformed BingX spot balance payload")
+    asset = row.get("asset")
+    if not isinstance(asset, str) or not asset.strip():
+        raise BingxApiError("Malformed BingX spot balance payload")
+    has_num = False
+    for key in ("free", "locked", "balance"):
+        if key in row:
+            if not _is_valid_bingx_num(row.get(key)):
+                raise BingxApiError("Malformed BingX spot balance payload")
+            has_num = True
+    if not has_num:
+        raise BingxApiError("Malformed BingX spot balance payload")
+    return row
 
 
 def parse_bingx_ts_ms(raw: Any) -> int:
@@ -161,17 +211,20 @@ class BingxReadOnlyClient:
     async def get_swap_balance(self) -> list[dict[str, Any]]:
         try:
             res = await self.request_readonly("GET", "/openApi/swap/v3/user/balance")
-        except Exception:
+        except Exception as v3_exc:
+            msg_low = str(v3_exc).lower()
+            if isinstance(v3_exc, httpx.TransportError) or "http 5" in msg_low or "http 429" in msg_low:
+                raise
             res = await self.request_readonly("GET", "/openApi/swap/v2/user/balance")
         if isinstance(res, list):
-            return [r for r in res if isinstance(r, dict)]
-        if isinstance(res, dict):
-            if isinstance(res.get("balance"), dict):
-                return [res["balance"]]
-            if isinstance(res.get("balance"), list):
-                return [r for r in res["balance"] if isinstance(r, dict)]
-            return [res]
-        return []
+            return [_validate_bingx_swap_item(r) for r in res]
+        if isinstance(res, dict) and "balance" in res:
+            bal_node = res["balance"]
+            if isinstance(bal_node, dict):
+                return [_validate_bingx_swap_item(bal_node)]
+            if isinstance(bal_node, list):
+                return [_validate_bingx_swap_item(r) for r in bal_node]
+        raise BingxApiError("Malformed BingX swap balance payload")
 
     async def get_positions(self) -> list[dict[str, Any]]:
         res = await self.request_readonly("GET", "/openApi/swap/v2/user/positions")
@@ -320,9 +373,11 @@ class BingxReadOnlyClient:
 
     async def get_spot_balances(self) -> list[dict[str, Any]]:
         res = await self.request_readonly("GET", "/openApi/spot/v1/account/balance")
-        if isinstance(res, dict) and isinstance(res.get("balances"), list):
-            return [r for r in res["balances"] if isinstance(r, dict)]
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+        if isinstance(res, dict) and "balances" in res and isinstance(res["balances"], list):
+            return [_validate_bingx_spot_item(r) for r in res["balances"]]
+        if isinstance(res, list):
+            return [_validate_bingx_spot_item(r) for r in res]
+        raise BingxApiError("Malformed BingX spot balance payload")
 
     async def get_spot_tickers(self) -> dict[str, float]:
         res = await self.request_readonly("GET", "/openApi/spot/v1/ticker/price", signed=False)

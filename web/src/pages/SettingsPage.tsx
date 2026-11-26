@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
   Check,
@@ -57,6 +57,23 @@ interface SettingsPageProps {
 }
 
 const EVM_ADDR_RE = /^0x[0-9a-fA-F]{40}$/
+const MASKED_IDENTITY_TOKEN_RE =
+  /(0x[a-fA-F0-9]{2,8}(?:\.\.\.|…)[a-fA-F0-9]{2,8}|0x[a-fA-F0-9]{40}|[a-zA-Z0-9_-]{1,8}\*{2,}[a-zA-Z0-9_-]{1,8}|\*{2,}[a-zA-Z0-9_-]{2,8}|[a-zA-Z0-9_-]{3,8}\.\.\.[a-zA-Z0-9_-]{3,8})/g
+
+function renderMaskedErrorText(text: string): ReactNode {
+  if (!text) return text
+  const parts = text.split(MASKED_IDENTITY_TOKEN_RE)
+  if (parts.length <= 1) return text
+  return parts.map((part, idx) =>
+    idx % 2 === 1 ? (
+      <span key={idx} className="sensitive">
+        {part}
+      </span>
+    ) : (
+      part
+    ),
+  )
+}
 
 function normalizeAdapterAccounts(ad: ExchangeAdapterInfo): ExchangeAccountInstance[] {
   if (Array.isArray(ad.accounts) && ad.accounts.length > 0) {
@@ -97,6 +114,35 @@ function formatRoleLabel(role: string | undefined, isZh: boolean): string {
   if (r === 'master') return isZh ? '主账户' : 'Main'
   if (r === 'wallet') return isZh ? '链上钱包' : 'Wallet'
   return ''
+}
+
+function isSubaccountAlreadyConnected(
+  subAddress: string,
+  adapter: ExchangeAdapterInfo | undefined,
+): boolean {
+  const cleanAddr = (subAddress || '').trim().toLowerCase()
+  if (!cleanAddr || !adapter) return false
+  const short64 =
+    cleanAddr.length > 10 ? `${cleanAddr.slice(0, 6)}...${cleanAddr.slice(-4)}` : cleanAddr
+  const short44 =
+    cleanAddr.length > 8 ? `${cleanAddr.slice(0, 4)}...${cleanAddr.slice(-4)}` : cleanAddr
+  const accounts = normalizeAdapterAccounts(adapter)
+  for (const acct of accounts) {
+    if (!acct.configured) continue
+    const candidates = [
+      acct.masked_uid,
+      acct.credential?.masked_uid,
+      acct.credential?.masked_api_key,
+    ]
+    for (const cand of candidates) {
+      const norm = (cand || '').trim().toLowerCase()
+      if (!norm) continue
+      if (norm === cleanAddr || norm === short64 || norm === short44) {
+        return true
+      }
+    }
+  }
+  return false
 }
 
 export function SettingsPage({
@@ -248,7 +294,7 @@ export function SettingsPage({
       setDiscoveredSubs(subs)
       const nextChecked: Record<string, boolean> = {}
       for (const s of subs) {
-        nextChecked[s.address] = true
+        nextChecked[s.address] = !isSubaccountAlreadyConnected(s.address, selectedAdapter)
       }
       setSelectedSubs(nextChecked)
       setSubsProbedOnce(true)
@@ -591,6 +637,7 @@ export function SettingsPage({
         errorMsg={errorMsg}
         onClearStatus={() => setStatusMsg('')}
         onClearError={() => setErrorMsg('')}
+        renderError={renderMaskedErrorText}
       />
 
       {/* Chapter 1: 7:5 Balanced Top Split — Exchange Adapters × Display Preferences */}
@@ -741,9 +788,11 @@ export function SettingsPage({
                         data-testid={`adapter-error-box-${acct.account_id}`}
                         className="pl-3 border-l-2 border-[var(--err)] text-[12px] text-[var(--err)] space-y-0.5"
                       >
-                        <div className="font-medium">{errReason}</div>
+                        <div className="font-medium">{renderMaskedErrorText(errReason)}</div>
                         {rawErr && !errReason.includes(rawErr) && (
-                          <div className="opacity-85 font-mono break-all">{rawErr}</div>
+                          <div className="opacity-85 font-mono break-all">
+                            {renderMaskedErrorText(rawErr)}
+                          </div>
                         )}
                       </div>
                     )}
@@ -864,9 +913,11 @@ export function SettingsPage({
                               data-testid={`adapter-error-box-${acct.account_id}`}
                               className="pl-3 border-l-2 border-[var(--err)] text-[12px] text-[var(--err)] space-y-0.5"
                             >
-                              <div className="font-medium">{errReason}</div>
+                              <div className="font-medium">{renderMaskedErrorText(errReason)}</div>
                               {rawErr && !errReason.includes(rawErr) && (
-                                <div className="opacity-85 font-mono break-all">{rawErr}</div>
+                                <div className="opacity-85 font-mono break-all">
+                                  {renderMaskedErrorText(rawErr)}
+                                </div>
                               )}
                             </div>
                           )}
@@ -1338,9 +1389,12 @@ export function SettingsPage({
             </div>
 
             <AnimatedCollapse open={Boolean(modalError)}>
-              <div className="otl-status-err rounded-md px-3 py-2 text-[13px] flex items-start gap-2">
+              <div
+                data-testid="exchange-modal-error"
+                className="otl-status-err rounded-md px-3 py-2 text-[13px] flex items-start gap-2"
+              >
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-                <span>{modalError}</span>
+                <span>{renderMaskedErrorText(modalError)}</span>
               </div>
             </AnimatedCollapse>
 
@@ -1412,11 +1466,16 @@ export function SettingsPage({
                       </div>
                       <div className="space-y-1.5">
                         {discoveredSubs.map(sub => {
+                          const alreadyConnected = isSubaccountAlreadyConnected(
+                            sub.address,
+                            selectedAdapter,
+                          )
                           const checked = Boolean(selectedSubs[sub.address])
                           const shortAddr = `${sub.address.slice(0, 6)}...${sub.address.slice(-4)}`
                           return (
                             <label
                               key={sub.address}
+                              data-testid={`discovered-sub-row-${sub.address}`}
                               className="flex items-center justify-between gap-2 text-[12px] cursor-pointer py-0.5"
                             >
                               <span className="inline-flex items-center gap-2 min-w-0">
@@ -1431,7 +1490,19 @@ export function SettingsPage({
                                   }
                                 />
                                 <span className="font-medium text-[var(--fg)] truncate">{sub.name}</span>
-                                <span className="font-mono text-[var(--fg-3)]">{shortAddr}</span>
+                                <span className="font-mono text-[var(--fg-3)] sensitive">{shortAddr}</span>
+                                {alreadyConnected && (
+                                  <span
+                                    data-testid={`discovered-sub-connected-${sub.address}`}
+                                    className="px-1.5 py-0.5 rounded text-[11px] font-medium whitespace-nowrap"
+                                    style={{
+                                      background: 'rgba(47, 196, 149, 0.12)',
+                                      color: 'var(--ok)',
+                                    }}
+                                  >
+                                    {isZh ? '已接入' : 'Connected'}
+                                  </span>
+                                )}
                               </span>
                               {sub.equity_usd && (
                                 <span className="font-mono text-[var(--fg-2)] whitespace-nowrap sensitive">

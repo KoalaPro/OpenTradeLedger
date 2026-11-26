@@ -11,6 +11,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import math
 import time
 from typing import Any, Callable, Optional
 from urllib.parse import urlencode, urlsplit
@@ -49,6 +50,22 @@ HTX_ALLOWED_SWAP_POST_PATHS: tuple[str, ...] = (
 
 class HtxApiError(RuntimeError):
     """Raised when HTX returns an error status/code or HTTP failure."""
+
+
+def _is_valid_htx_num(val: Any) -> bool:
+    if val is None or isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return math.isfinite(float(val))
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return False
+        try:
+            return math.isfinite(float(s))
+        except ValueError:
+            return False
+    return False
 
 
 def _fmt_bj_ms(ms: int) -> str:
@@ -152,9 +169,17 @@ class HtxReadOnlyClient:
         if resp.status_code >= 400:
             raise HtxApiError(f"HTX GET {path} HTTP {resp.status_code}: {resp.text[:240]}")
         payload = resp.json()
+        if not isinstance(payload, dict):
+            raise HtxApiError(f"HTX GET {path} unexpected payload type: {type(payload).__name__}")
         st = str(payload.get("status") or "").lower()
         code = payload.get("code")
-        if (st and st != "ok") or (code is not None and int(code) != 200):
+        code_ok = False
+        if code is not None and not isinstance(code, bool):
+            try:
+                code_ok = int(code) == 200
+            except (TypeError, ValueError):
+                code_ok = False
+        if (st and st != "ok") or (not st and not code_ok):
             raise HtxApiError(
                 f"HTX GET {path} error: {payload.get('err-code') or code} {payload.get('err-msg') or payload.get('message') or ''}"
             )
@@ -178,6 +203,8 @@ class HtxReadOnlyClient:
         if resp.status_code >= 400:
             raise HtxApiError(f"HTX POST {path} HTTP {resp.status_code}: {resp.text[:240]}")
         payload = resp.json()
+        if not isinstance(payload, dict):
+            raise HtxApiError(f"HTX POST {path} unexpected payload type: {type(payload).__name__}")
         if str(payload.get("status") or "").lower() != "ok":
             raise HtxApiError(
                 f"HTX POST {path} err={payload.get('err_code')}: {payload.get('err_msg', '')}"
@@ -204,31 +231,58 @@ class HtxReadOnlyClient:
     async def get_spot_balances(self) -> list[dict[str, Any]]:
         accts = await self.spot_get("/v1/account/accounts")
         if not isinstance(accts, list):
-            return []
+            raise HtxApiError("Malformed HTX spot accounts/balance payload")
         out: list[dict[str, Any]] = []
         allowed_acct_types = {"spot", "margin", "super-margin", "otc"}
         for acct in accts:
-            if not isinstance(acct, dict):
-                continue
-            aid = acct.get("id")
-            atype_low = str(acct.get("type") or "spot").strip().lower()
-            if not aid or atype_low not in allowed_acct_types:
+            if (
+                not isinstance(acct, dict)
+                or acct.get("id") in (None, "")
+                or not isinstance(acct.get("type"), str)
+                or not acct["type"].strip()
+            ):
+                raise HtxApiError("Malformed HTX spot accounts/balance payload")
+            aid = acct["id"]
+            atype_low = acct["type"].strip().lower()
+            if atype_low not in allowed_acct_types:
                 continue
             bal_res = await self.spot_get(f"/v1/account/accounts/{aid}/balance")
-            lst = bal_res.get("list") if isinstance(bal_res, dict) else []
-            for item in lst or []:
-                if not isinstance(item, dict):
-                    continue
+            if not isinstance(bal_res, dict) or "list" not in bal_res or not isinstance(bal_res["list"], list):
+                raise HtxApiError("Malformed HTX spot accounts/balance payload")
+            for item in bal_res["list"]:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("currency"), str)
+                    or not item["currency"].strip()
+                    or "balance" not in item
+                    or not _is_valid_htx_num(item.get("balance"))
+                ):
+                    raise HtxApiError("Malformed HTX spot accounts/balance payload")
                 item_tp = str(item.get("type") or "").strip().lower()
                 if item_tp and item_tp not in {"trade", "frozen"}:
                     continue
-                if float(item.get("balance") or 0.0) > 0:
+                if float(item["balance"]) > 0:
                     out.append({**item, "_account_type": atype_low.upper()})
         return out
 
     async def get_swap_accounts(self) -> list[dict[str, Any]]:
         res = await self.swap_query("/linear-swap-api/v1/swap_cross_account_info", {"margin_account": "USDT"})
-        return [r for r in res if isinstance(r, dict)] if isinstance(res, list) else []
+        if not isinstance(res, list):
+            raise HtxApiError("Malformed HTX swap account payload")
+        out: list[dict[str, Any]] = []
+        for r in res:
+            if not isinstance(r, dict):
+                raise HtxApiError("Malformed HTX swap account payload")
+            has_num = False
+            for k in ("margin_balance", "margin_available", "margin_static"):
+                if k in r:
+                    if not _is_valid_htx_num(r.get(k)):
+                        raise HtxApiError("Malformed HTX swap account payload")
+                    has_num = True
+            if not has_num:
+                raise HtxApiError("Malformed HTX swap account payload")
+            out.append(r)
+        return out
 
     async def get_swap_positions(self) -> list[dict[str, Any]]:
         res = await self.swap_query("/linear-swap-api/v1/swap_cross_position_info", {})
@@ -236,21 +290,23 @@ class HtxReadOnlyClient:
 
     @staticmethod
     def _build_htx_47h_windows(since_ms: int, now_ms: int) -> list[tuple[Optional[int], Optional[int]]]:
-        if since_ms <= 0:
-            return [(None, None)]
-        eff_now = max(since_ms, now_ms)
         chunk_ms = 47 * 3600 * 1000
-        if eff_now - since_ms <= chunk_ms:
-            return [(since_ms, eff_now)]
+        ninety_days_ms = 90 * 86_400_000 - 60_000
+        if since_ms <= 0:
+            eff_now = max(0, int(now_ms))
+            lower_bound = max(0, eff_now - ninety_days_ms)
+        else:
+            eff_now = max(int(since_ms), int(now_ms))
+            lower_bound = int(since_ms)
         windows: list[tuple[Optional[int], Optional[int]]] = []
-        cur = since_ms
-        while cur <= eff_now:
-            w_end = min(eff_now, cur + chunk_ms)
-            windows.append((cur, w_end))
-            if w_end >= eff_now:
+        w_end = eff_now
+        while w_end >= lower_bound:
+            w_start = max(lower_bound, w_end - chunk_ms)
+            windows.append((w_start, w_end))
+            if w_start <= lower_bound:
                 break
-            cur = w_end + 1
-        return windows
+            w_end = w_start - 1
+        return windows or [(lower_bound, eff_now)]
 
     @staticmethod
     def _extract_htx_cursor_id(row: dict[str, Any]) -> Optional[int]:
@@ -275,11 +331,13 @@ class HtxReadOnlyClient:
         windows = self._build_htx_47h_windows(since_ms, self._clock_ms())
         use_legacy_fallback = False
         truncated = False
+        abort_windows = False
 
-        for w_start, w_end in windows:
-            if use_legacy_fallback:
+        for win_idx, (w_start, w_end) in enumerate(windows):
+            if use_legacy_fallback or abort_windows:
                 break
             from_id: Optional[int] = None
+            saw_older_than_win0 = False
             for page_idx in range(max(1, int(max_pages))):
                 body: dict[str, Any] = {"trade_type": 0, "size": 50}
                 if w_start is not None:
@@ -336,10 +394,23 @@ class HtxReadOnlyClient:
                     if rts > 0:
                         ts_list.append(rts)
 
+                if win_idx == 0 and w_start is not None and any(0 < rts < w_start - 60_000 for rts in ts_list):
+                    saw_older_than_win0 = True
+                if (
+                    win_idx >= 1
+                    and page_idx == 0
+                    and new_cnt == 0
+                    and w_start is not None
+                    and w_end is not None
+                    and (not ts_list or all(rts < w_start - 60_000 or rts > w_end + 60_000 for rts in ts_list))
+                ):
+                    abort_windows = True
+                    break
+
                 min_ts = min(ts_list) if ts_list else 0
                 if new_cnt == 0 or len(valid_rows) < 50:
                     break
-                if w_start is not None and min_ts > 0 and min_ts < w_start:
+                if w_start is not None and min_ts > 0 and min_ts < w_start and win_idx > 0:
                     break
                 if since_ms > 0 and min_ts > 0 and min_ts < since_ms:
                     break
@@ -351,6 +422,9 @@ class HtxReadOnlyClient:
 
                 min_cid = min(cids)
                 from_id = min_cid if (from_id is None or min_cid < from_id) else (from_id - 1)
+
+            if saw_older_than_win0:
+                break
 
         if truncated and warnings_out is not None:
             warnings_out.append(
@@ -368,9 +442,13 @@ class HtxReadOnlyClient:
         merged: dict[str, dict[str, Any]] = {}
         windows = self._build_htx_47h_windows(since_ms, self._clock_ms())
         truncated = False
+        abort_windows = False
 
-        for w_start, w_end in windows:
+        for win_idx, (w_start, w_end) in enumerate(windows):
+            if abort_windows:
+                break
             from_id: Optional[int] = None
+            saw_older_than_win0 = False
             for page_idx in range(max(1, int(max_pages))):
                 body: dict[str, Any] = {"margin_account": "USDT", "size": 50}
                 if w_start is not None:
@@ -401,10 +479,23 @@ class HtxReadOnlyClient:
                     if rts > 0:
                         ts_list.append(rts)
 
+                if win_idx == 0 and w_start is not None and any(0 < rts < w_start - 60_000 for rts in ts_list):
+                    saw_older_than_win0 = True
+                if (
+                    win_idx >= 1
+                    and page_idx == 0
+                    and new_cnt == 0
+                    and w_start is not None
+                    and w_end is not None
+                    and (not ts_list or all(rts < w_start - 60_000 or rts > w_end + 60_000 for rts in ts_list))
+                ):
+                    abort_windows = True
+                    break
+
                 min_ts = min(ts_list) if ts_list else 0
                 if new_cnt == 0 or len(valid_rows) < 50:
                     break
-                if w_start is not None and min_ts > 0 and min_ts < w_start:
+                if w_start is not None and min_ts > 0 and min_ts < w_start and win_idx > 0:
                     break
                 if since_ms > 0 and min_ts > 0 and min_ts < since_ms:
                     break
@@ -416,6 +507,9 @@ class HtxReadOnlyClient:
 
                 min_cid = min(cids)
                 from_id = min_cid if (from_id is None or min_cid < from_id) else (from_id - 1)
+
+            if saw_older_than_win0:
+                break
 
         if truncated and warnings_out is not None:
             warnings_out.append(

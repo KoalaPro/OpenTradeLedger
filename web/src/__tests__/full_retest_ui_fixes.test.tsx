@@ -307,6 +307,7 @@ beforeEach(() => {
   } catch { /* ignore */ }
   try {
     window.sessionStorage?.setItem?.('otl.tab_boot_ceremony', '1')
+    window.sessionStorage?.removeItem?.('otl_onboarding_warning_v1')
   } catch { /* ignore */ }
 })
 
@@ -1148,5 +1149,444 @@ describe('Full Retest UI, State Sync, Warnings & Privacy Fixes', () => {
     expect(cssText).toContain('@media (max-width: 640px)')
     expect(cssText).toContain('.otl-primary-nav')
     expect(cssText).toContain('flex-wrap: wrap')
+  })
+
+  it('5. preserves in-flight typing during journal save and isolates late ack/error per trade_id across venue/trade switches', async () => {
+    let resolveFirstSave!: () => void
+    let rejectOkxSave!: (err: Error) => void
+    let resolveOkxSuccessSave!: () => void
+    const savedNotes: Record<string, { tags: string[]; note: string }> = {}
+
+    vi.spyOn(api, 'authStatus').mockResolvedValue({
+      initialized: true,
+      enabled: false,
+      authenticated: true,
+      require_setup: false,
+    })
+    vi.spyOn(api, 'getDashboard').mockImplementation(async (range, venue = 'ALL', symbol = 'ALL') => {
+      const d = makeDash({
+        range_key: range,
+        venue_filter: venue === 'ALL' ? 'ALL' : venue.toLowerCase(),
+        symbol_filter: symbol === 'ALL' ? 'ALL' : symbol.toUpperCase(),
+      })
+      d.trades = d.trades
+        .map(tr =>
+          savedNotes[tr.trade_id]
+            ? { ...tr, tags: savedNotes[tr.trade_id].tags, note: savedNotes[tr.trade_id].note }
+            : tr,
+        )
+        .filter(tr => (venue === 'ALL' ? true : tr.venue_id.toLowerCase() === venue.toLowerCase()))
+      return d
+    })
+    vi.spyOn(api, 'getSettings').mockResolvedValue({ ...baseSettings, privacy_mode: false })
+    vi.spyOn(api, 'listExchanges').mockResolvedValue({ adapters: [], error_count: 0 })
+    vi.spyOn(api, 'getFxRates').mockResolvedValue(DEFAULT_FX)
+    vi.spyOn(api, 'getVersionCheck').mockRejectedValue(new Error('offline'))
+
+    let callIdx = 0
+    const saveSpy = vi.spyOn(api, 'saveJournal').mockImplementation((tradeId, tags, note) => {
+      callIdx += 1
+      if (callIdx === 1) {
+        return new Promise<{ ok: boolean }>(resolve => {
+          resolveFirstSave = () => {
+            savedNotes[tradeId] = { tags: [...tags], note }
+            resolve({ ok: true })
+          }
+        })
+      }
+      if (callIdx === 2) {
+        savedNotes[tradeId] = { tags: [...tags], note }
+        return Promise.resolve({ ok: true })
+      }
+      if (callIdx === 3) {
+        return new Promise<{ ok: boolean }>((_, reject) => {
+          rejectOkxSave = reject
+        })
+      }
+      return new Promise<{ ok: boolean }>(resolve => {
+        resolveOkxSuccessSave = () => {
+          savedNotes[tradeId] = { tags: [...tags], note }
+          resolve({ ok: true })
+        }
+      })
+    })
+
+    window.location.hash = '#/trades'
+    render(<App />)
+    await screen.findByTestId('trades-page')
+    expect(screen.getByTestId('trade-row-gate_btc_1')).toBeTruthy()
+
+    const textarea = screen.getByPlaceholderText(/记录|笔记|Note/i) as HTMLTextAreaElement
+
+    // Case A: Type "第一版笔记" -> click Save -> continue typing while request is in flight!
+    fireEvent.change(textarea, { target: { value: '第一版笔记' } })
+    fireEvent.click(screen.getByTestId('journal-save-btn'))
+    expect(saveSpy).toHaveBeenLastCalledWith('gate_btc_1', [], '第一版笔记', false)
+
+    // User keeps typing BEFORE first save resolves
+    fireEvent.change(textarea, { target: { value: '第一版笔记 + 等待保存时追加的内容' } })
+    expect(textarea.value).toBe('第一版笔记 + 等待保存时追加的内容')
+
+    // First save resolves -> MUST NOT wipe appended text and MUST NOT show "已保存复盘笔记"
+    await act(async () => {
+      resolveFirstSave()
+    })
+    expect(textarea.value).toBe('第一版笔记 + 等待保存时追加的内容')
+    expect(screen.getByTestId('journal-save-btn').textContent).toBe('保存笔记')
+    expect((screen.getByTestId('journal-save-btn') as HTMLButtonElement).disabled).toBe(false)
+
+    // Clicking Save again submits the full updated text and shows "已保存复盘笔记"
+    fireEvent.click(screen.getByTestId('journal-save-btn'))
+    await waitFor(() =>
+      expect(screen.getByTestId('journal-save-btn').textContent).toContain('已保存复盘笔记'),
+    )
+    expect(saveSpy).toHaveBeenLastCalledWith(
+      'gate_btc_1',
+      [],
+      '第一版笔记 + 等待保存时追加的内容',
+      false,
+    )
+    expect(textarea.value).toBe('第一版笔记 + 等待保存时追加的内容')
+
+    // Case B1: Switch to OKX trade, click Save (slow failing request), then switch back to Gate BEFORE it rejects
+    fireEvent.click(screen.getByTestId('trade-row-okx_eth_1'))
+    fireEvent.change(textarea, { target: { value: 'OKX 慢请求笔记' } })
+    fireEvent.click(screen.getByTestId('journal-save-btn'))
+
+    // Immediately switch to Gate trade while OKX save is in-flight
+    fireEvent.click(screen.getByTestId('trade-row-gate_btc_1'))
+    expect((screen.getByTestId('journal-save-btn') as HTMLButtonElement).disabled).toBe(false)
+
+    await act(async () => {
+      rejectOkxSave(new Error('OKX 笔记写入超时 504'))
+    })
+    // Gate panel MUST NOT show OKX's error!
+    expect(screen.queryByTestId('journal-save-error')).toBeNull()
+
+    // Switching back to OKX shows OKX's isolated error
+    fireEvent.click(screen.getByTestId('trade-row-okx_eth_1'))
+    expect(screen.getByTestId('journal-save-error').textContent).toContain('OKX 笔记写入超时 504')
+
+    // Case B2: Retry OKX save (slow succeeding request), switch to Gate BEFORE it resolves -> Gate must NOT show "已保存复盘笔记"
+    fireEvent.click(screen.getByTestId('journal-save-btn'))
+    fireEvent.click(screen.getByTestId('trade-row-gate_btc_1'))
+    // Clear Gate's earlier savedAck if still active by clicking a tag or waiting, here Gate's savedAck was NOT cleared unless edited, let's edit Gate note slightly or check after timer; actually Gate had savedAck from step A, let's type on Gate or clear first:
+    fireEvent.change(textarea, { target: { value: '第一版笔记 + 等待保存时追加的内容！' } })
+    expect(screen.getByTestId('journal-save-btn').textContent).toBe('保存笔记')
+
+    await act(async () => {
+      resolveOkxSuccessSave()
+    })
+    // Gate panel MUST STILL show "保存笔记", NOT OKX's late "已保存复盘笔记"!
+    expect(screen.getByTestId('journal-save-btn').textContent).toBe('保存笔记')
+  })
+
+  it('6. renders zero max_drawdown_usd as unsigned 0.00 U / $0.00 / ¥0.00 / JP¥0 with txt-flat and non-zero with leading minus', () => {
+    const zeroDash = makeDash({
+      summary: {
+        ...makeDash().summary,
+        max_drawdown_usd: 0,
+      },
+    })
+    const tinyFloatZeroDash = makeDash({
+      summary: {
+        ...makeDash().summary,
+        max_drawdown_usd: 0.001,
+      },
+    })
+
+    const cases: Array<{ code: UserSettings['display_currency']; expectedZero: string; expected80: string }> = [
+      { code: 'USDT', expectedZero: '0.00 U', expected80: '-80.00 U' },
+      { code: 'USD', expectedZero: '$0.00', expected80: '-$80.00' },
+      { code: 'CNY', expectedZero: '¥0.00', expected80: '-¥576.00' },
+      { code: 'JPY', expectedZero: 'JP¥0', expected80: '-JP¥12,400' },
+    ]
+
+    for (const c of cases) {
+      const { rerender, unmount } = render(
+        <I18nProvider locale="zh-CN">
+          <CurrencyProvider currency={c.code!} fx={DEFAULT_FX}>
+            <AnalyticsPage data={zeroDash} rangeKey="all" />
+          </CurrencyProvider>
+        </I18nProvider>,
+      )
+      const kpiZero = screen.getByTestId('kpi-max-drawdown')
+      expect(kpiZero.textContent).toContain(c.expectedZero)
+      expect(kpiZero.textContent).not.toContain(`-${c.expectedZero}`)
+      expect(kpiZero.querySelector('.t-kpi')?.className).toContain('txt-flat')
+
+      rerender(
+        <I18nProvider locale="zh-CN">
+          <CurrencyProvider currency={c.code!} fx={DEFAULT_FX}>
+            <AnalyticsPage data={tinyFloatZeroDash} rangeKey="all" />
+          </CurrencyProvider>
+        </I18nProvider>,
+      )
+      expect(screen.getByTestId('kpi-max-drawdown').textContent).not.toContain(`-${c.expectedZero}`)
+
+      rerender(
+        <I18nProvider locale="zh-CN">
+          <CurrencyProvider currency={c.code!} fx={DEFAULT_FX}>
+            <AnalyticsPage data={makeDash()} rangeKey="all" />
+          </CurrencyProvider>
+        </I18nProvider>,
+      )
+      const kpiNonZero = screen.getByTestId('kpi-max-drawdown')
+      expect(kpiNonZero.textContent).toContain(c.expected80)
+      expect(kpiNonZero.querySelector('.t-kpi')?.className).toContain('txt-neg')
+      unmount()
+    }
+  })
+
+  it('7. persists onboarding failed_subaccounts warning across browser refresh (F5) on AuthGate and clears on dismiss or demo switch', async () => {
+    let requireSetup = false
+    let authenticated = true
+    const masterAddr = '0x' + 'a'.repeat(40)
+    const failSubAddr = '0x' + 'e'.repeat(40)
+
+    const setupMocks = () => {
+      vi.spyOn(api, 'authStatus').mockImplementation(async () => ({
+        initialized: !requireSetup,
+        enabled: false,
+        authenticated,
+        require_setup: requireSetup,
+        can_skip: true,
+      }))
+      vi.spyOn(api, 'authSkip').mockImplementation(async () => {
+        requireSetup = false
+        authenticated = true
+        return { ok: true, initialized: true, enabled: false, authenticated: true, require_setup: false }
+      })
+      vi.spyOn(api, 'getDashboard').mockResolvedValue(makeDash({ demo_mode: false, explicit_demo_mode: false }))
+      vi.spyOn(api, 'getSettings').mockResolvedValue({ ...baseSettings, locale: 'zh-CN' })
+      vi.spyOn(api, 'listExchanges').mockResolvedValue({
+        error_count: 0,
+        adapters: [
+          {
+            venue_id: 'hyperliquid',
+            display_name: 'Hyperliquid',
+            display_name_zh: 'Hyperliquid',
+            color_token: 'hyperliquid',
+            auth_mode: 'wallet_address',
+            requires_passphrase: false,
+            capabilities: { futures: true },
+            docs_url: '',
+            api_base_url: 'https://api.hyperliquid.xyz',
+            configured: false,
+          },
+        ],
+      })
+      vi.spyOn(api, 'verifyExchange').mockResolvedValue({
+        ok: true,
+        verified: true,
+        account_id: 'hyperliquid',
+        subaccounts: [{ name: 'SubVaultB', address: failSubAddr, equity_usd: '1200' }],
+      })
+      vi.spyOn(api, 'triggerSync').mockImplementation(async () => {
+        requireSetup = true
+        authenticated = false
+        return {
+          ok: true,
+          committed: true,
+          account_id: 'hyperliquid',
+          failed_subaccounts: [{ address: failSubAddr, name: 'SubVaultB', error_zh: '节点超时 502' }],
+          auth_status: {
+            initialized: false,
+            enabled: false,
+            authenticated: false,
+            require_setup: true,
+            can_skip: true,
+          },
+          venues: { hyperliquid: { ok: true } },
+        }
+      })
+      vi.spyOn(api, 'setDemoMode').mockResolvedValue({ ok: true, demo_mode: true })
+      vi.spyOn(api, 'getFxRates').mockResolvedValue(DEFAULT_FX)
+      vi.spyOn(api, 'getVersionCheck').mockRejectedValue(new Error('offline'))
+    }
+
+    setupMocks()
+    window.location.hash = '#/settings'
+    const firstMount = render(<App />)
+    await screen.findByTestId('settings-page')
+
+    fireEvent.click(screen.getByTestId('configure-adapter-hyperliquid'))
+    fireEvent.change(screen.getByTestId('exchange-wallet-input'), { target: { value: masterAddr } })
+    fireEvent.click(screen.getByTestId('probe-subaccounts-btn'))
+    await screen.findByTestId('discovered-subaccounts-box')
+    fireEvent.click(screen.getByTestId('save-exchange-btn'))
+
+    // AuthGate pops up
+    await screen.findByTestId('auth-setup-card')
+    expect(window.sessionStorage.getItem('otl_onboarding_warning_v1')).toContain('SubVaultB')
+
+    // Simulate browser F5 refresh WHILE still on AuthGate!
+    firstMount.unmount()
+    const secondMount = render(<App />)
+    await screen.findByTestId('auth-setup-card')
+
+    // Complete / skip AuthGate after refresh -> warning banner MUST still render!
+    fireEvent.click(screen.getByTestId('auth-skip-btn'))
+    const banner = await screen.findByTestId('onboarding-subaccount-warning-banner')
+    expect(banner.textContent).toContain('SubVaultB')
+    expect(banner.textContent).toContain('节点超时 502')
+
+    // Dismissing removes from sessionStorage so subsequent refresh won't resurrect it
+    fireEvent.click(screen.getByTestId('dismiss-onboarding-warning-btn'))
+    expect(screen.queryByTestId('onboarding-subaccount-warning-banner')).toBeNull()
+    expect(window.sessionStorage.getItem('otl_onboarding_warning_v1')).toBeNull()
+    secondMount.unmount()
+  })
+
+  it('8. distinguishes already-connected Hyperliquid sub-wallets on re-probe and blurs masked UIDs inside conflict error banners', async () => {
+    const masterAddr = '0x' + 'a'.repeat(40)
+    const connectedSubAddr = '0x' + '1'.repeat(40)
+    const missingSubAddr = '0x' + '2'.repeat(40)
+
+    vi.spyOn(api, 'verifyExchange').mockResolvedValue({
+      ok: true,
+      verified: true,
+      account_id: 'hyperliquid',
+      subaccounts: [
+        { name: 'AlreadyInSub', address: connectedSubAddr, equity_usd: '800' },
+        { name: 'MissedSub', address: missingSubAddr, equity_usd: '1500' },
+      ],
+    })
+
+    const upsertCalls: unknown[] = []
+    const onUpsert = vi.fn().mockImplementation(async (body: { venue_id: string }) => {
+      upsertCalls.push(body)
+      if (body.venue_id === 'gate') {
+        throw new Error(
+          '该 Gate 账号（770***1111）与钱包（0xaaaa...aaaa）已在账本中接入，请勿重复添加同一账号。',
+        )
+      }
+    })
+
+    const adapters: ExchangeAdapterInfo[] = [
+      {
+        venue_id: 'hyperliquid',
+        display_name: 'Hyperliquid',
+        display_name_zh: 'Hyperliquid',
+        color_token: 'hyperliquid',
+        auth_mode: 'wallet_address',
+        requires_passphrase: false,
+        capabilities: { futures: true },
+        docs_url: '',
+        api_base_url: 'https://api.hyperliquid.xyz',
+        configured: true,
+        accounts: [
+          {
+            account_id: 'hyperliquid',
+            adapter_id: 'hyperliquid',
+            configured: true,
+            masked_uid: '0xaaaa...aaaa',
+            account_role: 'wallet',
+            credential: {
+              venue_id: 'hyperliquid',
+              label: 'HL 主钱包',
+              masked_api_key: '0xaaaa...aaaa',
+              masked_uid: '0xaaaa...aaaa',
+              has_passphrase: false,
+              enabled: true,
+            },
+          },
+          {
+            account_id: 'hyperliquid__sub1',
+            adapter_id: 'hyperliquid',
+            configured: true,
+            masked_uid: '0x1111...1111',
+            account_role: 'subaccount',
+            credential: {
+              venue_id: 'hyperliquid',
+              label: 'HL · AlreadyInSub',
+              masked_api_key: '0x1111...1111',
+              masked_uid: '0x1111...1111',
+              has_passphrase: false,
+              enabled: true,
+            },
+          },
+        ],
+      },
+      {
+        venue_id: 'gate',
+        display_name: 'Gate',
+        display_name_zh: 'Gate',
+        color_token: 'gate',
+        requires_passphrase: false,
+        capabilities: { futures: true },
+        docs_url: '',
+        api_base_url: 'https://api.gateio.ws',
+        configured: true,
+        credential: {
+          venue_id: 'gate',
+          label: 'Gate 主号',
+          masked_api_key: 'GKEY...1111',
+          masked_uid: '770***1111',
+          has_passphrase: false,
+          enabled: true,
+        },
+      },
+    ]
+
+    render(
+      <I18nProvider locale="zh-CN">
+        <CurrencyProvider currency="USDT" fx={DEFAULT_FX}>
+          <SettingsPage
+            settings={{ ...baseSettings, privacy_mode: true }}
+            adapters={adapters}
+            demoMode={false}
+            onUpdateSettings={async () => {}}
+            onUpsertExchange={onUpsert}
+            onDeleteExchange={async () => {}}
+            onTestExchange={async () => {}}
+            onToggleDemo={async () => {}}
+          />
+        </CurrencyProvider>
+      </I18nProvider>,
+    )
+
+    // Part A: Edit Hyperliquid main wallet -> Probe Subaccounts
+    fireEvent.click(screen.getByTestId('edit-adapter-hyperliquid'))
+    fireEvent.change(screen.getByTestId('exchange-wallet-input'), { target: { value: masterAddr } })
+    fireEvent.click(screen.getByTestId('probe-subaccounts-btn'))
+
+    await screen.findByTestId('discovered-subaccounts-box')
+    const connectedRow = screen.getByTestId(`discovered-sub-row-${connectedSubAddr}`)
+    const missingRow = screen.getByTestId(`discovered-sub-row-${missingSubAddr}`)
+
+    // Already connected sub-wallet is unchecked by default and shows "已接入" badge
+    expect((connectedRow.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(false)
+    expect(screen.getByTestId(`discovered-sub-connected-${connectedSubAddr}`).textContent).toBe('已接入')
+
+    // Unconnected sub-wallet is checked by default with no "已接入" badge
+    expect((missingRow.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(true)
+    expect(screen.queryByTestId(`discovered-sub-connected-${missingSubAddr}`)).toBeNull()
+
+    fireEvent.click(screen.getByTestId('save-exchange-btn'))
+    await waitFor(() => expect(upsertCalls.length).toBe(1))
+    expect(upsertCalls[0]).toMatchObject({
+      venue_id: 'hyperliquid',
+      include_subaccounts: [{ name: 'MissedSub', address: missingSubAddr }],
+    })
+
+    // Close modal if still closing, then open Gate "+ 加账号" to trigger duplicate UID error
+    await waitFor(() => expect(screen.queryByTestId('add-exchange-modal')).toBeNull())
+    fireEvent.click(screen.getByTestId('add-account-gate'))
+    fireEvent.change(screen.getByTestId('exchange-key-input'), { target: { value: 'DUP_GATE_KEY' } })
+    fireEvent.change(screen.getByTestId('exchange-secret-input'), { target: { value: 'DUP_GATE_SEC' } })
+    fireEvent.click(screen.getByTestId('save-exchange-btn'))
+
+    // Part B: Verify both modal error banner and toast error banner wrap masked UIDs in .sensitive while keeping prose readable
+    const modalErr = await screen.findByTestId('exchange-modal-error')
+    expect(modalErr.className).not.toContain('sensitive')
+    expect(modalErr.textContent).toContain('请勿重复添加同一账号')
+    const modalMaskedSpans = Array.from(modalErr.querySelectorAll('.sensitive')).map(el => el.textContent)
+    expect(modalMaskedSpans).toEqual(['770***1111', '0xaaaa...aaaa'])
+
+    const toastErr = await screen.findByTestId('settings-error-banner')
+    expect(toastErr.className).not.toContain('sensitive')
+    const toastMaskedSpans = Array.from(toastErr.querySelectorAll('.sensitive')).map(el => el.textContent)
+    expect(toastMaskedSpans).toEqual(['770***1111', '0xaaaa...aaaa'])
   })
 })

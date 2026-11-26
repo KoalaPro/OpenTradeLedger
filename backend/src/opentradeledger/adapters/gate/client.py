@@ -20,6 +20,60 @@ logger = logging.getLogger("gate_manual.client")
 
 _EMPTY_BODY_SHA512 = hashlib.sha512(b"").hexdigest()
 WINDOW_DAYS_SEC = 29 * 86400
+_MISSING = object()
+
+
+def _is_valid_gate_wallet_total(wt: Any) -> bool:
+    if not isinstance(wt, dict) or not isinstance(wt.get("total"), dict):
+        return False
+    amt = wt["total"].get("amount")
+    if amt is None or isinstance(amt, bool):
+        return False
+    try:
+        float(amt)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_valid_gate_unified(u: Any) -> bool:
+    return isinstance(u, dict) and (
+        "unified_account_total_equity" in u
+        or "total_equity_usd" in u
+        or isinstance(u.get("balances"), dict)
+    )
+
+
+def _is_valid_gate_futures_account(f: Any) -> bool:
+    return isinstance(f, dict) and ("total" in f or "available" in f)
+
+
+def _is_valid_gate_spot_accounts(s: Any) -> bool:
+    if not isinstance(s, list):
+        return False
+    return all(
+        isinstance(item, dict) and any(k in item for k in ("currency", "available", "locked"))
+        for item in s
+    )
+
+
+def _is_valid_gate_stock_assets(sa: Any) -> bool:
+    if isinstance(sa, list):
+        return True
+    if not isinstance(sa, dict):
+        return False
+    if not sa:
+        return True
+    if "data" in sa:
+        inner = sa["data"]
+        if isinstance(inner, list):
+            return True
+        if not isinstance(inner, dict):
+            return False
+        if not inner:
+            return True
+        return any(k in inner for k in ("equity", "total_equity", "cash", "available", "assets"))
+    return any(k in sa for k in ("equity", "total_equity", "cash", "available", "assets"))
 
 
 class GateApiHttpError(RuntimeError):
@@ -148,12 +202,89 @@ class GateReadOnlyClient:
     async def fetch_live_overview_bundle(self) -> dict[str, Any]:
         warnings: list[str] = []
         failed_fields: list[str] = []
-        wallet_total = await self.raw_get("/wallet/total_balance")
-        unified = await self.raw_get("/unified/accounts")
-        futures_acc = await self.raw_get("/futures/usdt/accounts")
-        futures_pos = await self.raw_get("/futures/usdt/positions")
-        futures_open_orders = await self.raw_get("/futures/usdt/orders", [("status", "open")])
-        futures_price_orders = await self.raw_get("/futures/usdt/price_orders", [("status", "open")])
+        wallet_total = await self._safe_get(
+            "/wallet/total_balance",
+            default=_MISSING,
+            field_name="wallet_total",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        if wallet_total is not _MISSING and not _is_valid_gate_wallet_total(wallet_total):
+            if "wallet_total" not in failed_fields:
+                failed_fields.append("wallet_total")
+            warnings.append("wallet_total: malformed response structure")
+            wallet_total = {}
+        elif wallet_total is _MISSING:
+            wallet_total = {}
+
+        unified = await self._safe_get(
+            "/unified/accounts",
+            default=_MISSING,
+            field_name="unified",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        if unified is not _MISSING and not _is_valid_gate_unified(unified):
+            if "unified" not in failed_fields:
+                failed_fields.append("unified")
+            warnings.append("unified: malformed response structure")
+            unified = {}
+        elif unified is _MISSING:
+            unified = {}
+
+        futures_acc = await self._safe_get(
+            "/futures/usdt/accounts",
+            default=_MISSING,
+            field_name="futures_account",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        if futures_acc is not _MISSING and not _is_valid_gate_futures_account(futures_acc):
+            if "futures_account" not in failed_fields:
+                failed_fields.append("futures_account")
+            warnings.append("futures_account: malformed response structure")
+            futures_acc = {}
+        elif futures_acc is _MISSING:
+            futures_acc = {}
+
+        spot_accounts = await self._safe_get(
+            "/spot/accounts",
+            default=_MISSING,
+            field_name="spot_accounts",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        if spot_accounts is not _MISSING and not _is_valid_gate_spot_accounts(spot_accounts):
+            if "spot_accounts" not in failed_fields:
+                failed_fields.append("spot_accounts")
+            warnings.append("spot_accounts: malformed response structure")
+            spot_accounts = []
+        elif spot_accounts is _MISSING:
+            spot_accounts = []
+
+        futures_pos = await self._safe_get(
+            "/futures/usdt/positions",
+            default=[],
+            field_name="futures_positions",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        futures_open_orders = await self._safe_get(
+            "/futures/usdt/orders",
+            [("status", "open")],
+            default=[],
+            field_name="futures_open_orders",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
+        futures_price_orders = await self._safe_get(
+            "/futures/usdt/price_orders",
+            [("status", "open")],
+            default=[],
+            field_name="futures_price_orders",
+            failed_fields=failed_fields,
+            warnings=warnings,
+        )
         wallet_fee = await self._safe_get(
             "/wallet/fee",
             default={},
@@ -170,11 +301,18 @@ class GateReadOnlyClient:
         )
         stock_assets = await self._safe_get(
             "/stock/users/assets",
-            default={},
+            default=_MISSING,
             field_name="stock_assets",
             failed_fields=failed_fields,
             warnings=warnings,
         )
+        if stock_assets is not _MISSING and not _is_valid_gate_stock_assets(stock_assets):
+            if "stock_assets" not in failed_fields:
+                failed_fields.append("stock_assets")
+            warnings.append("stock_assets: malformed response structure")
+            stock_assets = {}
+        elif stock_assets is _MISSING:
+            stock_assets = {}
         stock_positions = await self._safe_get(
             "/stock/positions",
             default={},
@@ -243,16 +381,22 @@ class GateReadOnlyClient:
                 if isinstance(tr_res, list):
                     spot_stock_trades[tok_s] = [dict(r) for r in tr_res if isinstance(r, dict)]
 
+        unwrapped_stock_assets = (
+            stock_assets["data"]
+            if (isinstance(stock_assets, dict) and "data" in stock_assets)
+            else stock_assets
+        )
         out: dict[str, Any] = {
             "wallet_total": wallet_total if isinstance(wallet_total, dict) else {},
             "unified": unified if isinstance(unified, dict) else {},
             "futures_account": futures_acc if isinstance(futures_acc, dict) else {},
+            "spot_accounts": [dict(r) for r in spot_accounts if isinstance(r, dict)] if isinstance(spot_accounts, list) else [],
             "futures_positions": active_f_pos,
             "futures_open_orders": futures_open_orders if isinstance(futures_open_orders, list) else [],
             "futures_price_orders": futures_price_orders if isinstance(futures_price_orders, list) else [],
             "wallet_fee": wallet_fee if isinstance(wallet_fee, dict) else {},
             "account_detail": account_detail if isinstance(account_detail, dict) else {},
-            "stock_assets": (stock_assets.get("data") or {}) if isinstance(stock_assets, dict) else {},
+            "stock_assets": dict(unwrapped_stock_assets) if isinstance(unwrapped_stock_assets, dict) else {},
             "stock_positions": ((stock_positions.get("data") or {}).get("list") or [])
             if isinstance(stock_positions, dict)
             else [],

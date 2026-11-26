@@ -740,3 +740,548 @@ def test_settings_secret_clear_forged_cookie_rejection_proxy_rate_limit_readonly
             assert act.uncertain_symbols == ()
 
     asyncio.run(_run_cw())
+
+
+def test_first_bind_on_empty_ledger_requires_non_empty_uid_with_409_and_binance_uid_probe(tmp_path: Path) -> None:
+    """First-time bind on an empty ledger must reject HTTP 200 missing-UID responses with 409 (never saving UID-less keys)."""
+    reg = build_default_registry()
+    uid_mode = {"return_uid": False}
+
+    class MissingUidBybitClient:
+        def __init__(self, cred: ExchangeCredentialRecord) -> None:
+            self.key = cred.api_key
+
+        async def get_wallet_balance(self, account_type: str = "UNIFIED") -> dict[str, Any]:
+            return {"list": [{"totalEquity": "1100.00", "totalAvailableBalance": "1100.00", "coin": []}]}
+
+        async def get_api_key_info(self) -> dict[str, Any]:
+            if not uid_mode["return_uid"]:
+                return {"isMaster": True, "readOnly": 1}  # HTTP 200, but missing userID!
+            return {"userID": "770011", "isMaster": True, "readOnly": 1}
+
+        async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
+            return {
+                "venue_id": "bybit",
+                "wallet": {"list": [{"totalEquity": "1100.00", "totalAvailableBalance": "1100.00", "coin": []}]},
+                "closed_pnl": [],
+                "deposits": [{"id": "d-1100", "coin": "USDT", "amount": "1100.00", "successAt": "1732100000000"}],
+                "withdrawals": [],
+                "executions": [],
+            }
+
+        async def aclose(self) -> None:
+            pass
+
+    reg.get("bybit").create_client = MissingUidBybitClient  # type: ignore[union-attr, method-assign]
+    http = TestClient(create_app(data_dir=tmp_path / "byb_first", registry=reg, auto_prompt_setup=False, enable_background_sync=False))
+
+    # 1. HTTP 200 without userID on brand-new empty ledger -> 409 ACCOUNT_UID_UNAVAILABLE, committed=False
+    v_res = http.post("/api/v1/exchanges/verify", json={"venue_id": "bybit", "api_key": "k1", "api_secret": "s1"})
+    assert v_res.status_code == 409
+    assert v_res.json()["error_code"] == "ACCOUNT_UID_UNAVAILABLE"
+    assert v_res.json()["committed"] is False
+
+    s_res = http.post("/api/v1/sync", json={"candidate_credential": {"venue_id": "bybit", "api_key": "k1", "api_secret": "s1"}})
+    assert s_res.status_code == 409
+    assert s_res.json()["error_code"] == "ACCOUNT_UID_UNAVAILABLE"
+    assert s_res.json()["committed"] is False
+    assert CredentialVault(tmp_path / "byb_first").list_decrypted() == []
+    assert LedgerStore(tmp_path / "byb_first").snapshot_venue_partition("bybit") == {"kv": [], "records": [], "snapshots": []}
+
+    # Once valid userID is returned, first bind succeeds and blocks second key of same UID
+    uid_mode["return_uid"] = True
+    s_ok = http.post("/api/v1/sync", json={"candidate_credential": {"venue_id": "bybit", "api_key": "k1", "api_secret": "s1"}})
+    assert s_ok.status_code == 200
+    s_dup = http.post("/api/v1/sync", json={"candidate_credential": {"venue_id": "bybit", "create_new": True, "api_key": "k2", "api_secret": "s2"}})
+    assert s_dup.status_code == 409
+    assert s_dup.json()["error_code"] == "DUPLICATE_ACCOUNT_UID"
+    assert http.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 1100.00
+
+    # 2. BinanceAdapter.test_connection extracts /api/v3/account uid and rejects uid=0 / propagates 503
+    bn_ad = reg.get("binance")
+    assert bn_ad is not None
+
+    class MockBinanceConnClient:
+        def __init__(self, cred: ExchangeCredentialRecord) -> None:
+            self.key = cred.api_key
+
+        async def raw_get(self, path: str, query_params: Any = ()) -> Any:
+            if path == "/api/v3/account":
+                if self.key == "bn-503":
+                    raise RuntimeError("Binance GET /api/v3/account failed (503): Service Unavailable")
+                if self.key == "bn-zero":
+                    return {"accountType": "SPOT", "uid": 0}
+                return {"accountType": "SPOT", "uid": 358899001}
+            return {}
+
+        async def aclose(self) -> None:
+            pass
+
+    bn_ad.create_client = MockBinanceConnClient  # type: ignore[method-assign]
+    http_bn = TestClient(create_app(data_dir=tmp_path / "bn_first", registry=reg, auto_prompt_setup=False, enable_background_sync=False))
+
+    bn_503 = http_bn.post("/api/v1/exchanges/verify", json={"venue_id": "binance", "api_key": "bn-503", "api_secret": "s"})
+    assert bn_503.status_code == 502
+
+    bn_zero = http_bn.post("/api/v1/exchanges/verify", json={"venue_id": "binance", "api_key": "bn-zero", "api_secret": "s"})
+    assert bn_zero.status_code == 409
+    assert bn_zero.json()["error_code"] == "ACCOUNT_UID_UNAVAILABLE"
+
+    bn_valid = http_bn.post("/api/v1/exchanges/verify", json={"venue_id": "binance", "api_key": "bn-ok", "api_secret": "s"})
+    assert bn_valid.status_code == 200
+    assert bn_valid.json()["masked_uid"] == "358***9001"
+
+
+def test_legacy_137_uidless_active_and_archived_partitions_never_double_count_to_2200_and_self_heal(tmp_path: Path) -> None:
+    """1.3.7 UID-less active/archived partitions must block +Add Account duplication (1,100 -> 2,200 U) and self-heal pre-existing duplicates."""
+    btc_trade = {
+        "orderId": "btc-137-001",
+        "symbol": "BTCUSDT",
+        "side": "Sell",
+        "qty": "0.1",
+        "closedSize": "0.1",
+        "avgEntryPrice": "80000",
+        "avgExitPrice": "81000",
+        "cumEntryValue": "8000",
+        "cumExitValue": "8100",
+        "openFee": "0",
+        "closeFee": "0",
+        "closedPnl": "100.00",
+        "createdTime": "1732200000000",
+        "updatedTime": "1732203600000",
+    }
+    snap_1100 = {
+        "venue_id": "bybit",
+        "wallet": {"list": [{"totalEquity": "1100.00", "totalAvailableBalance": "1100.00", "coin": []}]},
+        "closed_pnl": [btc_trade],
+        "deposits": [{"id": "dep-1000", "coin": "USDT", "amount": "1000.00", "successAt": "1732100000000"}],
+        "withdrawals": [],
+        "executions": [],
+    }
+
+    old_key_behavior = {"mode": "503"}  # "503" | "revoked_10003" | "ok"
+
+    def _make_reg():
+        reg = build_default_registry()
+
+        class LegacyBybitClient:
+            def __init__(self, cred: ExchangeCredentialRecord) -> None:
+                self.key = cred.api_key
+
+            async def get_wallet_balance(self, account_type: str = "UNIFIED") -> dict[str, Any]:
+                if self.key == "old-137-key" and old_key_behavior["mode"] == "revoked_10003":
+                    raise RuntimeError("Bybit retCode=10003: Invalid api_key")
+                return snap_1100["wallet"]
+
+            async def get_api_key_info(self) -> dict[str, Any]:
+                if self.key == "old-137-key":
+                    if old_key_behavior["mode"] == "503":
+                        raise RuntimeError("Bybit GET /v5/user/query-api HTTP 503: Service Unavailable")
+                    if old_key_behavior["mode"] == "revoked_10003":
+                        raise RuntimeError("Bybit GET /v5/user/query-api retCode=10003: Invalid api_key")
+                return {"userID": "770011", "isMaster": True, "readOnly": 1}
+
+            async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
+                return dict(snap_1100)
+
+            async def aclose(self) -> None:
+                pass
+
+        reg.get("bybit").create_client = LegacyBybitClient  # type: ignore[union-attr, method-assign]
+        return reg
+
+    # Scenario A: Active 1.3.7 UID-less partition ("bybit" has 1,100 U, remote_uid="")
+    d_active = tmp_path / "scene_a_active"
+    store_a = LedgerStore(d_active)
+    vault_a = CredentialVault(d_active)
+    vault_a.upsert(ExchangeCredentialRecord(venue_id="bybit", label="Bybit 1.3.7", api_key="old-137-key", api_secret="s-old"))
+    store_a.upsert_plugin_snapshot("bybit", snap_1100)
+    http_a = TestClient(create_app(data_dir=d_active, registry=_make_reg(), auto_prompt_setup=False, enable_background_sync=False))
+
+    # A1: Old key returns 503 during identity probe -> +Add Account fails with 502!
+    old_key_behavior["mode"] = "503"
+    assert http_a.post("/api/v1/exchanges/verify", json={"venue_id": "bybit", "create_new": True, "api_key": "new-valid-key", "api_secret": "s-new"}).status_code == 502
+    assert http_a.post("/api/v1/exchanges", json={"venue_id": "bybit", "create_new": True, "api_key": "new-valid-key", "api_secret": "s-new"}).status_code == 502
+    assert http_a.post("/api/v1/sync", json={"candidate_credential": {"venue_id": "bybit", "create_new": True, "api_key": "new-valid-key", "api_secret": "s-new"}}).status_code == 502
+
+    # A2: Old key is revoked (retCode=10003), user clicks +Add Account with new key of SAME account -> 409 DUPLICATE_ACCOUNT_UID!
+    old_key_behavior["mode"] = "revoked_10003"
+    dup_sync_a = http_a.post(
+        "/api/v1/sync",
+        json={"candidate_credential": {"venue_id": "bybit", "create_new": True, "label": "误点添加", "api_key": "new-valid-key", "api_secret": "s-new"}},
+    )
+    assert dup_sync_a.status_code == 409
+    assert dup_sync_a.json()["error_code"] == "DUPLICATE_ACCOUNT_UID"
+
+    dup_ex_a = http_a.post(
+        "/api/v1/exchanges",
+        json={"venue_id": "bybit", "create_new": True, "label": "误点添加", "api_key": "new-valid-key", "api_secret": "s-new"},
+    )
+    assert dup_ex_a.status_code == 409
+    assert dup_ex_a.json()["error_code"] == "DUPLICATE_ACCOUNT_UID"
+    assert store_a.list_partition_account_ids("bybit") == ["bybit"]
+    assert http_a.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 1100.00
+
+    # Rotating key on the original "bybit" row succeeds cleanly and keeps equity at 1,100.00 U!
+    rot_ok = http_a.post(
+        "/api/v1/sync",
+        json={"candidate_credential": {"venue_id": "bybit", "account_id": "bybit", "label": "Bybit 1.3.7", "api_key": "new-valid-key", "api_secret": "s-new"}},
+    )
+    assert rot_ok.status_code == 200
+    assert http_a.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 1100.00
+
+    # Scenario B: 1.3.7 UID-less partition archived FIRST (keep_data=true), then user clicks +Add Account -> 409 ARCHIVED_ACCOUNT_UID_EXISTS!
+    d_arch = tmp_path / "scene_b_archived"
+    store_b = LedgerStore(d_arch)
+    vault_b = CredentialVault(d_arch)
+    vault_b.upsert(ExchangeCredentialRecord(venue_id="bybit", label="Bybit旧封存", api_key="old-137-key", api_secret="s-old"))
+    store_b.upsert_plugin_snapshot("bybit", snap_1100)
+    http_b = TestClient(create_app(data_dir=d_arch, registry=_make_reg(), auto_prompt_setup=False, enable_background_sync=False))
+
+    http_b.delete("/api/v1/exchanges/bybit?keep_data=true").raise_for_status()
+    dup_arch_sync = http_b.post(
+        "/api/v1/sync",
+        json={"candidate_credential": {"venue_id": "bybit", "create_new": True, "label": "误重复添加", "api_key": "new-valid-key", "api_secret": "s-new"}},
+    )
+    assert dup_arch_sync.status_code == 409
+    assert dup_arch_sync.json()["error_code"] == "ARCHIVED_ACCOUNT_UID_EXISTS"
+
+    dup_arch_ex = http_b.post(
+        "/api/v1/exchanges",
+        json={"venue_id": "bybit", "create_new": True, "label": "误重复添加", "api_key": "new-valid-key", "api_secret": "s-new"},
+    )
+    assert dup_arch_ex.status_code == 409
+    assert dup_arch_ex.json()["error_code"] == "ARCHIVED_ACCOUNT_UID_EXISTS"
+    assert store_b.list_partition_account_ids("bybit") == ["bybit"]
+    assert http_b.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 1100.00
+
+    # Rebinding on the archived "bybit" row itself succeeds and keeps equity at 1,100.00 U!
+    rebind_ok = http_b.post(
+        "/api/v1/sync",
+        json={"candidate_credential": {"venue_id": "bybit", "account_id": "bybit", "label": "Bybit旧封存", "api_key": "new-valid-key", "api_secret": "s-new", "expected_revision": "absent"}},
+    )
+    assert rebind_ok.status_code == 200
+    assert http_b.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 1100.00
+
+    # Scenario C: Self-healing of pre-existing doubled ledger (UID-less archived "bybit" + active "bybit__29170bc9")
+    d_heal = tmp_path / "scene_c_self_heal"
+    store_c = LedgerStore(d_heal)
+    vault_c = CredentialVault(d_heal)
+    store_c.upsert_plugin_snapshot("bybit", snap_1100)  # UID-less archived legacy partition
+    store_c.upsert_plugin_snapshot("bybit__29170bc9", snap_1100)  # Active secondary partition of same account
+    store_c.venue_scope("bybit__29170bc9").set_kv("account_uid", "770011")
+    vault_c.upsert(
+        ExchangeCredentialRecord(
+            venue_id="bybit__29170bc9",
+            adapter_id="bybit",
+            label="Bybit 新接入",
+            api_key="new-valid-key",
+            api_secret="s-new",
+            remote_uid="770011",
+        )
+    )
+    http_c = TestClient(create_app(data_dir=d_heal, registry=_make_reg(), auto_prompt_setup=False, enable_background_sync=False))
+    dash_c = http_c.get("/api/v1/dashboard").json()
+    assert dash_c["summary"]["total_equity_usd"] == 1100.00
+    assert dash_c["summary"]["net_principal_usd"] == 1000.00
+    assert len(dash_c["trades"]) == 1
+    assert [e["venue_id"] for e in dash_c["exchanges"]] == ["bybit__29170bc9"]
+    assert dash_c["reconciliation"]["residual_usd"] == 0.0
+
+    # Syncing & restarting still stays converged at 1,100.00 U!
+    http_c.post("/api/v1/sync", json={"force_all": True}).raise_for_status()
+    http_c_restart = TestClient(create_app(data_dir=d_heal, registry=_make_reg(), auto_prompt_setup=False, enable_background_sync=False))
+    assert http_c_restart.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 1100.00
+
+
+def test_legacy_random_secondary_partition_purge_and_reconnect_recovers_trade_journals_and_archive_preserves_timestamps(tmp_path: Path) -> None:
+    """Purging old random-suffix secondary partitions (with or without UID) and reconnecting same UID restores trade notes; keep_data=true never mutates unchanged KV updated_at."""
+    eth_trade = {
+        "orderId": "ord-eth-77",
+        "symbol": "ETHUSDT",
+        "side": "Sell",
+        "qty": "1",
+        "closedSize": "1",
+        "avgEntryPrice": "3000",
+        "avgExitPrice": "3200",
+        "cumEntryValue": "3000",
+        "cumExitValue": "3200",
+        "openFee": "0",
+        "closeFee": "0",
+        "closedPnl": "200.00",
+        "createdTime": "1732200000000",
+        "updatedTime": "1732203600000",
+    }
+    sub_snap = {
+        "venue_id": "bybit",
+        "wallet": {"list": [{"totalEquity": "2200.00", "totalAvailableBalance": "2200.00", "coin": []}]},
+        "closed_pnl": [eth_trade],
+        "deposits": [{"id": "d-2000", "coin": "USDT", "amount": "2000.00", "successAt": "1732100000000"}],
+        "withdrawals": [],
+        "executions": [],
+    }
+    main_snap = {
+        "venue_id": "bybit",
+        "wallet": {"list": [{"totalEquity": "1000.00", "totalAvailableBalance": "1000.00", "coin": []}]},
+        "closed_pnl": [],
+        "deposits": [{"id": "d-1000", "coin": "USDT", "amount": "1000.00", "successAt": "1732100000000"}],
+        "withdrawals": [],
+        "executions": [],
+    }
+
+    reg = build_default_registry()
+
+    class JournalBybitClient:
+        def __init__(self, cred: ExchangeCredentialRecord) -> None:
+            self.key = cred.api_key
+
+        async def get_wallet_balance(self, account_type: str = "UNIFIED") -> dict[str, Any]:
+            return main_snap["wallet"] if self.key == "k-main" else sub_snap["wallet"]
+
+        async def get_api_key_info(self) -> dict[str, Any]:
+            if self.key == "k-main":
+                return {"userID": "770011", "isMaster": True, "readOnly": 1}
+            return {"userID": "770022", "isMaster": False, "readOnly": 1}
+
+        async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
+            return dict(main_snap if self.key == "k-main" else sub_snap)
+
+        async def aclose(self) -> None:
+            pass
+
+    reg.get("bybit").create_client = JournalBybitClient  # type: ignore[union-attr, method-assign]
+
+    # Case 1: Legacy random suffix `bybit__2881cd1a` WITH known UID -> delete(keep_data=false) migrates prefix immediately
+    d1 = tmp_path / "journal_with_uid"
+    store1 = LedgerStore(d1)
+    vault1 = CredentialVault(d1)
+    vault1.upsert(ExchangeCredentialRecord(venue_id="bybit", label="主号", api_key="k-main", api_secret="s1", remote_uid="770011"))
+    vault1.upsert(
+        ExchangeCredentialRecord(
+            venue_id="bybit__2881cd1a",
+            adapter_id="bybit",
+            label="旧随机子号",
+            api_key="k-sub-old",
+            api_secret="s2",
+            remote_uid="770022",
+            account_role="subaccount",
+        )
+    )
+    store1.upsert_plugin_snapshot("bybit", main_snap)
+    store1.upsert_plugin_snapshot("bybit__2881cd1a", sub_snap)
+    sc_rand = store1.venue_scope("bybit__2881cd1a")
+    sc_rand.set_kv("account_label", "旧随机子号")
+    sc_rand.set_kv("account_uid", "770022")
+    sc_rand.set_kv("account_role", "subaccount")
+    # Force an older updated_at timestamp to verify keep_data=true does NOT touch unchanged KV rows!
+    with store1._connect() as conn:
+        conn.execute("UPDATE otl_venue_kv SET updated_at = 1700000000 WHERE venue_id = 'bybit__2881cd1a'")
+    snap_ts_before = store1.snapshot_venue_partition("bybit__2881cd1a")
+
+    http1 = TestClient(create_app(data_dir=d1, registry=reg, auto_prompt_setup=False, enable_background_sync=False))
+    old_tid = http1.get("/api/v1/dashboard?venue=bybit__2881cd1a").json()["trades"][0]["trade_id"]
+    assert old_tid == "bybit__2881cd1a__bybit_ord-eth-77_1732203600000"
+    http1.put(f"/api/v1/journal/{old_tid}", json={"tags": ["旧版复盘"], "note": "随机分区历史笔记"}).raise_for_status()
+
+    # First archive with keep_data=true -> KV updated_at timestamps MUST remain 1700000000 (zero cross-second drift!)
+    http1.delete("/api/v1/exchanges/bybit__2881cd1a?keep_data=true").raise_for_status()
+    assert store1.snapshot_venue_partition("bybit__2881cd1a") == snap_ts_before
+
+    # Now purge completely (keep_data=false) and reconnect same UID via create_new=True -> deterministic ID `bybit__29170bc9`
+    http1.delete("/api/v1/exchanges/bybit__2881cd1a?keep_data=false").raise_for_status()
+    re_res = http1.post(
+        "/api/v1/sync",
+        json={"candidate_credential": {"venue_id": "bybit", "create_new": True, "label": "重接子号", "api_key": "k-sub-new", "api_secret": "s3"}},
+    )
+    assert re_res.status_code == 200
+    det_acct_id = re_res.json()["account_id"]
+    assert det_acct_id != "bybit__2881cd1a"
+    rec_tr = http1.get(f"/api/v1/dashboard?venue={det_acct_id}").json()["trades"][0]
+    assert rec_tr["note"] == "随机分区历史笔记"
+    assert rec_tr["tags"] == ["旧版复盘"]
+
+    # Case 2: Pre-existing orphan journal from a UID-less or already-deleted random partition `bybit__deadbeef`
+    # while another active secondary partition `bybit__keep9999` stays untouched!
+    d2 = tmp_path / "journal_orphan_claim"
+    store2 = LedgerStore(d2)
+    vault2 = CredentialVault(d2)
+    vault2.upsert(ExchangeCredentialRecord(venue_id="bybit", label="主号", api_key="k-main", api_secret="s1", remote_uid="770011"))
+    vault2.upsert(
+        ExchangeCredentialRecord(
+            venue_id="bybit__keep9999",
+            adapter_id="bybit",
+            label="在用保留子号",
+            api_key="k-keep",
+            api_secret="sk",
+            remote_uid="770099",
+             enabled=False,
+        )
+    )
+    store2.upsert_plugin_snapshot("bybit", main_snap)
+    store2.save_journal("bybit__deadbeef__bybit_ord-eth-77_1732203600000", ["孤儿恢复"], "无UID随机分区历史笔记")
+    store2.save_journal("bybit__keep9999__bybit_ord-eth-77_1732203600000", ["勿动"], "另一个禁用子号的笔记")
+
+    http2 = TestClient(create_app(data_dir=d2, registry=reg, auto_prompt_setup=False, enable_background_sync=False))
+    re_res2 = http2.post(
+        "/api/v1/sync",
+        json={"candidate_credential": {"venue_id": "bybit", "create_new": True, "label": "重接子号2", "api_key": "k-sub-new", "api_secret": "s3"}},
+    )
+    assert re_res2.status_code == 200
+    det_id2 = re_res2.json()["account_id"]
+    rec_tr2 = http2.get(f"/api/v1/dashboard?venue={det_id2}").json()["trades"][0]
+    assert rec_tr2["note"] == "无UID随机分区历史笔记"
+    assert rec_tr2["tags"] == ["孤儿恢复"]
+    # Disabled sibling `bybit__keep9999`'s journal MUST NOT be stolen!
+    all_j2 = store2.load_journals()
+    assert all_j2["bybit__keep9999__bybit_ord-eth-77_1732203600000"]["note"] == "另一个禁用子号的笔记"
+
+
+def test_hyperliquid_batch_subaccount_import_skips_already_connected_wallets_and_copy_watcher_11012005_retry(tmp_path: Path) -> None:
+    """Hyperliquid include_subaccounts skips already-connected sub-wallets; CopyWatcher retries 11012005 once and humanizes clearly."""
+    from opentradeledger.adapters.hyperliquid.client import HyperliquidReadOnlyClient
+    from opentradeledger.core.copy_watcher import CopyWatcherError, CopyWatcherService, humanize_watcher_error
+    import json as _json
+
+    master_addr = "0x" + "1" * 40
+    sub1_addr = "0x" + "2" * 40
+    sub2_addr = "0x" + "3" * 40
+
+    def hl_handler(req: httpx.Request) -> httpx.Response:
+        body = _json.loads(req.content.decode("utf-8"))
+        tp = body.get("type")
+        usr = str(body.get("user") or "").lower()
+        if tp == "clearinghouseState":
+            eq = "1000.0" if usr == master_addr else ("400.0" if usr == sub1_addr else "600.0")
+            return httpx.Response(200, json={"marginSummary": {"accountValue": eq, "withdrawable": eq}, "assetPositions": []})
+        if tp == "spotClearinghouseState":
+            return httpx.Response(200, json={"balances": []})
+        if tp == "allMids":
+            return httpx.Response(200, json={})
+        if tp == "userNonFundingLedgerUpdates":
+            dep = "1000.0" if usr == master_addr else ("400.0" if usr == sub1_addr else "600.0")
+            return httpx.Response(200, json=[{"hash": f"0x{usr[:8]}", "time": 1732100000000, "delta": {"type": "deposit", "usdc": dep}}])
+        return httpx.Response(200, json=[])
+
+    reg = build_default_registry()
+    reg.get("hyperliquid").create_client = lambda cred: HyperliquidReadOnlyClient(  # type: ignore[union-attr, method-assign]
+        wallet_address=cred.api_key,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(hl_handler)),
+    )
+    http = TestClient(create_app(data_dir=tmp_path / "hl_subs", registry=reg, auto_prompt_setup=False, enable_background_sync=False))
+
+    # Step 1: Connect master + Sub1
+    r1 = http.post(
+        "/api/v1/sync",
+        json={
+            "candidate_credential": {
+                "venue_id": "hyperliquid",
+                "label": "HL主钱包",
+                "wallet_address": master_addr,
+                "include_subaccounts": [{"name": "Sub1", "address": sub1_addr}],
+            }
+        },
+    ).json()
+    assert len(r1["added_subaccounts"]) == 1
+    assert "failed_subaccounts" not in r1
+
+    # Step 2: Later add Sub2 while keeping Sub1 checked -> Sub1 skipped cleanly (NO failed_subaccounts!), only Sub2 added!
+    r2 = http.post(
+        "/api/v1/sync",
+        json={
+            "candidate_credential": {
+                "venue_id": "hyperliquid",
+                "account_id": "hyperliquid",
+                "label": "HL主钱包",
+                "wallet_address": master_addr,
+                "include_subaccounts": [
+                    {"name": "Sub1", "address": sub1_addr},
+                    {"name": "Sub2", "address": sub2_addr},
+                ],
+            }
+        },
+    ).json()
+    assert len(r2["added_subaccounts"]) == 1
+    assert "failed_subaccounts" not in r2
+    assert http.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 2000.00
+
+    # CopyWatcher 11012005 retry & humanized message
+    pid = "3900000000000000999"
+    now_ms = int(time.time() * 1000)
+    state_cw = {"order_hist_calls": 0, "always_busy": False}
+
+    def cw_busy_handler(req: httpx.Request) -> httpx.Response:
+        p = req.url.path
+        if p.endswith("/detail"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": "000000",
+                    "data": {
+                        "leadPortfolioId": pid,
+                        "nickname": "BusyTrader",
+                        "status": "ACTIVE",
+                        "portfolioType": "PUBLIC",
+                        "currentCopyCount": 100,
+                        "maxCopyCount": 200,
+                    },
+                },
+            )
+        if p.endswith("/position-history"):
+            return httpx.Response(200, json={"code": "000000", "data": {"list": []}})
+        if p.endswith("/order-history"):
+            state_cw["order_hist_calls"] += 1
+            if state_cw["always_busy"] or state_cw["order_hist_calls"] == 1:
+                return httpx.Response(200, json={"code": "11012005", "message": "The system is currently busy, please try again later."})
+            return httpx.Response(
+                200,
+                json={
+                    "code": "000000",
+                    "data": {
+                        "list": [
+                            {
+                                "orderId": "o1",
+                                "orderTime": now_ms - 5000,
+                                "symbol": "BTCUSDT",
+                                "side": "BUY",
+                                "positionSide": "LONG",
+                                "type": "MARKET",
+                                "executedQty": "0.1",
+                                "avgPrice": "90000",
+                                "totalPnl": "0",
+                            }
+                        ]
+                    },
+                },
+            )
+        if p.endswith("/fapi/v1/ticker/price"):
+            return httpx.Response(200, json={"price": "91000"})
+        return httpx.Response(404)
+
+    async def _run_busy_cw() -> None:
+        store_cw = LedgerStore(tmp_path / "cw_busy")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(cw_busy_handler)) as hc:
+            # 1) Transient single 11012005 recovers on automatic retry #2!
+            cw_client = PublicCopyWatcherClient(client=hc)
+            act = await cw_client.fetch_trade_activity(pid, now_ms=now_ms)
+            assert state_cw["order_hist_calls"] == 2
+            assert len(act.inferred_positions) == 1
+            assert act.inferred_positions[0].symbol == "BTCUSDT"
+
+            # Seed snapshot via service, then turn on persistent 11012005 -> preserves snapshot & humanizes error
+            svc = CopyWatcherService(store=store_cw, http_client=hc)
+            state_cw["order_hist_calls"] = 0
+            await svc.add_targets(pid)
+            assert len(svc.get_status()["items"][0]["inferred_positions"]) == 1
+
+            state_cw["always_busy"] = True
+            with pytest.raises(CopyWatcherError) as exc_info:
+                await cw_client.fetch_trade_activity(pid, now_ms=now_ms)
+            assert "11012005" in str(exc_info.value)
+            _en, zh_msg = humanize_watcher_error(exc_info.value)
+            assert zh_msg == "币安公开订单历史服务繁忙（11012005），请稍后重试（已保留上次调仓快照）"
+
+            polled = await svc.poll_once(force_trades=True)
+            assert len(polled["items"][0]["inferred_positions"]) == 1
+            assert polled["items"][0]["trade_stale"] is True
+
+    asyncio.run(_run_busy_cw())

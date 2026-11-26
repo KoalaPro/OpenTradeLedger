@@ -198,14 +198,23 @@ class BybitReadOnlyClient:
                 status_code=resp.status_code,
             )
         payload = resp.json()
+        if not isinstance(payload, dict):
+            raise BybitApiError(
+                f"Malformed Bybit payload on {path}",
+                status_code=resp.status_code,
+            )
         if int(payload.get("retCode", -1)) != 0:
             raise BybitApiError(
                 f"Bybit GET {path} retCode={payload.get('retCode')}: {payload.get('retMsg', '')}",
                 status_code=resp.status_code,
                 ret_code=payload.get("retCode"),
             )
-        result = payload.get("result")
-        return result if isinstance(result, dict) else {}
+        if "result" not in payload or not isinstance(payload["result"], dict):
+            raise BybitApiError(
+                f"Malformed Bybit payload on {path}",
+                status_code=resp.status_code,
+            )
+        return payload["result"]
 
     async def _paginate_cursor(
         self,
@@ -271,10 +280,13 @@ class BybitReadOnlyClient:
         if since_ms > 0 and now_ms - since_ms <= SEVEN_DAYS_MS - 60_000:
             return list(merged.values())
 
-        # Step backwards from (now - 7d) in 7-day chunks
+        # Step backwards from (now - 7d) in 7-day chunks.
+        # Full sync (since_ms <= 0) scans at least 26 windows (182 days / half year) before allowing empty-streak early stop,
+        # ensuring sparse historical closes (e.g. 98 days ago) are never missed.
         w_end = now_ms - SEVEN_DAYS_MS + 60_000
         empty_streak = 0
-        for _ in range(1, self.max_windows):
+        min_windows_before_early_stop = 26 if since_ms <= 0 else 8
+        for win_idx in range(1, self.max_windows):
             if since_ms > 0 and w_end < since_ms:
                 break
             w_start = max(since_ms, w_end - SEVEN_DAYS_MS) if since_ms > 0 else (w_end - SEVEN_DAYS_MS)
@@ -303,13 +315,13 @@ class BybitReadOnlyClient:
                     break
                 if new_in_win == 0:
                     empty_streak += 1
-                    if empty_streak >= 8:
+                    if win_idx >= min_windows_before_early_stop and empty_streak >= 8:
                         break
                 else:
                     empty_streak = 0
             else:
                 empty_streak += 1
-                if empty_streak >= 8:
+                if win_idx >= min_windows_before_early_stop and empty_streak >= 8:
                     break
             w_end = w_start - 1
 
@@ -375,12 +387,45 @@ class BybitReadOnlyClient:
         return await self.request_readonly("GET", "/v5/user/query-api")
 
     async def get_wallet_balance(self, account_type: str = "UNIFIED") -> dict[str, Any]:
-        return await self.request_readonly("GET", "/v5/account/wallet-balance", {"accountType": account_type})
+        try:
+            res = await self.request_readonly("GET", "/v5/account/wallet-balance", {"accountType": account_type})
+        except BybitApiError as exc:
+            if "Malformed Bybit payload" in str(exc):
+                raise BybitApiError("Malformed Bybit wallet-balance payload", status_code=exc.status_code) from exc
+            raise
+        if (
+            not isinstance(res, dict)
+            or "list" not in res
+            or not isinstance(res["list"], list)
+            or any(
+                not isinstance(acct, dict) or ("totalEquity" not in acct and "coin" not in acct)
+                for acct in res["list"]
+            )
+        ):
+            raise BybitApiError("Malformed Bybit wallet-balance payload")
+        return res
 
     async def get_funding_balance(self) -> dict[str, Any]:
-        return await self.request_readonly(
-            "GET", "/v5/asset/transfer/query-account-coins-balance", {"accountType": "FUND"}
-        )
+        try:
+            res = await self.request_readonly(
+                "GET", "/v5/asset/transfer/query-account-coins-balance", {"accountType": "FUND"}
+            )
+        except BybitApiError as exc:
+            if "Malformed Bybit payload" in str(exc):
+                raise BybitApiError("Malformed Bybit funding balance payload", status_code=exc.status_code) from exc
+            raise
+        if (
+            not isinstance(res, dict)
+            or "balance" not in res
+            or not isinstance(res["balance"], list)
+            or any(
+                not isinstance(coin, dict)
+                or ("walletBalance" not in coin and "transferBalance" not in coin)
+                for coin in res["balance"]
+            )
+        ):
+            raise BybitApiError("Malformed Bybit funding balance payload")
+        return res
 
     async def get_positions(self, category: str = "linear", settle_coin: str = "USDT") -> list[dict[str, Any]]:
         res = await self.request_readonly(

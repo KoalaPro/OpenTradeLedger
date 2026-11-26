@@ -19,6 +19,10 @@ const TAG_KEYS: Array<{ id: string; key: MessageKey }> = [
   { id: 'overheld', key: 'tag_overheld' },
 ]
 
+function tagsEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, idx) => v === b[idx])
+}
+
 function modeLabel(code: string, t: (k: MessageKey) => string): string {
   const known: Record<string, MessageKey> = {
     LIMIT_MAKER: 'mode_LIMIT_MAKER',
@@ -137,10 +141,17 @@ export function TradesPage({
   const [selectedId, setSelectedId] = useState<string>('')
   const [swapDir, setSwapDir] = useState<'next' | 'prev'>('next')
   const [draftMap, setDraftMap] = useState<Record<string, { tags: string[]; note: string }>>({})
-  const [saving, setSaving] = useState(false)
-  const [savedAck, setSavedAck] = useState(false)
-  const [saveError, setSaveError] = useState('')
-  const savedTimerRef = useRef<number | null>(null)
+  const draftMapRef = useRef<Record<string, { tags: string[]; note: string }>>({})
+  const [committedMap, setCommittedMap] = useState<
+    Record<
+      string,
+      { tags: string[]; note: string; prevServerTags: string[]; prevServerNote: string }
+    >
+  >({})
+  const [savingCountById, setSavingCountById] = useState<Record<string, number>>({})
+  const [savedAckById, setSavedAckById] = useState<Record<string, boolean>>({})
+  const [saveErrorById, setSaveErrorById] = useState<Record<string, string>>({})
+  const savedTimersRef = useRef<Record<string, number>>({})
   const tableWrapRef = useRef<HTMLDivElement | null>(null)
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
   const [rowGlider, setRowGlider] = useState<{ top: number; height: number; visible: boolean }>({
@@ -149,24 +160,28 @@ export function TradesPage({
     visible: false,
   })
 
-  const clearSavedIndicators = () => {
-    if (savedTimerRef.current !== null) {
-      window.clearTimeout(savedTimerRef.current)
-      savedTimerRef.current = null
+  const clearSavedIndicatorsFor = (tradeId: string) => {
+    if (!tradeId) return
+    const timer = savedTimersRef.current[tradeId]
+    if (timer !== undefined) {
+      window.clearTimeout(timer)
+      delete savedTimersRef.current[tradeId]
     }
-    setSavedAck(false)
-    setSaveError('')
+    setSavedAckById(prev => (prev[tradeId] ? { ...prev, [tradeId]: false } : prev))
+    setSaveErrorById(prev => (prev[tradeId] ? { ...prev, [tradeId]: '' } : prev))
   }
 
   useEffect(() => {
+    const timers = savedTimersRef.current
     return () => {
-      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current)
+      for (const timer of Object.values(timers)) {
+        window.clearTimeout(timer)
+      }
     }
   }, [])
 
   useEffect(() => {
     setSelectedId('')
-    clearSavedIndicators()
   }, [venueFilter, symbolFilter])
 
   const localDataScopeConflict = useMemo(() => {
@@ -213,13 +228,32 @@ export function TradesPage({
   }, [sortedTrades, selectedId])
 
   const selectedIndex = selected ? sortedTrades.indexOf(selected) : -1
-  const currentDraft = selected ? draftMap[selected.trade_id] : undefined
-  const draftTags = currentDraft ? currentDraft.tags : (selected?.tags ?? [])
-  const draftNote = currentDraft ? currentDraft.note : (selected?.note ?? '')
+  const activeTradeId = selected?.trade_id ?? ''
+  const currentDraft = activeTradeId ? draftMap[activeTradeId] : undefined
+  const committedForSelected = useMemo(() => {
+    if (!selected) return undefined
+    const c = committedMap[selected.trade_id]
+    if (!c) return undefined
+    const serverUnchanged =
+      (selected.note ?? '') === c.prevServerNote && tagsEqual(selected.tags ?? [], c.prevServerTags)
+    return serverUnchanged ? c : undefined
+  }, [selected, committedMap])
+  const draftTags = currentDraft
+    ? currentDraft.tags
+    : committedForSelected
+      ? committedForSelected.tags
+      : (selected?.tags ?? [])
+  const draftNote = currentDraft
+    ? currentDraft.note
+    : committedForSelected
+      ? committedForSelected.note
+      : (selected?.note ?? '')
+  const saving = activeTradeId ? (savingCountById[activeTradeId] ?? 0) > 0 : false
+  const savedAck = activeTradeId ? Boolean(savedAckById[activeTradeId]) : false
+  const saveError = activeTradeId ? (saveErrorById[activeTradeId] ?? '') : ''
   const canSaveJournal = Boolean(selected && effectiveScopeReady && !scopeLoading && !scopeError)
 
   useEffect(() => {
-    clearSavedIndicators()
     if (selected) {
       rowRefs.current[selected.trade_id]?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
     }
@@ -263,32 +297,82 @@ export function TradesPage({
 
   const handleSave = async () => {
     if (!selected || !canSaveJournal) return
-    setSaving(true)
-    setSaveError('')
-    setSavedAck(false)
+    const targetId = selected.trade_id
+    const sentTags = [...draftTags]
+    const sentNote = draftNote
+    const origServerTags = [...(selected.tags ?? [])]
+    const origServerNote = selected.note ?? ''
+
+    const existingTimer = savedTimersRef.current[targetId]
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer)
+      delete savedTimersRef.current[targetId]
+    }
+    setSavingCountById(prev => ({ ...prev, [targetId]: (prev[targetId] ?? 0) + 1 }))
+    setSaveErrorById(prev => (prev[targetId] ? { ...prev, [targetId]: '' } : prev))
+    setSavedAckById(prev => (prev[targetId] ? { ...prev, [targetId]: false } : prev))
+
     try {
-      await onSaveJournal(selected.trade_id, draftTags, draftNote)
+      await onSaveJournal(targetId, sentTags, sentNote)
+      setCommittedMap(prev => ({
+        ...prev,
+        [targetId]: {
+          tags: sentTags,
+          note: sentNote,
+          prevServerTags: origServerTags,
+          prevServerNote: origServerNote,
+        },
+      }))
+
+      const latestDraft = draftMapRef.current[targetId]
+      const unchanged =
+        !latestDraft || (latestDraft.note === sentNote && tagsEqual(latestDraft.tags, sentTags))
+
       setDraftMap(prev => {
-        const next = { ...prev }
-        delete next[selected.trade_id]
-        return next
+        const cur = prev[targetId]
+        if (!cur || (cur.note === sentNote && tagsEqual(cur.tags, sentTags))) {
+          if (!(targetId in prev)) return prev
+          const next = { ...prev }
+          delete next[targetId]
+          draftMapRef.current = next
+          return next
+        }
+        return prev
       })
-      setSavedAck(true)
-      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current)
-      savedTimerRef.current = window.setTimeout(() => {
-        setSavedAck(false)
-        savedTimerRef.current = null
-      }, 2000)
+
+      if (unchanged) {
+        if (targetId in draftMapRef.current) {
+          const nextRef = { ...draftMapRef.current }
+          delete nextRef[targetId]
+          draftMapRef.current = nextRef
+        }
+        setSavedAckById(prev => ({ ...prev, [targetId]: true }))
+        const prevTimer = savedTimersRef.current[targetId]
+        if (prevTimer !== undefined) window.clearTimeout(prevTimer)
+        savedTimersRef.current[targetId] = window.setTimeout(() => {
+          setSavedAckById(prev => (prev[targetId] ? { ...prev, [targetId]: false } : prev))
+          delete savedTimersRef.current[targetId]
+        }, 2000)
+      }
     } catch (err) {
-      setSaveError(
+      const msg =
         err instanceof Error
           ? err.message
           : locale === 'en'
             ? 'Failed to save journal note'
-            : '保存复盘笔记失败，请稍后重试',
-      )
+            : '保存复盘笔记失败，请稍后重试'
+      setSaveErrorById(prev => ({ ...prev, [targetId]: msg }))
     } finally {
-      setSaving(false)
+      setSavingCountById(prev => {
+        const nextCount = Math.max(0, (prev[targetId] ?? 1) - 1)
+        if (nextCount === 0) {
+          if (!(targetId in prev)) return prev
+          const next = { ...prev }
+          delete next[targetId]
+          return next
+        }
+        return { ...prev, [targetId]: nextCount }
+      })
     }
   }
 
@@ -740,15 +824,29 @@ export function TradesPage({
                         key={tk.id}
                         type="button"
                         onClick={() => {
-                          setSavedAck(false)
-                          setSaveError('')
-                          const nextTags = draftTags.includes(tk.id)
-                            ? draftTags.filter(x => x !== tk.id)
-                            : [...draftTags, tk.id]
-                          setDraftMap(prev => ({
-                            ...prev,
-                            [selected.trade_id]: { tags: nextTags, note: draftNote },
-                          }))
+                          const targetId = selected.trade_id
+                          clearSavedIndicatorsFor(targetId)
+                          const base = draftMapRef.current[targetId] ?? {
+                            tags: draftTags,
+                            note: draftNote,
+                          }
+                          const nextTags = base.tags.includes(tk.id)
+                            ? base.tags.filter(x => x !== tk.id)
+                            : [...base.tags, tk.id]
+                          const nextEntry = { tags: nextTags, note: base.note }
+                          draftMapRef.current = { ...draftMapRef.current, [targetId]: nextEntry }
+                          setDraftMap(prev => {
+                            const curBase = prev[targetId] ?? base
+                            const updatedTags = curBase.tags.includes(tk.id)
+                              ? curBase.tags.filter(x => x !== tk.id)
+                              : [...curBase.tags, tk.id]
+                            const next = {
+                              ...prev,
+                              [targetId]: { tags: updatedTags, note: curBase.note },
+                            }
+                            draftMapRef.current = next
+                            return next
+                          })
                         }}
                         className="px-2.5 py-1 rounded-[5px] text-[12px] font-medium border cursor-pointer"
                         style={{
@@ -766,13 +864,23 @@ export function TradesPage({
                   rows={2}
                   value={draftNote}
                   onChange={e => {
-                    setSavedAck(false)
-                    setSaveError('')
+                    const targetId = selected.trade_id
+                    clearSavedIndicatorsFor(targetId)
                     const val = e.target.value
-                    setDraftMap(prev => ({
-                      ...prev,
-                      [selected.trade_id]: { tags: draftTags, note: val },
-                    }))
+                    const baseTags = draftMapRef.current[targetId]?.tags ?? draftTags
+                    draftMapRef.current = {
+                      ...draftMapRef.current,
+                      [targetId]: { tags: baseTags, note: val },
+                    }
+                    setDraftMap(prev => {
+                      const curTags = prev[targetId]?.tags ?? baseTags
+                      const next = {
+                        ...prev,
+                        [targetId]: { tags: curTags, note: val },
+                      }
+                      draftMapRef.current = next
+                      return next
+                    })
                   }}
                   placeholder={t('journal_placeholder')}
                   className="otl-input w-full h-auto py-2 placeholder:text-[var(--fg-3)]"

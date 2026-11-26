@@ -72,8 +72,13 @@ def build_kucoin_venue_ledger(
         return amt * float(px_map.get(c, 0.0))
 
     fut_ov = snap.get("futures_overview") if isinstance(snap.get("futures_overview"), dict) else {}
-    fut_equity = float(fut_ov.get("accountEquity") or 0.0)
-    avail_margin = float(fut_ov.get("availableBalance") or fut_equity)
+    fut_raw = (
+        fut_ov.get("accountEquity")
+        if fut_ov.get("accountEquity") is not None
+        else (fut_ov.get("marginBalance") if fut_ov.get("marginBalance") is not None else fut_ov.get("availableBalance"))
+    )
+    fut_equity = float(fut_raw or 0.0)
+    avail_margin = float(fut_ov.get("availableBalance") if fut_ov.get("availableBalance") is not None else fut_equity)
 
     raw_spot_rows: list[tuple[str, float, float, str]] = []
     spot_equity = 0.0
@@ -84,7 +89,11 @@ def build_kucoin_venue_ledger(
         if acct_tp in {"CONTRACT", "FUTURES"}:
             continue
         ccy = str(acct.get("currency") or "").strip().upper()
-        bal = float(acct.get("balance") or 0.0)
+        bal = (
+            float(acct["balance"])
+            if acct.get("balance") is not None
+            else (float(acct.get("available") or 0.0) + float(acct.get("holds") or 0.0))
+        )
         if not ccy or bal <= 0:
             continue
         u_val = _coin_usd(ccy, bal)
