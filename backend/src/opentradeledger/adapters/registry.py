@@ -322,6 +322,14 @@ class GateAdapter(BaseExchangeAdapter):
                     out["remote_uid"] = str(det["user_id"]).strip()
             except Exception:
                 pass
+            try:
+                subs = await client.raw_get("/sub_accounts")
+                if isinstance(subs, list):
+                    out["account_role"] = "master"
+            except Exception as sub_exc:
+                msg = str(sub_exc).lower()
+                if "sub_account" in msg or "sub-account" in msg or "subaccount" in msg:
+                    out["account_role"] = "subaccount"
             return out
         finally:
             await client.aclose()

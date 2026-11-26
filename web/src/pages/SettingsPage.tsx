@@ -716,7 +716,13 @@ export function SettingsPage({
                       const vStatus = getAccountVisualStatus(acct)
                       const roleBadge = formatRoleLabel(acct.account_role || acct.credential?.account_role, isZh)
                       const uidTag = acct.masked_uid || acct.credential?.masked_uid || ''
-                      const rawLbl = acct.credential?.label || `${adName} #${idx + 1}`
+                      const credLbl = (acct.credential?.label || '').trim()
+                      const isDefaultCredLbl =
+                        !credLbl ||
+                        credLbl.toLowerCase() === ad.venue_id.toLowerCase() ||
+                        credLbl.toLowerCase() === ad.display_name.toLowerCase() ||
+                        credLbl.toLowerCase() === (ad.display_name_zh || '').toLowerCase()
+                      const rawLbl = isDefaultCredLbl ? `${adName} #${idx + 1}` : credLbl
                       const maskedKey = acct.configured && acct.credential ? acct.credential.masked_api_key : ''
                       const errReason = isZh
                         ? acct.health?.error_reason_zh || acct.health?.error_reason || ''

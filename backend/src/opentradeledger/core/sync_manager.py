@@ -372,6 +372,27 @@ class SyncManager:
                         results[acct_id] = res_row
                         self.health_tracker.record_success(acct_id)
                         any_synced = True
+                        raw_scope = self.store.venue_scope(acct_id)
+                        kv_uid = str(raw_scope.get_kv("account_uid") or "").strip()
+                        kv_role = str(raw_scope.get_kv("account_role") or "").strip()
+                        probed_uid = kv_uid
+                        probed_role = kv_role
+                        if (not cred.remote_uid or not cred.account_role) and not raw_scope.get_kv("identity_backfilled_v1"):
+                            info = await adapter.probe_identity(cred)
+                            raw_scope.set_kv("identity_backfilled_v1", True)
+                            if isinstance(info, dict):
+                                probed_uid = str(info.get("remote_uid") or probed_uid or "").strip()
+                                probed_role = str(info.get("account_role") or probed_role or "").strip()
+                        eff_uid = cred.remote_uid or probed_uid
+                        eff_role = cred.account_role or probed_role
+                        if eff_uid and eff_uid != kv_uid:
+                            raw_scope.set_kv("account_uid", eff_uid)
+                        if eff_role and eff_role != kv_role:
+                            raw_scope.set_kv("account_role", eff_role)
+                        if (eff_uid and eff_uid != cred.remote_uid) or (eff_role and eff_role != cred.account_role):
+                            self.vault.upsert(
+                                cred.model_copy(update={"remote_uid": eff_uid, "account_role": eff_role})
+                            )
                         acct_title = cred.label or acct_id.upper()
                         if outcome.new_closed_delta > 0:
                             await self._maybe_notify(

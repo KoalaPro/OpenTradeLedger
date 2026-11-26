@@ -22,7 +22,19 @@ import time
 import httpx
 
 
-DERIVATIVES = {"GATE", "BINANCE", "OKX", "BYBIT", "MEXC", "BITGET", "EASICOIN"}
+DERIVATIVES = {
+    "GATE",
+    "BINANCE",
+    "OKX",
+    "BYBIT",
+    "MEXC",
+    "BITGET",
+    "EASICOIN",
+    "HYPERLIQUID",
+    "KUCOIN",
+    "BINGX",
+    "HTX",
+}
 CROSS_CRYPTO_VENUES = ("BINANCE", "OKX", "BYBIT", "GATE")
 US_MARKETS = ("NASDAQ", "NYSE", "AMEX")
 PAIR = re.compile(r"([A-Z0-9\u3400-\u9fff]{1,32})_([A-Z0-9]{2,12})")
@@ -186,6 +198,7 @@ class InstrumentLogos:
         self.retry_after: OrderedDict[str, float] = OrderedDict()
 
     async def find(self, venue: str, instrument: str) -> Path | None:
+        venue = (venue or "").split("__", 1)[0].upper()
         if venue in DERIVATIVES:
             valid = PAIR.fullmatch(instrument)
         elif venue in (*US_MARKETS, "US"):

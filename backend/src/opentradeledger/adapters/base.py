@@ -198,12 +198,14 @@ class BaseExchangeAdapter(ABC):
                 amt = 0.0
             if abs(amt) < 0.005 and not (k.endswith("_futures") or k == "manual_futures"):
                 continue
-            items.append(
-                {
-                    "key": k,
-                    "label_zh": str(s.get("title_zh") or s.get("label_zh") or k),
-                    "detail_zh": f"{period_label_zh} {s.get('title_zh') or s.get('label_zh') or ''}".strip(),
-                    "amount_usd": amt,
-                }
-            )
+            item_out: dict[str, Any] = {
+                "key": k,
+                "label_zh": str(s.get("title_zh") or s.get("label_zh") or k),
+                "detail_zh": f"{period_label_zh} {s.get('title_zh') or s.get('label_zh') or ''}".strip(),
+                "amount_usd": amt,
+            }
+            for meta_k in ("account_id", "account_display", "base_exchange_en"):
+                if s.get(meta_k):
+                    item_out[meta_k] = s[meta_k]
+            items.append(item_out)
         return items

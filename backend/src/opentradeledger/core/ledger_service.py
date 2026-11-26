@@ -22,7 +22,7 @@ from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.venue_primitives import dec, f2, fmt_bj
 from opentradeledger.security.vault import CredentialVault
 
-_CIRCLED_NUM_RE = re.compile(r"^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])\s*")
+_CIRCLED_NUM_RE = re.compile(r"^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|\(\d+\))\s*")
 _CN_NUMS = (
     "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩",
     "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳",
@@ -156,7 +156,14 @@ def _translate_zh_phrases(text: str) -> str:
     return s or "Reconciled ledger component"
 
 
-def _translate_reconcile_label_en(key: str, raw_label: str, label_zh: str) -> str:
+def _translate_reconcile_label_en(
+    key: str,
+    raw_label: str,
+    label_zh: str,
+    *,
+    account_display: str = "",
+    base_exchange_en: str = "",
+) -> str:
     if raw_label and not re.search(r"[\u4e00-\u9fff]", raw_label):
         m_p = _CIRCLED_NUM_RE.match(label_zh or "")
         if m_p and not _CIRCLED_NUM_RE.match(raw_label):
@@ -166,6 +173,11 @@ def _translate_reconcile_label_en(key: str, raw_label: str, label_zh: str) -> st
     prefix = f"{m.group(1)} " if m else ""
     base = _EN_RECONCILE_TITLE_BY_KEY.get(key)
     if base:
+        if account_display and base_exchange_en and account_display != base_exchange_en:
+            if base_exchange_en in base:
+                base = base.replace(base_exchange_en, account_display, 1)
+            elif account_display not in base:
+                base = f"{account_display} · {base}"
         return f"{prefix}{base}"
     cleaned = _translate_zh_phrases(label_zh or raw_label)
     return cleaned or key.replace("_", " ").title()
@@ -178,13 +190,25 @@ def _format_numbered_reconcile_items(
     if not raw_items:
         return []
     numbered: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
     for idx, it in enumerate(raw_items):
         num = _CN_NUMS[idx] if idx < len(_CN_NUMS) else f"({idx + 1})"
         k = str(it.get("key") or idx)
+        acct_id = str(it.get("account_id") or "").strip().lower()
+        out_key = f"{acct_id}__{k}" if (acct_id and "__" in acct_id) else k
+        if out_key in seen_keys:
+            out_key = f"{acct_id or idx}__{k}__{idx}"
+        seen_keys.add(out_key)
         raw_zh = str(it.get("label_zh") or it.get("title_zh") or it.get("title") or k)
         clean_zh = _CIRCLED_NUM_RE.sub("", raw_zh).strip()
         lbl_zh = f"{num} {clean_zh}"
-        lbl_en = _translate_reconcile_label_en(k, str(it.get("label") or ""), lbl_zh)
+        lbl_en = _translate_reconcile_label_en(
+            k,
+            str(it.get("label") or ""),
+            lbl_zh,
+            account_display=str(it.get("account_display") or ""),
+            base_exchange_en=str(it.get("base_exchange_en") or ""),
+        )
         det_zh = str(it.get("detail_zh") or it.get("detail") or "")
         det_en = (
             str(it["detail"])
@@ -193,7 +217,7 @@ def _format_numbered_reconcile_items(
         )
         numbered.append(
             {
-                "key": k,
+                "key": out_key,
                 "label": lbl_en,
                 "label_zh": lbl_zh,
                 "detail": det_en,

@@ -623,3 +623,97 @@ def test_kucoin_bingx_and_htx_signatures_guards_and_closed_loop_ledgers(tmp_path
     assert dash["reconciliation"]["residual_usd"] == 0.0
     assert len(dash["trades"]) == 3
     assert {t["venue_id"] for t in dash["trades"]} == {"kucoin", "bingx", "htx"}
+
+
+def test_secondary_account_logo_lookup_unique_reconcile_keys_and_legacy_uid_backfill(tmp_path: Path) -> None:
+    """Secondary account IDs resolve artwork, emit unique reconcile item keys, and backfill legacy UIDs on sync."""
+    from opentradeledger.core.logo_cache import DERIVATIVES, InstrumentLogos
+    from opentradeledger.core.sync_manager import SyncManager
+
+    assert {"HYPERLIQUID", "KUCOIN", "BINGX", "HTX"}.issubset(DERIVATIVES)
+
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    logo_dir = tmp_path / "logos"
+    logo_dir.mkdir(parents=True, exist_ok=True)
+    (logo_dir / "GATE-SOXL_USDT.png").write_bytes(png_bytes)
+
+    logos = InstrumentLogos(logo_dir)
+    resolved = asyncio.run(logos.find("GATE__63068647", "SOXL_USDT"))
+    assert resolved is not None and resolved.name == "GATE-SOXL_USDT.png"
+
+    # Legacy account without remote_uid/account_role gets backfilled once during sync_all
+    reg = build_default_registry()
+
+    class MockBybitBackfillClient:
+        def __init__(self, cred: ExchangeCredentialRecord) -> None:
+            self.key = cred.api_key
+
+        async def get_wallet_balance(self, account_type: str = "UNIFIED") -> dict[str, Any]:
+            return {"list": [{"totalEquity": "1000.00", "totalAvailableBalance": "1000.00", "coin": []}]}
+
+        async def get_api_key_info(self) -> dict[str, Any]:
+            uid = "880001" if self.key == "legacy-k1" else "880002"
+            return {"userID": uid, "isMaster": True, "readOnly": 1}
+
+        async def fetch_full_snapshot(self, *, since_ms: int = 0) -> dict[str, Any]:
+            return {
+                "venue_id": "bybit",
+                "wallet": {"list": [{"totalEquity": "1000.00", "totalAvailableBalance": "1000.00", "coin": []}]},
+                "funding": {},
+                "positions": [],
+                "closed_pnl": [],
+                "executions": [],
+                "fee_rates": [],
+                "tx_logs": [],
+                "deposits": [{"id": "d1", "coin": "USDT", "amount": "900.00", "successAt": "1732100000000"}],
+                "internal_deposits": [],
+                "withdrawals": [],
+                "tickers": {},
+                "observed_rebate_ratio": 0.0,
+                "warnings": [],
+            }
+
+        async def aclose(self) -> None:
+            pass
+
+    byb = reg.get("bybit")
+    assert byb is not None
+    byb.create_client = MockBybitBackfillClient  # type: ignore[method-assign]
+
+    data_dir = tmp_path / "data"
+    store = LedgerStore(data_dir)
+    vault = CredentialVault(data_dir)
+    vault.upsert(ExchangeCredentialRecord(venue_id="bybit", label="BYBIT", api_key="legacy-k1", api_secret="s1"))
+    vault.upsert(
+        ExchangeCredentialRecord(
+            venue_id="bybit__second01",
+            adapter_id="bybit",
+            label="Bybit 日内",
+            api_key="legacy-k2",
+            api_secret="s2",
+            remote_uid="880002",
+            account_role="master",
+        )
+    )
+
+    svc = LedgerService(store, vault, reg, default_demo_mode=False)
+    sm = SyncManager(store=store, vault=vault, registry=reg, ledger_service=svc)
+    asyncio.run(sm.sync_all(force_all=True))
+
+    backfilled = vault.get_decrypted("bybit")
+    assert backfilled is not None
+    assert backfilled.remote_uid == "880001"
+    assert backfilled.account_role == "master"
+
+    dash = svc.get_dashboard(range_key="all")
+    rec_items = dash["reconciliation"]["items"]
+    keys = [it["key"] for it in rec_items]
+    assert len(keys) == len(set(keys))
+    ex_names = {ex["venue_id"]: ex["display_name_zh"] for ex in dash["exchanges"]}
+    assert ex_names["bybit"] == "Bybit #1"
+    assert ex_names["bybit__second01"] == "Bybit 日内"

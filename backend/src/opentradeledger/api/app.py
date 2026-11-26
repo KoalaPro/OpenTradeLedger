@@ -769,6 +769,11 @@ def create_app(
                 raw_sc = store.venue_scope(acct_id)
                 saved_uid = str((c_item.get("masked_uid") if c_item else "") or mask_uid(str(raw_sc.get_kv("account_uid") or "")))
                 saved_role = str((c_item.get("account_role") if c_item else "") or raw_sc.get_kv("account_role") or "")
+                eff_c_item = (
+                    {**c_item, "masked_uid": saved_uid, "account_role": saved_role}
+                    if c_item is not None
+                    else None
+                )
                 accounts_out.append(
                     {
                         "account_id": acct_id,
@@ -777,7 +782,7 @@ def create_app(
                         "has_archived_data": has_d,
                         "masked_uid": saved_uid,
                         "account_role": saved_role,
-                        "credential": c_item,
+                        "credential": eff_c_item,
                         "poll_state": sched_venues.get(acct_id),
                         "health": h_st,
                     }
@@ -946,7 +951,20 @@ def create_app(
         try:
             res = await adapter.test_connection(cred)
             h_state = health_tracker.record_success(vid)
+            raw_sc = store.venue_scope(vid)
+            disc_uid = str((res.get("remote_uid") if isinstance(res, dict) else "") or cred.remote_uid or raw_sc.get_kv("account_uid") or "").strip()
+            disc_role = str((res.get("account_role") if isinstance(res, dict) else "") or cred.account_role or raw_sc.get_kv("account_role") or "").strip()
+            if disc_uid:
+                raw_sc.set_kv("account_uid", disc_uid)
+            if disc_role:
+                raw_sc.set_kv("account_role", disc_role)
+            if (disc_uid and disc_uid != cred.remote_uid) or (disc_role and disc_role != cred.account_role):
+                vault.upsert(cred.model_copy(update={"remote_uid": disc_uid, "account_role": disc_role}))
             clean_res = {k: v for k, v in (res.items() if isinstance(res, dict) else ()) if k != "remote_uid"}
+            if disc_uid:
+                clean_res["masked_uid"] = mask_uid(disc_uid)
+            if disc_role:
+                clean_res["account_role"] = disc_role
             return JSONResponse(content={**clean_res, "account_id": vid, "health": h_state})
         except Exception as exc:
             h_state = health_tracker.record_error(vid, exc)
@@ -1138,7 +1156,7 @@ def create_app(
 
     @app.get("/api/v1/instrument-logos/{venue}/{instrument}.png")
     async def get_instrument_logo(venue: str, instrument: str):
-        path = await logo_cache.find(venue.upper(), instrument.upper())
+        path = await logo_cache.find(parse_adapter_id(venue).upper(), instrument.upper())
         if path is not None and path.exists():
             return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
         # Clean deterministic monogram SVG fallback (zero 404 console noise for new or offline symbols)

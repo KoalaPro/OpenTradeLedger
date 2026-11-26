@@ -207,12 +207,15 @@ def format_account_display_names(
         "wallet": ("Wallet", "钱包"),
     }
     r_en, r_zh = role_map.get((account_role or "").strip().lower(), ("", ""))
-    if masked_uid:
-        suf_en = f"{r_en} {masked_uid}".strip()
-        suf_zh = f"{r_zh} {masked_uid}".strip()
-        return f"{base_en} · {suf_en}", f"{base_zh} · {suf_zh}"
-    if r_en and sibling_count > 1:
-        return f"{base_en} · {r_en} #{ordinal}", f"{base_zh} · {r_zh} #{ordinal}"
+    if account_role == "wallet" and masked_uid:
+        return f"{base_en} · {masked_uid}", f"{base_zh} · {masked_uid}"
+    if account_role == "subaccount":
+        if sibling_count > 1:
+            return f"{base_en} · {r_en} #{ordinal}", f"{base_zh} · {r_zh} #{ordinal}"
+        if masked_uid:
+            return f"{base_en} · {r_en} {masked_uid}", f"{base_zh} · {r_zh} {masked_uid}"
+    if sibling_count <= 1 and masked_uid and is_secondary_account_id(account_id):
+        return f"{base_en} · {masked_uid}", f"{base_zh} · {masked_uid}"
     return f"{base_en} #{ordinal}", f"{base_zh} #{ordinal}"
 
 
@@ -293,6 +296,10 @@ def stamp_bundle_for_account(
         sw["venue_name"] = disp_en
         sw["color_token"] = meta.color_token
 
+    for rs in bundle.reconcile_streams:
+        rs["account_id"] = acct_id
+        rs["account_display"] = disp_en
+        rs["base_exchange_en"] = meta.display_name
     if sibling_count > 1 or disp_zh != (meta.display_name_zh or meta.display_name):
         base_en = meta.display_name
         base_zh = meta.display_name_zh or meta.display_name
