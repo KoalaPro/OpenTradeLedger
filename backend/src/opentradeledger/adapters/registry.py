@@ -312,6 +312,17 @@ class BybitAdapter(BaseExchangeAdapter):
 
 
 class GateAdapter(BaseExchangeAdapter):
+    sync_warning_labels = {
+        "copy_trading_probe": ("Gate copy-trading positions could not be read.", "Gate 跟单持仓明细未读取"),
+        "wallet_total": (
+            "Gate wallet total is unavailable. Equity uses the available account data.",
+            "Gate 钱包总余额未读取，总资产按现有账户数据汇总",
+        ),
+        "spot_account_book": (
+            "Gate spot account history could not be read. Deposit, withdrawal and principal records may be incomplete.",
+            "Gate 现货资金流水未读取，入金、出金和本金记录可能不完整",
+        ),
+    }
     meta = AdapterMeta(
         venue_id="gate",
         display_name="Gate",

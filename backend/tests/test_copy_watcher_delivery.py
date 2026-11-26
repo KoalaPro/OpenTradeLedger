@@ -375,3 +375,34 @@ def test_malformed_success_envelope_preserves_previous_positions(feed, history):
 
     row = asyncio.run(scenario())
     assert row["trade_stale"] and row["inferred_positions"][0]["qty"] == 0.01
+
+
+@pytest.mark.parametrize(("endpoint", "code", "label"), [
+    ("order-history", "11012005", "订单历史服务繁忙"),
+    ("position-history", "11012005", "持仓历史服务繁忙"),
+    ("order-history", "-1003", "订单历史请求受限"),
+])
+def test_target_explains_failed_history_until_next_success(feed, endpoint, code, label):
+    previous = feed.add()[0]
+    def busy(req):
+        if req.url.path.endswith("/" + endpoint):
+            return httpx.Response(200, json={"code": code, "message": "service unavailable"})
+        return feed.route(req)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(busy)) as client:
+            service = CopyWatcherService(store=feed.store, http_client=client)
+            polled = (await service.poll_once(force_trades=True))["items"][0]
+            added = (await service.add_targets(A))[0]
+            return polled, added
+    for stale in asyncio.run(scenario()):
+        assert stale["trade_stale"] and stale["inferred_positions"] == previous["inferred_positions"]
+        assert label in stale["trade_error_zh"] and code in stale["trade_error_zh"]
+    assert feed.poll()[A]["trade_error_zh"] == ""
+
+
+def test_throttled_portfolio_details_are_reported_as_details():
+    from opentradeledger.core.copy_watcher import CopyWatcherError, humanize_watcher_error
+
+    en, zh = humanize_watcher_error(CopyWatcherError("Binance lead detail returned HTTP 429"))
+    assert "portfolio details" in en and "组合详情" in zh and "429" in zh

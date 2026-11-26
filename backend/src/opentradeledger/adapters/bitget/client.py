@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.balance_validation import finite_amount, has_amount, wallet_rows
 from opentradeledger.adapters.compat_creds import BitgetCredentials
 from opentradeledger.adapters.stock_channels import classify_spot_stock_token
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
@@ -33,24 +34,13 @@ _MISSING = object()
 
 def _is_valid_bitget_uta_assets(res: Any) -> bool:
     if isinstance(res, dict):
-        return any(k in res for k in ("accountEquity", "usdtEquity", "available", "assets"))
-    if isinstance(res, list):
-        return all(
-            isinstance(item, dict)
-            and any(k in item for k in ("accountEquity", "usdtEquity", "equity", "available", "coin"))
-            for item in res
-        )
-    return False
+        return has_amount(res, "accountEquity", "usdtEquity", "totalEquity")
+    return isinstance(res, list) and all(has_amount(row, "accountEquity", "usdtEquity", "equity") for row in res)
 
 
-def _is_valid_bitget_funding_assets(res: Any) -> bool:
-    if not isinstance(res, list):
-        return False
-    return all(
-        isinstance(item, dict)
-        and "coin" in item
-        and any(k in item for k in ("balance", "available", "frozen"))
-        for item in res
+def valid_funding_assets(res: Any) -> bool:
+    return wallet_rows(res, names=("coin",), amounts=("balance", "available")) and all(
+        "frozen" not in row or finite_amount(row["frozen"]) for row in res
     )
 
 
@@ -317,6 +307,7 @@ class BitgetReadOnlyClient:
         """Auto-detect UTA v3 vs Classic v2 and fetch live account assets (UTA + Funding), positions, and quotes."""
         warnings: list[str] = []
         failed_fields: list[str] = []
+        invalid_wallet_fields: list[str] = []
         spot_tickers_raw = await self._safe_get(
             "/api/v2/spot/market/tickers",
             signed=False,
@@ -416,10 +407,11 @@ class BitgetReadOnlyClient:
                 uid_val = str(uta_assets.get("uid") or uta_assets.get("userId") or "")
             if funding_assets is _MISSING:
                 funding_list: list[dict[str, Any]] = []
-            elif not _is_valid_bitget_funding_assets(funding_assets):
+            elif not valid_funding_assets(funding_assets):
                 if "funding_assets" not in failed_fields:
                     failed_fields.append("funding_assets")
                 warnings.append("funding_assets: malformed response structure")
+                invalid_wallet_fields.append("funding_assets")
                 funding_list = []
             else:
                 funding_list = [dict(a) for a in funding_assets]
@@ -444,6 +436,8 @@ class BitgetReadOnlyClient:
                 "spot_tickers": spot_tickers,
                 "stock_bundle": stock_bundle,
             }
+            if invalid_wallet_fields:
+                out_uta["_invalid_wallet_fields"] = invalid_wallet_fields
             if failed_fields:
                 out_uta["_failed_fields"] = failed_fields
             if warnings:

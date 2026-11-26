@@ -6,7 +6,9 @@ import asyncio
 import json
 from pathlib import Path
 import time
+from collections.abc import Callable, Awaitable
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -16,7 +18,7 @@ from opentradeledger.adapters.bingx.accounting import (
     _is_completed_bingx_withdrawal,
 )
 from opentradeledger.adapters.bingx.client import BingxApiError, BingxReadOnlyClient
-from opentradeledger.adapters.bingx.sync import sync_bingx_venue
+from opentradeledger.adapters.bingx.sync import extract_bingx_snapshot_activity, sync_bingx_venue
 from opentradeledger.adapters.htx.client import HtxApiError, HtxReadOnlyClient
 from opentradeledger.adapters.htx.sync import sync_htx_venue
 from opentradeledger.adapters.hyperliquid.client import (
@@ -1224,3 +1226,159 @@ def test_hyperliquid_2001_same_millisecond_closes_and_boundary_overlap_zero_drop
     assert any("hl_10001_" in t["trade_id"] for t in dash["trades"])
     assert dash["reconciliation"]["residual_usd"] == 0.0
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["kucoin_spot", "kucoin_futures", "htx_swap", "bingx_spot"])
+async def test_partial_amount_is_not_total_equity(case: str) -> None:
+    responses = {
+        "kucoin_spot": {"code": "200000", "data": [{"currency": "USDT", "available": 18}]},
+        "kucoin_futures": {"code": "200000", "data": {"currency": "USDT", "availableBalance": 12}},
+        "htx_swap": {"status": "ok", "data": [{"margin_account": "USDT", "margin_available": 12}]},
+        "bingx_spot": {"code": 0, "data": {"balances": [{"asset": "USDT", "locked": 2}]}},
+    }
+    transport = httpx.MockTransport(lambda req: httpx.Response(200, json=responses[case]))
+    async with httpx.AsyncClient(transport=transport) as http:
+        auth = dict(api_key="test", api_secret="test", client=http)
+        kc = KucoinReadOnlyClient(**auth, passphrase="test")
+        calls = {
+            "kucoin_spot": (kc.get_spot_accounts, KucoinApiError),
+            "kucoin_futures": (kc.get_futures_overview, KucoinApiError),
+            "htx_swap": (HtxReadOnlyClient(**auth).get_swap_accounts, HtxApiError),
+            "bingx_spot": (BingxReadOnlyClient(**auth).get_spot_balances, BingxApiError),
+        }
+        fetch, error = calls[case]
+        with pytest.raises(error, match="Malformed"):
+            await fetch()
+
+
+@pytest.mark.parametrize("amount", [0, "0"])
+def test_four_venues_respect_zero_available_margin(tmp_path: Path, amount: int | str) -> None:
+    snapshots = {
+        "hyperliquid": {"clearinghouse": {"marginSummary": {"accountValue": 100}, "withdrawable": amount}},
+        "kucoin": {"futures_overview": {"accountEquity": 100, "availableBalance": amount}},
+        "bingx": {"swap_balances": [{"asset": "USDT", "equity": 100, "availableMargin": amount}]},
+        "htx": {"swap_accounts": [{"margin_balance": 100, "margin_available": amount}]},
+    }
+    store = LedgerStore(tmp_path)
+    registry = build_default_registry()
+    reported = {}
+    for venue, snapshot in snapshots.items():
+        store.venue_scope(venue).set_kv("snapshot", snapshot)
+        bundle = registry.get(venue).build_venue_ledger(store, journals={}, now_s=0)
+        assert bundle.exchange_card["equity_usd"] == 100
+        reported[venue] = bundle.exchange_card["available_margin_usd"]
+    assert reported == dict.fromkeys(snapshots, 0)
+
+
+@pytest.mark.parametrize(
+    ("spot_row", "equity"),
+    [({"balance": 20, "locked": 2}, 20), ({"balance": 0, "locked": 2}, 0),
+     ({"balance": 20}, 20), ({"free": 18, "locked": 2}, 20)],
+)
+def test_bingx_sync_and_dashboard_use_explicit_total(tmp_path: Path, spot_row: dict, equity: int) -> None:
+    snapshot = {"spot_balances": [{"asset": "USDT", **spot_row}]}
+    store = LedgerStore(tmp_path)
+    store.venue_scope("bingx").set_kv("snapshot", snapshot)
+    bundle = build_default_registry().get("bingx").build_venue_ledger(store, journals={}, now_s=0)
+    assert (extract_bingx_snapshot_activity(snapshot)[0], bundle.exchange_card["equity_usd"]) == (equity, equity)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coverage", ["duplicate", "partial_overlap", "unrecoverable"])
+async def test_hyperliquid_repeated_full_boundary_page(coverage: str) -> None:
+    timestamp = 1_760_000_000_000
+    count = 2003 if coverage == "partial_overlap" else 2001
+    rows = [{"tid": i, "time": timestamp} for i in range(1, count + 1)]
+    latest = rows[-2000:][::-1]
+
+    def reply(req: httpx.Request) -> httpx.Response:
+        query = json.loads(req.content)
+        if query["type"] == "userFills":
+            result = latest
+        elif query["endTime"] < timestamp:
+            result = []
+        elif query["startTime"] < timestamp and coverage != "unrecoverable":
+            result = rows[:2000]
+        elif coverage == "partial_overlap":
+            result = [rows[2], *latest[:1999]]
+        else:
+            result = latest
+        return httpx.Response(200, json=result)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        client = HyperliquidReadOnlyClient(wallet_address="0x" + "e" * 40, client=http)
+        warnings: list[str] = []
+        result = await client.get_user_fills(warnings_out=warnings)
+    if coverage != "unrecoverable":
+        assert {r["tid"] for r in result} == {r["tid"] for r in rows}
+    else:
+        assert len(result) == 2000
+        assert any("truncat" in w.lower() for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_saturated_incremental_millisecond_warns_and_continues() -> None:
+    timestamp = 1_760_000_000_000
+    burst = [{"tid": i, "time": timestamp} for i in range(1, 2002)]
+    tail = {"tid": 3000, "time": timestamp + 1}
+
+    def reply(req: httpx.Request) -> httpx.Response:
+        query = json.loads(req.content)
+        if query.get("endTime") == timestamp and query["startTime"] < timestamp:
+            return httpx.Response(200, json=burst[-2000:])
+        rows = [r for r in [*burst, tail] if r["time"] >= query["startTime"]]
+        return httpx.Response(200, json=rows[:2000])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        client = HyperliquidReadOnlyClient(wallet_address="0x" + "e" * 40, client=http)
+        warnings: list[str] = []
+        fills = await client.get_user_fills(since_ms=timestamp, warnings_out=warnings)
+    assert {r["tid"] for r in fills} == {r["tid"] for r in [*burst, tail]}
+    assert any("truncat" in w.lower() for w in warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("venue", "old", "fresh", "sync"),
+    [
+        (
+            "kucoin",
+            {"futures_overview": {"availableBalance": 12}, "spot_accounts": [{"currency": "USDT", "available": 18}]},
+            {"futures_overview": {"marginBalance": 100}, "spot_accounts": [{"currency": "USDT", "available": 18, "holds": 2}]},
+            sync_kucoin_venue,
+        ),
+        (
+            "htx",
+            {"swap_accounts": [{"margin_available": 12}]},
+            {"swap_accounts": [{"margin_static": 100}], "spot_balances": [{"currency": "usdt", "balance": 20}]},
+            sync_htx_venue,
+        ),
+        (
+            "bingx",
+            {"swap_balances": [{"asset": "USDT", "equity": 100}], "spot_balances": [{"asset": "USDT", "locked": 2}]},
+            {"swap_balances": [{"asset": "USDT", "equity": 100}], "spot_balances": [{"asset": "USDT", "balance": 20}]},
+            sync_bingx_venue,
+        ),
+    ],
+)
+async def test_preexisting_partial_snapshot_warns_until_healthy_sync(
+    tmp_path: Path, venue: str, old: dict[str, Any], fresh: dict[str, Any],
+    sync: Callable[..., Awaitable[Any]],
+) -> None:
+    store = LedgerStore(tmp_path)
+    # The previous position count is still usable even when its old wallet is incomplete.
+    old = {**old, "positions": [{"currentQty": 1, "volume": 1, "positionAmt": 1}]}
+    store.upsert_plugin_snapshot(venue, old, merge_specs={})
+    service = LedgerService(store, CredentialVault(tmp_path), build_default_registry(), default_demo_mode=False)
+    before = service.get_dashboard(range_key="all")
+    assert any(w["venue_id"] == venue for w in before["warnings"])
+    assert all(c["venue_id"] != venue for c in before["exchanges"])
+    client = AsyncMock()
+    client.fetch_full_snapshot.return_value = fresh
+    outcome = await sync(client, store, now_s=0)
+    assert outcome.equity_usd == 120
+    assert outcome.fp_before[0] == 1 and outcome.fp_after[0] == 0
+    after = service.get_dashboard(range_key="all")
+    assert not after["warnings"]
+    assert next(c for c in after["exchanges"] if c["venue_id"] == venue)["equity_usd"] == 120

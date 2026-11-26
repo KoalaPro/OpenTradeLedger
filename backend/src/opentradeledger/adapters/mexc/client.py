@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import asyncio
 import hashlib
 import hmac
@@ -12,6 +14,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.balance_validation import wallet_rows
 from opentradeledger.adapters.compat_creds import MexcCredentials
 from opentradeledger.adapters.stock_channels import (
     _KNOWN_CRYPTO_EXCLUSIONS,
@@ -24,6 +27,12 @@ logger = logging.getLogger("gate_manual.mexc")
 class MexcReadOnlyViolationError(PermissionError):
     """Raised whenever any caller attempts a non-GET request or unapproved MEXC path."""
 
+
+valid_spot_balances = partial(wallet_rows, names=("asset",), amounts=("free", "balance"), optional=("locked",))
+valid_futures_assets = partial(
+    wallet_rows, names=("currency",), amounts=("equity", "cashBalance"),
+    optional=("availableBalance", "bonus", "unrealized", "positionMargin"),
+)
 
 class MexcApiError(RuntimeError):
     """Raised when MEXC returns a non-200 HTTP response or non-success business code."""
@@ -255,6 +264,7 @@ class MexcReadOnlyClient:
         """Fetch live Spot + Futures balances, open positions, open orders, referCode, MX deduct status, and tickers."""
         warnings: list[str] = []
         failed_fields: list[str] = []
+        invalid_wallet_fields: list[str] = []
         refer_code = ""
         try:
             ref_res = await self.spot_request("GET", "/api/v3/rebate/referCode", signed=True)
@@ -281,24 +291,16 @@ class MexcReadOnlyClient:
         spot_err: Optional[Exception] = None
         try:
             sp_acc = await self.spot_request("GET", "/api/v3/account", signed=True)
-            if (
-                not isinstance(sp_acc, Mapping)
-                or "balances" not in sp_acc
-                or not isinstance(sp_acc["balances"], list)
-                or any(
-                    not isinstance(b, Mapping)
-                    or "asset" not in b
-                    or not any(k in b for k in ("free", "locked", "balance"))
-                    for b in sp_acc["balances"]
-                )
-            ):
+            rows = sp_acc.get("balances") if isinstance(sp_acc, Mapping) else None
+            if not valid_spot_balances(rows):
+                invalid_wallet_fields.append("spot_balances")
                 raise MexcApiError("Malformed MEXC spot account payload", status_code=200)
             for b in sp_acc["balances"]:
                 free_v = float(b.get("free") if b.get("free") is not None else (b.get("balance") or 0.0))
                 lock_v = float(b.get("locked") or 0.0)
                 if free_v + lock_v > 0:
                     asset_u = str(b.get("asset") or "").strip().upper()
-                    spot_balances.append(dict(b))
+                    spot_balances.append({**b, "free": b["free"] if "free" in b else b["balance"]})
                     if asset_u and asset_u not in ("USDT", "USDC", "USDE", "FDUSD", "USD"):
                         non_stable_coins.add(asset_u)
         except Exception as exc:
@@ -328,11 +330,8 @@ class MexcReadOnlyClient:
                 raw_fut_list = fut_assets_res["data"]
             elif isinstance(fut_assets_res, list):
                 raw_fut_list = fut_assets_res
-            if raw_fut_list is None or any(
-                not isinstance(a, Mapping)
-                or not any(k in a for k in ("currency", "equity", "availableBalance"))
-                for a in raw_fut_list
-            ):
+            if not valid_futures_assets(raw_fut_list):
+                invalid_wallet_fields.append("futures_assets")
                 fut_assets_res = MexcApiError("Malformed MEXC futures assets payload", status_code=200)
                 raw_fut_list = None
 
@@ -412,6 +411,8 @@ class MexcReadOnlyClient:
             "tiered_fee_rate": tiered_fee_rate,
             "stock_bundle": stock_bundle,
         }
+        if invalid_wallet_fields:
+            out["_invalid_wallet_fields"] = invalid_wallet_fields
         if failed_fields:
             out["_failed_fields"] = failed_fields
         if warnings:

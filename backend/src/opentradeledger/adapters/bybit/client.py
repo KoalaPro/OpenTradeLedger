@@ -7,6 +7,8 @@ Signature specification (Bybit v5 GET):
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -17,6 +19,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.balance_validation import InvalidWalletSnapshot, finite_amount, optional_amounts, wallet_rows
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError, assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
@@ -42,6 +45,18 @@ BYBIT_ALLOWED_GET_PATHS: tuple[str, ...] = (
     "/v5/asset/deposit/query-internal-record",
     "/v5/asset/withdraw/query-record",
 )
+
+
+def valid_funding_balance(res: Any) -> bool:
+    return isinstance(res, dict) and wallet_rows(
+        res.get("balance"), names=("coin",), amounts=("walletBalance",), optional=("usdValue",),
+    )
+
+
+def validate_snapshot_funding(snapshot: dict[str, Any]) -> None:
+    funding = snapshot.get("funding", {})
+    if funding != {} and not valid_funding_balance(funding):
+        raise InvalidWalletSnapshot("Invalid funding balance in saved Bybit snapshot")
 
 
 class BybitApiError(RuntimeError):
@@ -152,18 +167,25 @@ class BybitReadOnlyClient:
         clock_ms: Optional[Callable[[], int]] = None,
         page_limit: int = 100,
         max_pages: int = 10,
-        max_windows: int = 52,
+        max_windows: Optional[int] = None,
     ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = base_url.rstrip("/")
         self.recv_window = str(recv_window)
         self._client = client
+        self._owns_client = client is None
         self._timeout = timeout_sec
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self.page_limit = max(1, min(100, int(page_limit)))
         self.max_pages = max(1, int(max_pages))
-        self.max_windows = max(1, int(max_windows))
+        self.max_windows = 52 if max_windows is None else max(1, int(max_windows))
+        self.closed_pnl_windows = 105 if max_windows is None else self.max_windows
+
+    async def aclose(self) -> None:
+        if self._owns_client and self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     def build_headers(self, query_string: str, timestamp_ms: Optional[str] = None) -> dict[str, str]:
         ts = timestamp_ms or str(self._clock_ms())
@@ -186,11 +208,9 @@ class BybitReadOnlyClient:
         headers = self.build_headers(query_string)
         url = f"{self.base_url}{path}" + (f"?{query_string}" if query_string else "")
 
-        if self._client is not None:
-            resp = await self._client.get(url, headers=headers)
-        else:
-            async with httpx.AsyncClient(timeout=self._timeout) as c:
-                resp = await c.get(url, headers=headers)
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self._timeout)
+        resp = await self._client.get(url, headers=headers)
 
         if resp.status_code >= 400:
             raise BybitApiError(
@@ -222,6 +242,7 @@ class BybitReadOnlyClient:
         base_params: dict[str, Any],
         *,
         list_key: str = "list",
+        exhaust_cursor: bool = False,
         id_fn: Callable[[dict[str, Any]], str],
         limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
@@ -230,12 +251,15 @@ class BybitReadOnlyClient:
         cursor = ""
         seen_cursors: set[str] = set()
 
-        for _ in range(self.max_pages):
+        while exhaust_cursor or len(seen_cursors) < self.max_pages:
             params = {**base_params, "limit": eff_limit}
             if cursor:
                 params["cursor"] = cursor
             res = await self.request_readonly("GET", path, params)
-            batch = res.get(list_key) or []
+            batch = res.get(list_key)
+            next_cursor = str(res.get("nextPageCursor") or "").strip()
+            if exhaust_cursor and (not isinstance(batch, list) or (next_cursor and not batch)):
+                raise BybitApiError(f"{path}: incomplete page for history cursor")
             if not isinstance(batch, list) or not batch:
                 break
 
@@ -247,8 +271,11 @@ class BybitReadOnlyClient:
                         collected[rid] = row
                         new_count += 1
 
-            next_cursor = str(res.get("nextPageCursor") or "").strip()
-            if not next_cursor or next_cursor in seen_cursors or new_count == 0:
+            if not next_cursor:
+                break
+            if next_cursor in seen_cursors or new_count == 0:
+                if exhaust_cursor:
+                    raise BybitApiError(f"{path}: history cursor did not advance")
                 break
             seen_cursors.add(next_cursor)
             cursor = next_cursor
@@ -262,6 +289,7 @@ class BybitReadOnlyClient:
         *,
         id_fn: Callable[[dict[str, Any]], str],
         ts_field: str,
+        scan_sparse_history: bool = False,
         since_ms: int = 0,
         limit: Optional[int] = None,
     ) -> list[dict[str, Any]]:
@@ -269,24 +297,26 @@ class BybitReadOnlyClient:
         merged: dict[str, dict[str, Any]] = {}
 
         # Window 0: default recent 7d call (preserves compatibility with simple mocks & catches latest trades)
-        first_rows = await self._paginate_cursor(path, base_params, id_fn=id_fn, limit=limit)
+        first_rows = await self._paginate_cursor(path, base_params, id_fn=id_fn, limit=limit, exhaust_cursor=scan_sparse_history)
         for r in first_rows:
             merged[id_fn(r)] = r
 
-        if self.max_windows <= 1:
+        windows = self.closed_pnl_windows if scan_sparse_history else self.max_windows
+        if windows <= 1:
             return list(merged.values())
 
         now_ms = self._clock_ms()
         if since_ms > 0 and now_ms - since_ms <= SEVEN_DAYS_MS - 60_000:
             return list(merged.values())
 
-        # Step backwards from (now - 7d) in 7-day chunks.
-        # Full sync (since_ms <= 0) scans at least 26 windows (182 days / half year) before allowing empty-streak early stop,
-        # ensuring sparse historical closes (e.g. 98 days ago) are never missed.
+        # An empty week says nothing about an older closed position. Bound full
+        # closed-PnL scans by the supported history horizon, including the last partial week.
+        if scan_sparse_history:
+            since_ms = max(since_ms, now_ms - 730 * 86_400_000)
         w_end = now_ms - SEVEN_DAYS_MS + 60_000
         empty_streak = 0
         min_windows_before_early_stop = 26 if since_ms <= 0 else 8
-        for win_idx in range(1, self.max_windows):
+        for win_idx in range(1, windows):
             if since_ms > 0 and w_end < since_ms:
                 break
             w_start = max(since_ms, w_end - SEVEN_DAYS_MS) if since_ms > 0 else (w_end - SEVEN_DAYS_MS)
@@ -295,8 +325,11 @@ class BybitReadOnlyClient:
                 {**base_params, "startTime": w_start, "endTime": w_end},
                 id_fn=id_fn,
                 limit=limit,
+                exhaust_cursor=scan_sparse_history,
             )
-            if win_rows:
+            if scan_sparse_history:
+                merged.update((id_fn(row), row) for row in win_rows)
+            elif win_rows:
                 # Guard against static test mocks that ignore startTime/endTime and return out-of-window rows
                 new_in_win = 0
                 in_bounds = False
@@ -393,16 +426,24 @@ class BybitReadOnlyClient:
             if "Malformed Bybit payload" in str(exc):
                 raise BybitApiError("Malformed Bybit wallet-balance payload", status_code=exc.status_code) from exc
             raise
-        if (
-            not isinstance(res, dict)
-            or "list" not in res
-            or not isinstance(res["list"], list)
-            or any(
-                not isinstance(acct, dict) or ("totalEquity" not in acct and "coin" not in acct)
-                for acct in res["list"]
-            )
-        ):
+        if not isinstance(res, dict) or not isinstance(res.get("list"), list):
             raise BybitApiError("Malformed Bybit wallet-balance payload")
+        for account in res["list"]:
+            if not isinstance(account, dict) or not optional_amounts(account, "totalAvailableBalance"):
+                raise BybitApiError("Malformed Bybit wallet-balance payload")
+            coins = account.get("coin")
+            if "coin" in account and not wallet_rows(
+                coins, names=("coin",), amounts=("walletBalance",), optional=("usdValue",),
+            ):
+                raise BybitApiError("Malformed Bybit wallet-balance payload")
+            # Isolated margin may omit the account-wide value with an explicit empty
+            # string. An unfiltered response with complete coin USD values is sufficient.
+            if account.get("totalEquity") == "" and isinstance(coins, list) and all(
+                finite_amount(coin.get("usdValue")) for coin in coins
+            ):
+                account["totalEquity"] = str(sum((Decimal(str(coin["usdValue"])) for coin in coins), Decimal(0)))
+            if not finite_amount(account.get("totalEquity")):
+                raise BybitApiError("Malformed Bybit wallet-balance payload")
         return res
 
     async def get_funding_balance(self) -> dict[str, Any]:
@@ -412,19 +453,12 @@ class BybitReadOnlyClient:
             )
         except BybitApiError as exc:
             if "Malformed Bybit payload" in str(exc):
-                raise BybitApiError("Malformed Bybit funding balance payload", status_code=exc.status_code) from exc
+                raise BybitApiError("Malformed Bybit funding balance payload", status_code=exc.status_code, ret_code="INVALID_WALLET") from exc
             raise
-        if (
-            not isinstance(res, dict)
-            or "balance" not in res
-            or not isinstance(res["balance"], list)
-            or any(
-                not isinstance(coin, dict)
-                or ("walletBalance" not in coin and "transferBalance" not in coin)
-                for coin in res["balance"]
-            )
-        ):
-            raise BybitApiError("Malformed Bybit funding balance payload")
+        except ValueError as exc:
+            raise BybitApiError("Malformed Bybit funding balance payload", ret_code="INVALID_WALLET") from exc
+        if not valid_funding_balance(res):
+            raise BybitApiError("Malformed Bybit funding balance payload", ret_code="INVALID_WALLET")
         return res
 
     async def get_positions(self, category: str = "linear", settle_coin: str = "USDT") -> list[dict[str, Any]]:
@@ -441,6 +475,7 @@ class BybitReadOnlyClient:
             {"category": category},
             id_fn=lambda r: f"{r.get('orderId')}_{r.get('updatedTime')}_{r.get('symbol')}",
             ts_field="updatedTime",
+            scan_sparse_history=True,
             since_ms=since_ms,
             limit=limit,
         )
@@ -521,6 +556,7 @@ class BybitReadOnlyClient:
         """Collects read-only Unified/Contract account snapshot with multi-page history and graceful degradation."""
         warnings: list[str] = []
         failed_fields: list[str] = []
+        invalid_wallet_fields: list[str] = []
         try:
             wallet = await self.get_wallet_balance("UNIFIED")
         except Exception as unified_exc:
@@ -542,6 +578,8 @@ class BybitReadOnlyClient:
             except Exception as exc:
                 if _is_fatal_bybit_error(exc):
                     raise
+                if isinstance(exc, BybitApiError) and exc.ret_code == "INVALID_WALLET":
+                    invalid_wallet_fields.append(name)
                 warnings.append(f"{name}: {exc}")
                 failed_fields.append(name)
                 return default
@@ -592,6 +630,8 @@ class BybitReadOnlyClient:
             "observed_rebate_ratio": round(observed_rebate_ratio, 6),
             "warnings": warnings,
         }
+        if invalid_wallet_fields:
+            out_snap["_invalid_wallet_fields"] = invalid_wallet_fields
         if failed_fields:
             out_snap["_failed_fields"] = failed_fields
         return out_snap

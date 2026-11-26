@@ -7,6 +7,8 @@ Signature specification (OKX v5):
 
 from __future__ import annotations
 
+from functools import partial
+
 import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
@@ -17,6 +19,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.balance_validation import InvalidWalletSnapshot, finite_amount, wallet_rows
 from opentradeledger.adapters.okx.contracts import (
     amount_usd,
     build_fill_leg,
@@ -51,6 +54,14 @@ OKX_ALLOWED_GET_PATHS: tuple[str, ...] = (
     "/api/v5/copytrading/current-subpositions",
     "/api/v5/copytrading/subpositions-history",
 )
+
+
+valid_funding_balances = partial(wallet_rows, names=("ccy",), amounts=("bal",))
+
+def validate_snapshot_funding(snapshot: dict[str, Any]) -> None:
+    funding = snapshot.get("funding", [])
+    if not valid_funding_balances(funding):
+        raise InvalidWalletSnapshot("Invalid funding balance in saved OKX snapshot")
 
 
 class OkxApiError(RuntimeError):
@@ -261,13 +272,13 @@ class OkxReadOnlyClient:
             if "Malformed OKX payload" in str(exc):
                 raise OkxApiError("Malformed OKX account balance payload", status_code=exc.status_code) from exc
             raise
-        if not isinstance(res, list) or (
-            res
-            and (
-                not isinstance(res[0], dict)
-                or ("totalEq" not in res[0] and "details" not in res[0])
-                or ("details" in res[0] and not isinstance(res[0]["details"], list))
-            )
+        if not isinstance(res, list) or any(
+            not isinstance(row, dict)
+            or not finite_amount(row.get("totalEq"))
+            or ("details" in row and not wallet_rows(
+                row["details"], names=("ccy",), amounts=("eq", "cashBal"), optional=("eqUsd", "availBal"),
+            ))
+            for row in res
         ):
             raise OkxApiError("Malformed OKX account balance payload")
         return res
@@ -277,13 +288,12 @@ class OkxReadOnlyClient:
             res = await self.request_readonly("GET", "/api/v5/asset/balances")
         except OkxApiError as exc:
             if "Malformed OKX payload" in str(exc):
-                raise OkxApiError("Malformed OKX funding balance payload", status_code=exc.status_code) from exc
+                raise OkxApiError("Malformed OKX funding balance payload", status_code=exc.status_code, code="INVALID_WALLET") from exc
             raise
-        if not isinstance(res, list) or any(
-            not isinstance(item, dict) or ("bal" not in item and "availBal" not in item)
-            for item in res
-        ):
-            raise OkxApiError("Malformed OKX funding balance payload")
+        except ValueError as exc:
+            raise OkxApiError("Malformed OKX funding balance payload", code="INVALID_WALLET") from exc
+        if not valid_funding_balances(res):
+            raise OkxApiError("Malformed OKX funding balance payload", code="INVALID_WALLET")
         return res
 
     async def get_positions(self, inst_type: str = "SWAP") -> list[dict[str, Any]]:
@@ -416,6 +426,7 @@ class OkxReadOnlyClient:
         balances = await self.get_account_balance()
         warnings: list[str] = []
         failed_fields: list[str] = []
+        invalid_wallet_fields: list[str] = []
 
         async def _opt(name: str, coro: Any, default: Any = None) -> Any:
             try:
@@ -423,6 +434,8 @@ class OkxReadOnlyClient:
             except Exception as exc:
                 if _is_fatal_okx_error(exc):
                     raise
+                if isinstance(exc, OkxApiError) and exc.code == "INVALID_WALLET":
+                    invalid_wallet_fields.append(name)
                 warnings.append(f"{name}: {exc}")
                 failed_fields.append(name)
                 return [] if default is None else default
@@ -478,6 +491,8 @@ class OkxReadOnlyClient:
             "observed_rebate_ratio": round(observed_rebate_ratio, 6),
             "warnings": warnings,
         }
+        if invalid_wallet_fields:
+            out_snap["_invalid_wallet_fields"] = invalid_wallet_fields
         if failed_fields:
             out_snap["_failed_fields"] = failed_fields
         return out_snap

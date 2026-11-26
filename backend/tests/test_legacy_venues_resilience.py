@@ -570,7 +570,7 @@ async def test_okx_deposit_and_withdrawal_pagination_uses_millisecond_ts_cursor(
 
 
 @pytest.mark.asyncio
-async def test_bybit_30d_asset_windows_backfill_1_year_and_52w_trade_windows_early_stop() -> None:
+async def test_bybit_deposits_scan_a_year_and_closed_pnl_covers_two_years() -> None:
     now_ms = 1_760_000_000_000
     eight_months_ago_ms = now_ms - 230 * 86_400_000
     closed_pnl_calls = 0
@@ -630,7 +630,7 @@ async def test_bybit_30d_asset_windows_backfill_1_year_and_52w_trade_windows_ear
     assert {d["id"] for d in snap["deposits"]} == {"old_dep_p1", "old_dep_p2"}
     assert len(snap["withdrawals"]) == 1
     assert static_wd_calls == 2  # Window 0 + 1st window sees 0 new records -> breaks immediately!
-    assert closed_pnl_calls == 27  # Window 0 + 26 full half-year windows before empty-streak early stop (< 52)!
+    assert closed_pnl_calls == 105  # Include the oldest partial week of the 730-day horizon.
 
 
 @pytest.mark.asyncio
@@ -1342,3 +1342,73 @@ async def test_binance_incremental_same_millisecond_1002_trades_and_502_orders_z
     assert 1002 in fb_fill_ids  # T + 1000ms trade recovered!
     assert 502 in fb_order_ids  # T + 1000ms order recovered!
     assert any("same-millisecond page limit" in w for w in out_fb.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", ["copy", "wallet", "book", "both", "other-copy"])
+async def test_gate_optional_copy_permission_is_distinct_from_financial_data(tmp_path, blocked):
+    store = LedgerStore(tmp_path)
+    svc = LedgerService(store, CredentialVault(tmp_path), build_default_registry(), default_demo_mode=False)
+    now = 1_760_000_000
+    mode = "healthy"
+
+    def handler(req):
+        path = req.url.path
+        if path.endswith("/copy_trading/positions") and mode != "healthy":
+            message = "Access denied" if mode == "other-copy" else "permission not open yet"
+            return httpx.Response(403, json={"label": "FORBIDDEN", "message": message})
+        if ((path.endswith("/wallet/total_balance") and mode in ("wallet", "both"))
+                or (path.endswith("/spot/account_book") and mode in ("book", "both"))):
+            return httpx.Response(403, json={"label": "FORBIDDEN", "message": "permission not open yet"})
+        if path.endswith("/wallet/total_balance"):
+            payload = {"total": {"amount": "120"}, "details": {"spot": {"amount": "120"}}}
+        elif path.endswith("/unified/accounts"):
+            payload = {"unified_account_total_equity": "120"}
+        elif path.endswith("/futures/usdt/accounts"):
+            payload = {"total": "0", "available": "0"}
+        elif path.endswith("/spot/account_book"):
+            payload = [{"id": "first", "time": now - 100, "type": "deposit", "currency": "USDT", "change": "80"}]
+        else:
+            payload = []
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = GateReadOnlyClient(GateManualCredentials(api_key="k", api_secret="s"), client=http, clock_sec=lambda: now)
+        await sync_gate_venue(client, store, now_s=now)
+        mode = blocked
+        outcome = await sync_gate_venue(client, store, now_s=now + 60)
+        dashboard = svc.get_dashboard(range_key="all")
+        assert dashboard["summary"]["total_equity_usd"] == 120
+        assert dashboard["exchanges"][0]["net_principal_usd"] == 80
+        warnings = dashboard["warnings"]
+        if blocked == "copy":
+            assert not outcome.warnings and not warnings
+            assert store.venue_scope("gate").get_kv("live_bundle")["copy_trading_probe"]["accessible"] is False
+        else:
+            assert len(warnings) == 1
+            zh = warnings[0]["summary_zh"]
+            assert ("钱包总余额" in zh) == (blocked in ("wallet", "both"))
+            assert ("现货资金流水" in zh) == (blocked in ("book", "both"))
+            assert ("跟单持仓" in zh) == (blocked == "other-copy")
+            assert "总资产或本金可能少算" not in zh
+        mode = "healthy"
+        outcome = await sync_gate_venue(client, store, now_s=now + 120)
+        assert not outcome.warnings and not svc.get_dashboard(range_key="all")["warnings"]
+
+
+def test_gate_legacy_copy_warnings_filtered_per_account_before_next_sync(tmp_path):
+    from opentradeledger.core.ledger_service import _collect_venue_warnings
+    from opentradeledger.core.venue_health import VenueHealthTracker
+
+    store = LedgerStore(tmp_path)
+    tracker = VenueHealthTracker(store)
+    raw = "copy_trading_probe: Gate GET /copy_trading/positions failed with HTTP 403: {'label': 'FORBIDDEN', 'message': 'permission not open yet'}"
+    wallet = raw.replace("copy_trading_probe", "wallet_total").replace("/copy_trading/positions", "/wallet/total_balance")
+    for account, warnings in [("gate", [raw]), ("gate__day", [raw, wallet])]:
+        scope = store.venue_scope(account)
+        scope.set_kv("live_bundle", {"_warnings": warnings})
+        tracker.record_success(account, warnings=warnings)
+        expected = [] if account == "gate" else [wallet]
+        recorded = tracker.resolve_state(account, configured=True)
+        assert recorded["warnings"] == expected
+        assert _collect_venue_warnings(scope, recorded) == expected

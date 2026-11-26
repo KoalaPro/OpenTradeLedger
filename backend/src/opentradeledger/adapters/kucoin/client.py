@@ -63,6 +63,28 @@ def _is_valid_kucoin_num(val: Any) -> bool:
     return False
 
 
+def kucoin_spot_balance(row: dict[str, Any]) -> float:
+    for key in ("balance", "available", "holds"):
+        if key in row and not _is_valid_kucoin_num(row[key]):
+            raise KucoinApiError("Malformed KuCoin spot accounts payload")
+    if "balance" in row:
+        return float(row["balance"])
+    if "available" in row and "holds" in row:
+        return float(row["available"]) + float(row["holds"])
+    raise KucoinApiError("Malformed KuCoin spot accounts payload: missing total or its components")
+
+
+def kucoin_futures_equity(row: dict[str, Any]) -> float:
+    for key in ("accountEquity", "marginBalance", "availableBalance"):
+        if key in row and not _is_valid_kucoin_num(row[key]):
+            raise KucoinApiError("Malformed KuCoin futures overview payload")
+    if "accountEquity" in row:
+        return float(row["accountEquity"])
+    if "marginBalance" in row:
+        return float(row["marginBalance"])
+    raise KucoinApiError("Malformed KuCoin futures overview payload: missing total equity")
+
+
 def _fmt_bj_ms(ms: int) -> str:
     if not ms:
         return ""
@@ -219,16 +241,7 @@ class KucoinReadOnlyClient:
                 or not r["currency"].strip()
             ):
                 raise KucoinApiError("Malformed KuCoin spot accounts payload")
-            has_num = False
-            for k in ("balance", "available"):
-                if k in r:
-                    if not _is_valid_kucoin_num(r.get(k)):
-                        raise KucoinApiError("Malformed KuCoin spot accounts payload")
-                    has_num = True
-            if "holds" in r and not _is_valid_kucoin_num(r.get("holds")):
-                raise KucoinApiError("Malformed KuCoin spot accounts payload")
-            if not has_num:
-                raise KucoinApiError("Malformed KuCoin spot accounts payload")
+            kucoin_spot_balance(r)
             out.append(r)
         return out
 
@@ -236,14 +249,7 @@ class KucoinReadOnlyClient:
         res = await self.request_readonly("GET", "/api/v1/account-overview", {"currency": currency}, futures=True)
         if not isinstance(res, dict):
             raise KucoinApiError("Malformed KuCoin futures overview payload")
-        has_num = False
-        for k in ("accountEquity", "marginBalance", "availableBalance"):
-            if k in res:
-                if not _is_valid_kucoin_num(res.get(k)):
-                    raise KucoinApiError("Malformed KuCoin futures overview payload")
-                has_num = True
-        if not has_num:
-            raise KucoinApiError("Malformed KuCoin futures overview payload")
+        kucoin_futures_equity(res)
         return res
 
     async def get_positions(self) -> list[dict[str, Any]]:

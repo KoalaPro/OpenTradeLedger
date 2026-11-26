@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from opentradeledger.adapters.balance_validation import require_wallet_cache
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.okx.client import valid_funding_balances, validate_snapshot_funding
 from opentradeledger.core.venue_primitives import STABLECOINS
 
 if TYPE_CHECKING:
@@ -22,12 +24,22 @@ OKX_MERGE_SPECS = {
 }
 
 
+def _activity_counts(snap: dict[str, Any]) -> tuple[int, int, int]:
+    return (
+        sum(1 for row in snap.get("positions") or [] if float(row.get("pos") or 0.0) != 0),
+        len(snap.get("positions_history") or []),
+        len(snap.get("fills") or []),
+    )
+
+
 def extract_okx_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, tuple[int, ...]]:
     tickers = snap.get("tickers") if isinstance(snap.get("tickers"), dict) else {}
     equity_usd = 0.0
     for bal in snap.get("balances") or []:
         equity_usd += float(bal.get("totalEq") or 0.0)
-    for fb in snap.get("funding") or []:
+    validate_snapshot_funding(snap)
+    funding = snap.get("funding", [])
+    for fb in funding:
         ccy = str(fb.get("ccy") or "").strip().upper()
         amt = float(fb.get("bal") or 0.0)
         if not ccy or amt == 0:
@@ -39,10 +51,8 @@ def extract_okx_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, tu
                 equity_usd += amt * float(tickers.get(ccy) or 0.0)
             except (TypeError, ValueError):
                 pass
-    open_count = sum(1 for p in (snap.get("positions") or []) if abs(float(p.get("pos") or 0.0)) > 0)
-    fills_count = len(snap.get("fills") or [])
-    closed_count = len(snap.get("positions_history") or [])
-    return round(equity_usd, 4), open_count > 0, (open_count, closed_count, fills_count)
+    counts = _activity_counts(snap)
+    return round(equity_usd, 4), counts[0] > 0, counts
 
 
 async def sync_okx_venue(
@@ -53,13 +63,20 @@ async def sync_okx_venue(
     force_full: bool = False,
 ) -> VenueSyncOutcome:
     existing_snap = store.venue_scope("okx").get_kv("snapshot") or {}
-    _, _, fp_before = extract_okx_snapshot_activity(existing_snap) if existing_snap else (0.0, False, ())
+    # An older release could store an invalid wallet amount. Only history counts
+    # are needed here; a healthy response must always be able to replace that wallet.
+    fp_before = _activity_counts(existing_snap) if existing_snap else ()
     last_sync_ms = int(existing_snap.get("_last_sync_ms") or 0)
     since_ms = max(0, last_sync_ms - 2 * 86_400_000) if (last_sync_ms > 0 and not force_full) else 0
     try:
         raw_snap = await client.fetch_full_snapshot(since_ms=since_ms)
     except TypeError:
         raw_snap = await client.fetch_full_snapshot()
+    if raw_snap.get("_invalid_wallet_fields"):
+        require_wallet_cache(
+            raw_snap, existing_snap,
+            {"funding": valid_funding_balances},
+        )
     # One public instrument list covers both current rows and trades retained
     # outside the API history window. Keep only relevant specifications on disk.
     used_instruments = {row.get("instId") for snapshot in (existing_snap, raw_snap)
@@ -67,7 +84,9 @@ async def sync_okx_venue(
                         for row in snapshot.get(field) or []}
     raw_snap["instruments"] = [row for row in raw_snap.get("instruments") or []
                                if row.get("instId") in used_instruments]
-    snap = store.upsert_plugin_snapshot("okx", raw_snap, merge_specs=OKX_MERGE_SPECS)
+    snap = store.upsert_plugin_snapshot(
+        "okx", raw_snap, merge_specs=OKX_MERGE_SPECS, validate=extract_okx_snapshot_activity,
+    )
     eq_usd, has_open, fp_after = extract_okx_snapshot_activity(snap)
     new_closed = 0
     if len(fp_before) >= 2 and sum(fp_before) > 0 and len(fp_after) >= 2:

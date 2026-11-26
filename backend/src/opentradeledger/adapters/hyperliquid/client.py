@@ -190,6 +190,23 @@ class HyperliquidReadOnlyClient:
     def _fill_unique_key(r: dict[str, Any]) -> str:
         return str(r.get("tid") or r.get("hash") or f"{r.get('oid')}_{r.get('time')}_{r.get('coin')}")
 
+    async def _merge_fill_boundary(
+        self, timestamp: int, collected: dict[str, dict[str, Any]]
+    ) -> None:
+        # A range ending on the burst can expose different IDs than an exact-ms page.
+        page = await self.request_info(
+            {
+                "type": "userFillsByTime",
+                "user": self.wallet_address,
+                "startTime": max(0, timestamp - 1),
+                "endTime": timestamp,
+            }
+        )
+        if isinstance(page, list):
+            for row in page:
+                if isinstance(row, dict) and int(row.get("time") or 0) == timestamp:
+                    collected[self._fill_unique_key(row)] = row
+
     async def get_user_fills(
         self,
         *,
@@ -235,8 +252,15 @@ class HyperliquidReadOnlyClient:
                 if int(r.get("time") or 0) == boundary_ts:
                     same_ms_keys.add(fk)
 
-            if len(same_ms_rows) >= 2000 and not (first_at_boundary_keys & same_ms_keys):
-                truncated = True
+            if len(same_ms_rows) >= 2000:
+                known_before_probe = len(collected)
+                await self._merge_fill_boundary(boundary_ts, collected)
+                # Identical, disjoint or inconsistent full pages leave coverage uncertain.
+                truncated = (
+                    same_ms_keys.issubset(first_at_boundary_keys)
+                    or same_ms_keys.isdisjoint(first_at_boundary_keys)
+                    or len(collected) > known_before_probe
+                )
 
             low_bound = 0
             high_bound = boundary_ts - 1
@@ -267,12 +291,16 @@ class HyperliquidReadOnlyClient:
                     rts = int(r.get("time") or 0)
                     page_ts_list.append(rts)
 
-                if len(valid_rows) < 2000 or new_cnt == 0 or not page_ts_list:
+                if len(valid_rows) < 2000 or not page_ts_list:
+                    break
+                if new_cnt == 0:
+                    truncated = True
                     break
 
                 p_min = min(page_ts_list)
                 p_max = max(page_ts_list)
                 if p_min == p_max:
+                    await self._merge_fill_boundary(p_max, collected)
                     truncated = True
                     low_bound = p_max + 1
                 else:
@@ -310,13 +338,16 @@ class HyperliquidReadOnlyClient:
                     new_cnt += 1
                 rts = int(r.get("time") or 0)
                 page_ts_list.append(rts)
-            if len(valid_rows) < 2000 or new_cnt == 0 or not page_ts_list:
-                break
-            if page_idx == self.max_fill_pages - 1:
-                truncated = True
+            if len(valid_rows) < 2000 or not page_ts_list:
                 break
             max_ts = max(page_ts_list)
             min_ts = min(page_ts_list)
+            if min_ts == max_ts:
+                await self._merge_fill_boundary(max_ts, collected)
+                truncated = True
+            if new_cnt == 0 or page_idx == self.max_fill_pages - 1:
+                truncated = True
+                break
             if max_ts > cursor_start and min_ts < max_ts:
                 cursor_start = max_ts
             else:
@@ -324,7 +355,7 @@ class HyperliquidReadOnlyClient:
 
         if truncated and warnings_out is not None:
             warnings_out.append(
-                "Hyperliquid userFillsByTime reached 2,000 per-page pagination cap during incremental sync."
+                "Hyperliquid userFillsByTime reached 2,000 per-page pagination cap during incremental sync; fills may be truncated."
             )
         return list(collected.values())
 

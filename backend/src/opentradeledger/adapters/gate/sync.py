@@ -58,7 +58,10 @@ async def sync_gate_venue(
     trades = await client.fetch_futures_trades(since_sec=since_sec)
     orders = await client.fetch_futures_finished_orders(since_sec=since_sec)
     rebates = _dedup_partner_rebates(await client.fetch_partner_rebates(since_sec=since_sec))
-    spot_book = await client.fetch_spot_account_book(since_sec=since_sec, max_pages=20 if do_full else 4)
+    full_spot_book = do_full or not scope.get_kv("spot_window_backfill_v2", True)
+    spot_since_sec = now_s - FULL_BACKFILL_LOOKBACK_SEC if full_spot_book else since_sec
+    spot_book = await client.fetch_spot_account_book(since_sec=spot_since_sec, max_pages=20 if full_spot_book else 4)
+    spot_book_warnings = getattr(client, "spot_book_warnings", [])
     stk_orders, stk_deals = await client.fetch_stock_orders_and_deals(max_pages=10 if do_full else 2)
     stk_txs = await client.fetch_stock_transactions(max_pages=10 if do_full else 2)
 
@@ -117,6 +120,9 @@ async def sync_gate_venue(
     live_bundle = dict(live_bundle) if isinstance(live_bundle, dict) else {}
     failed_fields = [str(x) for x in (live_bundle.pop("_failed_fields", None) or ()) if x]
     warnings = [str(w) for w in (live_bundle.get("_warnings") or ()) if w]
+    if spot_book_warnings:
+        warnings.extend(spot_book_warnings)
+        live_bundle["_warnings"] = warnings
     if not isinstance(prev_live, dict) and {"wallet_total", "unified", "futures_account"}.issubset(set(failed_fields)):
         raise GateApiHttpError(
             200,
@@ -129,7 +135,7 @@ async def sync_gate_venue(
                 live_bundle[fk] = prev_live[fk]
     scope.set_kv("live_bundle", live_bundle)
     scope.set_kv("backfill_completed", True)
-    scope.set_kv("spot_window_backfill_v2", True)
+    scope.set_kv("spot_window_backfill_v2", not spot_book_warnings)
     scope.set_kv("gate_decimal_trades_v2", True)
 
     wt_g = live_bundle.get("wallet_total") or {}

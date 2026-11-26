@@ -557,10 +557,23 @@ class PublicCopyWatcherClient:
 def humanize_watcher_error(exc: Exception) -> tuple[str, str]:
     raw = str(exc or "Failed to query Binance public copy-trading endpoint")
     low = raw.lower()
-    if "11012005" in low or "system is currently busy" in low or "busy (code=" in low:
+    if "position-history" in low:
+        endpoint, label = "position-history", "持仓历史"
+    elif "order-history" in low:
+        endpoint, label = "order-history", "订单历史"
+    else:
+        endpoint, label = "portfolio details", "组合详情"
+    if any(marker in low for marker in ("code=-1003", "code=429", "http 429")):
+        code = "-1003" if "-1003" in low else "429"
         return (
-            f"Binance public order-history service is temporarily busy ({raw}); retry shortly (previous position snapshot preserved).",
-            "币安公开订单历史服务繁忙（11012005），请稍后重试（已保留上次调仓快照）",
+            f"Binance public {endpoint} rate limit ({code}). Try again later.",
+            f"币安公开{label}请求受限（{code}），请稍后重试",
+        )
+    if "11012005" in low or "system is currently busy" in low:
+        en_code, zh_code = (" (11012005)", "（11012005）") if "11012005" in low else ("", "")
+        return (
+            f"Binance public {endpoint} service is temporarily busy{en_code}. Try again later.",
+            f"币安公开{label}服务繁忙{zh_code}，请稍后重试",
         )
     if any(k in low for k in ("network error", "timeout", "connect", "ssl", "eof")):
         return (
@@ -904,6 +917,8 @@ class CopyWatcherService:
                     "slot_updated_at_ms": int(cached.get("slot_updated_at_ms") or 0),
                     "trade_updated_at_ms": int(cached.get("trade_updated_at_ms") or 0),
                     "trade_stale": bool(cached.get("trade_stale", not cached.get("trade_updated_at_ms"))),
+                    "trade_error": cached.get("trade_error", ""),
+                    "trade_error_zh": cached.get("trade_error_zh", ""),
                     "uncertain_symbols": cached.get("uncertain_symbols", []),
                     "pending_alert_count": (int(bool(cached.get("slot_pending"))) + len(cached.get("pending_trades", [])))
                                            if destination and destination == cached.get("pending_destination") else 0,
@@ -953,15 +968,17 @@ class CopyWatcherService:
         }
         watcher_client = self._make_client()
         try:
-            probed: list[tuple[PortfolioSlotSnapshot, LeadTradeActivity | None]] = []
+            probed: list[tuple[PortfolioSlotSnapshot, LeadTradeActivity | None, tuple[str, str] | None]] = []
             for pid in pids:
                 snap = await watcher_client.fetch_slot_snapshot(pid)
+                history_error = None
                 act: LeadTradeActivity | None = None
                 try:
                     act = await watcher_client.fetch_trade_activity(pid)
                 except Exception as exc:
+                    history_error = humanize_watcher_error(exc)
                     logger.debug("Initial trade activity fetch skipped for %s: %s", pid, exc)
-                probed.append((snap, act))
+                probed.append((snap, act, history_error))
         finally:
             await watcher_client.aclose()
 
@@ -975,7 +992,7 @@ class CopyWatcherService:
             has_bark = bark_configured(self.store.get_preferences().notifications)
             existing_by_id = {str(t.get("portfolio_id")): t for t in targets}
             added_rows: list[dict[str, Any]] = []
-            for snap, act in probed:
+            for snap, act, history_error in probed:
                 pid = snap.portfolio_id
                 previous = snapshots.get(pid, {})
                 existing = existing_by_id.get(pid)
@@ -1008,7 +1025,7 @@ class CopyWatcherService:
                     targets.append(row)
                     existing_by_id[pid] = row
 
-                snap_dict = self._snapshot(snap, act, snapshots.get(pid, {}), now_ms, history_failed=act is None)
+                snap_dict = self._snapshot(snap, act, snapshots.get(pid, {}), now_ms, history_error=history_error)
                 snapshots[pid] = snap_dict
                 added_rows.append(snap_dict)
 
@@ -1109,7 +1126,7 @@ class CopyWatcherService:
         previous: dict,
         wall_ms: int,
         *,
-        history_failed: bool = False,
+        history_error: tuple[str, str] | None = None,
     ) -> dict:
         row = {
             **previous,
@@ -1136,9 +1153,11 @@ class CopyWatcherService:
                 uncertain_symbols=list(act.uncertain_symbols),
                 trade_updated_at_ms=wall_ms,
                 trade_stale=False,
+                trade_error="",
+                trade_error_zh="",
             )
-        elif history_failed:
-            row["trade_stale"] = True
+        elif history_error:
+            row.update(trade_stale=True, trade_error=history_error[0], trade_error_zh=history_error[1])
         return row
 
     @staticmethod
@@ -1264,11 +1283,13 @@ class CopyWatcherService:
         last_trade = self._last_trade_poll_mono.get(pid)
         due = force_trades or last_trade is None or now - last_trade >= trade_sec
         act = None
+        history_error = None
         if due:
             self._last_trade_poll_mono[pid] = now
             try:
                 act = await client.fetch_trade_activity(pid, now_ms=wall_ms)
             except Exception as exc:
+                history_error = humanize_watcher_error(exc)
                 logger.debug("Trade activity fetch failed for %s: %s", pid, exc)
 
         state = self._load_state()
@@ -1279,7 +1300,7 @@ class CopyWatcherService:
         destination = _bark_destination(self.store.get_preferences().notifications)
         has_bark = bool(destination)
         row = self._snapshot(
-            snap, act, state["snapshots"].get(pid, {}), wall_ms, history_failed=due and act is None
+            snap, act, state["snapshots"].get(pid, {}), wall_ms, history_error=history_error
         )
         self._bind_pending(row, destination, wall_ms, cooldown_sec)
         if act is not None:

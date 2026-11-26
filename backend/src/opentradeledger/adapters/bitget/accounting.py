@@ -43,6 +43,19 @@ if TYPE_CHECKING:
 BG_PENDING_REBATE_WINDOW_SEC = 86_400
 
 
+def bitget_uta_equity(assets: Any) -> Decimal:
+    """Read the supported aggregate or per-account representation, preserving explicit zero."""
+    rows = assets if isinstance(assets, list) else [assets]
+    total = Decimal("0")
+    for row in rows:
+        if isinstance(row, Mapping):
+            for field in ("accountEquity", "usdtEquity", "totalEquity", "equity"):
+                if row.get(field) not in (None, ""):
+                    total += dec(row[field])
+                    break
+    return total
+
+
 def extract_bitget_spot_prices(store: "LedgerStore") -> dict[str, float]:
     lb = store.venue_scope("bitget").get_kv("live_bundle", {}) or {}
     out: dict[str, float] = {}
@@ -950,7 +963,7 @@ def build_bitget_venue_ledger(
     raw_spot_rows: list[tuple[str, float, float, str]] = []
     uta_assets = bg_lb.get("uta_assets")
     if isinstance(uta_assets, Mapping) and uta_assets:
-        bg_uta_equity_usd = dec(uta_assets.get("accountEquity") or uta_assets.get("usdtEquity") or uta_assets.get("totalEquity"))
+        bg_uta_equity_usd = bitget_uta_equity(uta_assets)
         bg_futures_available_usd = dec(uta_assets.get("available") or uta_assets.get("usdtAvailable") or bg_uta_equity_usd)
         assets_arr = uta_assets.get("assets") or uta_assets.get("list") or []
         if isinstance(assets_arr, list):
@@ -968,6 +981,8 @@ def build_bitget_venue_ledger(
                         val_c = dec(ca.get("usdtEquity")) or (dec(ca.get("equity")) * px_c)
                         bg_uta_equity_usd += val_c
                         bg_non_usdt_tokens_usd += val_c
+    elif isinstance(uta_assets, list):
+        bg_uta_equity_usd = bitget_uta_equity(uta_assets)
     else:
         for cb in bg_lb.get("classic_balances") or []:
             bg_uta_equity_usd += dec(cb.get("usdtBalance"))

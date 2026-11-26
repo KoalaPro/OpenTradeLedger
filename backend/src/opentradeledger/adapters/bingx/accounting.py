@@ -12,7 +12,11 @@ from opentradeledger.adapters.base import (
     VenueLedgerBundle,
     VenueStockBundle,
 )
-from opentradeledger.adapters.bingx.client import normalize_bingx_closed_trades, normalize_bingx_symbol
+from opentradeledger.adapters.bingx.client import (
+    bingx_spot_quantity,
+    normalize_bingx_closed_trades,
+    normalize_bingx_symbol,
+)
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -87,8 +91,8 @@ def build_bingx_venue_ledger(
         if not isinstance(bal, dict):
             continue
         asset = str(bal.get("asset") or "USDT").strip().upper()
-        eq = float(bal.get("equity") or bal.get("balance") or 0.0)
-        av = float(bal.get("availableMargin") or eq)
+        eq = float(bal["equity"] if bal.get("equity") is not None else bal.get("balance") or 0.0)
+        av = float(bal["availableMargin"] if bal.get("availableMargin") is not None else eq)
         u_eq = _coin_usd(asset, eq)
         fut_equity += u_eq
         avail_margin += _coin_usd(asset, av)
@@ -100,11 +104,7 @@ def build_bingx_venue_ledger(
         if not isinstance(sb, dict):
             continue
         ccy = str(sb.get("asset") or "").strip().upper()
-        qty = (
-            float(sb.get("free") or 0.0) + float(sb.get("locked") or 0.0)
-            if ("free" in sb or "locked" in sb)
-            else float(sb.get("balance") or 0.0)
-        )
+        qty = bingx_spot_quantity(sb)
         if not ccy or qty <= 0:
             continue
         u_val = _coin_usd(ccy, qty)

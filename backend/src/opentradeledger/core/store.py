@@ -486,6 +486,7 @@ class LedgerStore:
         *,
         merge_history: bool = True,
         merge_specs: Mapping[str, Any] | None = None,
+        validate: Callable[[dict[str, Any]], object] | None = None,
     ) -> dict[str, Any]:
         vid = venue_id.strip().lower()
         now_ms = int(time.time() * 1000)
@@ -508,6 +509,9 @@ class LedgerStore:
                     new_rows = final_payload.get(field) if isinstance(final_payload.get(field), list) else []
                     if old_rows or new_rows:
                         final_payload[field] = self._merge_record_list(old_rows, new_rows, kfn)
+
+        if validate is not None:
+            validate(final_payload)
 
         final_payload["_last_sync_ms"] = now_ms
         final_payload["_synced_ms"] = now_ms
@@ -777,6 +781,9 @@ class LedgerStore:
                         (r["tags_json"], r["note"], int(r["updated_at"] or 0), mode, new_key),
                     )
                     migrated += 1
+                elif (existing["note"], existing["tags_json"]) != (r["note"], r["tags_json"]):
+                    # Both keys contain user-authored content. Keep both originals.
+                    continue
                 conn.execute(
                     "DELETE FROM otl_trade_journals WHERE ledger_mode = ? AND record_key = ?",
                     (mode, old_key),
@@ -803,101 +810,13 @@ class LedgerStore:
                     """,
                     (new_key, lr["tags_json"], lr["note"], int(lr["updated_at"] or 0)),
                 )
-                conn.execute("DELETE FROM trade_journals WHERE record_key = ?", (old_key,))
+                conn.execute(
+                    """DELETE FROM trade_journals WHERE record_key = ?
+                       AND EXISTS (SELECT 1 FROM trade_journals
+                                   WHERE record_key = ? AND tags_json = ? AND note = ?)""",
+                    (old_key, new_key, lr["tags_json"], lr["note"]),
+                )
         return migrated
-
-    def claim_orphan_secondary_journals(
-        self,
-        adapter_id: str,
-        new_acct_id: str,
-        active_or_archived_acct_ids: set[str],
-        raw_trade_ids: set[str],
-    ) -> int:
-        """Reclaim orphan secondary-account journals (`{adapter_id}__{purged_suffix}__{raw_tid}`) matching `raw_trade_ids`."""
-        ad_id = parse_adapter_id(adapter_id)
-        new_id = (new_acct_id or "").strip().lower()
-        if not ad_id or not new_id or not is_secondary_account_id(new_id) or not raw_trade_ids:
-            return 0
-        live_accts = {x.strip().lower() for x in active_or_archived_acct_ids if x}
-        ad_pref = f"{ad_id}__"
-        new_pref = f"{new_id}__"
-        claimed = 0
-        with self.legacy._lock, self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT ledger_mode, record_key, tags_json, note, updated_at
-                FROM otl_trade_journals
-                WHERE ledger_mode = 'live' AND substr(lower(record_key), 1, ?) = ?
-                """,
-                (len(ad_pref), ad_pref),
-            ).fetchall()
-            for r in rows:
-                old_key = str(r["record_key"])
-                parts = old_key.split("__", 2)
-                if len(parts) < 3:
-                    continue
-                cand_acct = f"{parts[0].strip().lower()}__{parts[1].strip().lower()}"
-                raw_tid = parts[2]
-                if not raw_tid or cand_acct == new_id or cand_acct in live_accts:
-                    continue
-                if raw_tid not in raw_trade_ids:
-                    continue
-                new_key = f"{new_pref}{raw_tid}"
-                existing = conn.execute(
-                    "SELECT tags_json, note FROM otl_trade_journals WHERE ledger_mode = 'live' AND record_key = ?",
-                    (new_key,),
-                ).fetchone()
-                if existing is None:
-                    conn.execute(
-                        """
-                        INSERT INTO otl_trade_journals (ledger_mode, record_key, tags_json, note, updated_at)
-                        VALUES ('live', ?, ?, ?, ?)
-                        """,
-                        (new_key, r["tags_json"], r["note"], int(r["updated_at"] or 0)),
-                    )
-                    claimed += 1
-                elif not str(existing["note"] or "").strip() and str(existing["tags_json"] or "[]") == "[]":
-                    conn.execute(
-                        """
-                        UPDATE otl_trade_journals
-                        SET tags_json = ?, note = ?, updated_at = ?
-                        WHERE ledger_mode = 'live' AND record_key = ?
-                        """,
-                        (r["tags_json"], r["note"], int(r["updated_at"] or 0), new_key),
-                    )
-                    claimed += 1
-                conn.execute(
-                    "DELETE FROM otl_trade_journals WHERE ledger_mode = 'live' AND record_key = ?",
-                    (old_key,),
-                )
-
-            legacy_rows = conn.execute(
-                """
-                SELECT record_key, tags_json, note, updated_at
-                FROM trade_journals
-                WHERE substr(lower(record_key), 1, ?) = ?
-                """,
-                (len(ad_pref), ad_pref),
-            ).fetchall()
-            for lr in legacy_rows:
-                old_key = str(lr["record_key"])
-                parts = old_key.split("__", 2)
-                if len(parts) < 3:
-                    continue
-                cand_acct = f"{parts[0].strip().lower()}__{parts[1].strip().lower()}"
-                raw_tid = parts[2]
-                if not raw_tid or cand_acct == new_id or cand_acct in live_accts or raw_tid not in raw_trade_ids:
-                    continue
-                new_key = f"{new_pref}{raw_tid}"
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO trade_journals (record_key, tags_json, note, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (new_key, lr["tags_json"], lr["note"], int(lr["updated_at"] or 0)),
-                )
-                conn.execute("DELETE FROM trade_journals WHERE record_key = ?", (old_key,))
-        return claimed
 
     def save_ai_review(self, review: dict[str, Any], equity_usd: float, *, demo_mode: bool = False) -> None:
         review = {

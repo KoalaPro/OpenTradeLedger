@@ -12,7 +12,12 @@ from opentradeledger.adapters.base import (
     VenueLedgerBundle,
     VenueStockBundle,
 )
-from opentradeledger.adapters.kucoin.client import normalize_kucoin_closed_trades, normalize_kucoin_symbol
+from opentradeledger.adapters.kucoin.client import (
+    kucoin_futures_equity,
+    kucoin_spot_balance,
+    normalize_kucoin_closed_trades,
+    normalize_kucoin_symbol,
+)
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -72,12 +77,7 @@ def build_kucoin_venue_ledger(
         return amt * float(px_map.get(c, 0.0))
 
     fut_ov = snap.get("futures_overview") if isinstance(snap.get("futures_overview"), dict) else {}
-    fut_raw = (
-        fut_ov.get("accountEquity")
-        if fut_ov.get("accountEquity") is not None
-        else (fut_ov.get("marginBalance") if fut_ov.get("marginBalance") is not None else fut_ov.get("availableBalance"))
-    )
-    fut_equity = float(fut_raw or 0.0)
+    fut_equity = kucoin_futures_equity(fut_ov) if fut_ov else 0.0
     avail_margin = float(fut_ov.get("availableBalance") if fut_ov.get("availableBalance") is not None else fut_equity)
 
     raw_spot_rows: list[tuple[str, float, float, str]] = []
@@ -89,11 +89,7 @@ def build_kucoin_venue_ledger(
         if acct_tp in {"CONTRACT", "FUTURES"}:
             continue
         ccy = str(acct.get("currency") or "").strip().upper()
-        bal = (
-            float(acct["balance"])
-            if acct.get("balance") is not None
-            else (float(acct.get("available") or 0.0) + float(acct.get("holds") or 0.0))
-        )
+        bal = kucoin_spot_balance(acct)
         if not ccy or bal <= 0:
             continue
         u_val = _coin_usd(ccy, bal)

@@ -65,6 +65,14 @@ def register_exchange_routes(
             "committed": False,
         })
 
+    def connected_wallet_addresses(adapter_id: str) -> set[str]:
+        return {
+            address.strip().lower()
+            for record in vault.list_for_adapter(adapter_id)
+            for address in (record.api_key, record.remote_uid)
+            if address
+        }
+
     def _occupied_account_ids(adapter_id: str, adapter: Any) -> set[str]:
         occupied = {c.venue_id.lower() for c in vault.list_for_adapter(adapter_id)}
         occupied.update(store.list_partition_account_ids(adapter_id))
@@ -192,12 +200,7 @@ def register_exchange_routes(
 
         # Optional batch import of selected on-chain sub-accounts (e.g. Hyperliquid subAccounts)
         if res.get("committed") and cand.include_subaccounts and adapter.meta.auth_mode == "wallet_address":
-            existing_wallet_addrs: set[str] = {temp_cred.api_key.strip().lower()}
-            for c_rec in vault.list_for_adapter(adapter_id):
-                if c_rec.api_key.strip():
-                    existing_wallet_addrs.add(c_rec.api_key.strip().lower())
-                if c_rec.remote_uid.strip():
-                    existing_wallet_addrs.add(c_rec.remote_uid.strip().lower())
+            existing_wallet_addrs = connected_wallet_addresses(adapter_id)
             added_subs: list[str] = []
             failed_subs: list[dict[str, str]] = []
             for sub in cand.include_subaccounts:
@@ -419,6 +422,12 @@ def register_exchange_routes(
                 "adapter_id": adapter_id,
                 "masked_uid": mask_uid(probed_uid),
             }
+            if adapter.meta.auth_mode == "wallet_address" and out_payload.get("subaccounts"):
+                connected = connected_wallet_addresses(adapter_id)
+                out_payload["subaccounts"] = [
+                    {**sub, "already_connected": sub["address"].lower() in connected}
+                    for sub in out_payload["subaccounts"]
+                ]
             out_payload.pop("remote_uid", None)
             return JSONResponse(content=out_payload)
         except (AccountIdentityError, EasiCoinIdentityError) as exc:
@@ -450,6 +459,12 @@ def register_exchange_routes(
             return await commit_candidate(body, request, finish_onboarding=False)
 
         uses_probe_uid = adapter.meta.identity_mode == "probe"
+        if uses_probe_uid and not body.create_new and sync_manager.has_unattributed_data_partitions(
+            adapter_id, exclude_acct_id=acct_id,
+        ):
+            # An explicitly named new partition needs the same sibling ownership
+            # checks as the Add Account UI. Single-row credential storage stays local.
+            return await commit_candidate(body, request, finish_onboarding=False)
         if body.create_new and uses_probe_uid:
             try:
                 await sync_manager.backfill_unattributed_sibling_uids(adapter_id, exclude_acct_id=acct_id)

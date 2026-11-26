@@ -24,7 +24,7 @@ class ExchangeUpsertRequest(BaseModel):
     passphrase: str = ""
     enabled: bool = True
     expected_revision: str | None = None
-    include_subaccounts: list[dict[str, str]] = Field(default_factory=list)
+    include_subaccounts: list[dict[str, str | bool]] = Field(default_factory=list)
 
 
 class DemoToggleRequest(BaseModel):

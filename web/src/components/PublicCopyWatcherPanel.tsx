@@ -781,7 +781,8 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
 
                 {item.trade_stale && (
                   <div className="pl-3 border-l-2 border-[var(--err)] text-[13px] text-[var(--err)]">
-                    {isZh ? '公开成交数据暂不可用。' : 'Public trade data unavailable. '}
+                    {(isZh ? item.trade_error_zh || item.trade_error : item.trade_error) ||
+                      (isZh ? '公开成交数据暂不可用。' : 'Public trade data unavailable.')}{' '}
                     {item.trade_updated_at_ms
                       ? (isZh ? '上次成功读取于 ' : 'Last updated ') + new Date(item.trade_updated_at_ms).toLocaleString(locale)
                       : (isZh ? '尚无可核实的更新时间。' : 'Last update time is unknown.')}

@@ -502,6 +502,8 @@ export interface CopyWatcherTargetItem {
   slot_updated_at_ms?: number
   trade_updated_at_ms?: number
   trade_stale?: boolean
+  trade_error?: string
+  trade_error_zh?: string
   uncertain_symbols?: string[]
   pending_alert_count?: number
   probe_error?: string
@@ -557,6 +559,7 @@ export interface UserSettings {
 }
 
 export interface DiscoveredSubaccount {
+  already_connected?: boolean
   name: string
   address: string
   equity_usd?: string

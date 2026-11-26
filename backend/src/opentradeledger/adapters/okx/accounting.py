@@ -14,6 +14,7 @@ from opentradeledger.adapters.base import (
 )
 from opentradeledger.adapters.okx.contracts import contract_quantity, instrument_at
 from opentradeledger.adapters.okx.client import is_okx_trading_rebate, normalize_okx_closed_trades, okx_fill_credit_ids
+from opentradeledger.adapters.okx.client import validate_snapshot_funding
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -56,6 +57,7 @@ def build_okx_venue_ledger(
     if not isinstance(snap, dict):
         return None
 
+    validate_snapshot_funding(snap)
     px_map = {**(global_spot_prices or {}), **extract_okx_spot_prices(store)}
 
     def _coin_usd(ccy_raw: str, amt: float) -> float:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import asyncio
 import hashlib
 import hmac
@@ -12,6 +14,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.balance_validation import wallet_rows
 from opentradeledger.adapters.compat_creds import EasiCoinCredentials
 from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError, account_uid
 from opentradeledger.adapters.stock_channels import classify_spot_stock_token
@@ -23,62 +26,35 @@ WINDOW_DAYS_MS = 29 * 86400 * 1000
 _MISSING = object()
 
 
+def _balance_rows(payload: Any) -> Any:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    return data.get("list") if isinstance(data, dict) else data
+
+
+valid_spot_balances = partial(wallet_rows, names=("token_name", "coin"), amounts=("balance", "available"))
+valid_funding_balances = partial(
+    wallet_rows, names=("coin", "token_name"), amounts=("total_equity", "available_balance", "balance"),
+)
+
+
 def _extract_easicoin_futures_balances(payload: Any) -> list[dict[str, Any]]:
-    if not isinstance(payload, dict) or "data" not in payload:
+    rows = _balance_rows(payload)
+    if not wallet_rows(
+        rows, names=("coin",), amounts=("equity", "wallet_balance"), optional=("available_balance", "unrealised_pnl"),
+    ):
         raise EasiCoinApiError(200, "/futures/private/v1/account/balance", "Malformed futures balance payload")
-    data = payload["data"]
-    if isinstance(data, dict) and "list" in data and isinstance(data["list"], list):
-        rows = data["list"]
-    elif isinstance(data, list):
-        rows = data
-    else:
-        raise EasiCoinApiError(200, "/futures/private/v1/account/balance", "Malformed futures balance payload")
-    out: list[dict[str, Any]] = []
-    for item in rows:
-        if not isinstance(item, dict) or not any(
-            k in item for k in ("equity", "wallet_balance", "available", "available_balance")
-        ):
-            raise EasiCoinApiError(200, "/futures/private/v1/account/balance", "Malformed futures balance item")
-        out.append(dict(item))
-    return out
+    return rows
 
 
 def _extract_easicoin_funding_balances(payload: Any) -> Optional[list[dict[str, Any]]]:
-    if not isinstance(payload, dict) or "data" not in payload:
-        return None
-    data = payload["data"]
-    if isinstance(data, dict) and "list" in data and isinstance(data["list"], list):
-        rows = data["list"]
-    elif isinstance(data, list):
-        rows = data
-    else:
-        return None
-    out: list[dict[str, Any]] = []
-    for item in rows:
-        if not isinstance(item, dict) or not any(
-            k in item for k in ("total_equity", "available_balance", "total_amount", "balance")
-        ):
-            return None
-        out.append(dict(item))
-    return out
+    rows = _balance_rows(payload)
+    return rows if valid_funding_balances(rows) else None
 
 
 def _extract_easicoin_spot_balances(payload: Any) -> Optional[list[dict[str, Any]]]:
-    if not isinstance(payload, dict) or "data" not in payload:
-        return None
-    data = payload["data"]
-    if isinstance(data, list):
-        rows = data
-    elif isinstance(data, dict) and "list" in data and isinstance(data["list"], list):
-        rows = data["list"]
-    else:
-        return None
-    out: list[dict[str, Any]] = []
-    for item in rows:
-        if not isinstance(item, dict) or not any(k in item for k in ("balance", "available", "total")):
-            return None
-        out.append(dict(item))
-    return out
+    rows = _balance_rows(payload)
+    return rows if valid_spot_balances(rows) else None
+
 
 _ALLOWED_GET_PATHS = frozenset(
     {
@@ -290,6 +266,7 @@ class EasiCoinReadOnlyClient:
     async def fetch_live_overview_bundle(self) -> dict[str, Any]:
         warnings: list[str] = []
         failed_fields: list[str] = []
+        invalid_wallet_fields: list[str] = []
         uid_response = await self.raw_get("/asset-api/account/private/v1/userid")
         uid_data = uid_response.get("data") if isinstance(uid_response, dict) else None
         uid = account_uid(uid_data.get("userid")) if isinstance(uid_data, dict) else ""
@@ -349,6 +326,7 @@ class EasiCoinReadOnlyClient:
                 if "funding_balances" not in failed_fields:
                     failed_fields.append("funding_balances")
                 warnings.append("funding_balances: malformed response structure")
+                invalid_wallet_fields.append("funding_balances")
             else:
                 funding_list = parsed_funding
 
@@ -359,6 +337,7 @@ class EasiCoinReadOnlyClient:
                 if "spot_balances" not in failed_fields:
                     failed_fields.append("spot_balances")
                 warnings.append("spot_balances: malformed response structure")
+                invalid_wallet_fields.append("spot_balances")
             else:
                 spot_list = parsed_spot
 
@@ -445,6 +424,8 @@ class EasiCoinReadOnlyClient:
             "tickers": tickers_list,
             "stock_bundle": {"spot_stock_fills": spot_stock_fills},
         }
+        if invalid_wallet_fields:
+            out["_invalid_wallet_fields"] = invalid_wallet_fields
         if failed_fields:
             out["_failed_fields"] = failed_fields
         if warnings:
@@ -533,7 +514,12 @@ class EasiCoinReadOnlyClient:
             if end_ms < since_ms:
                 break
             start_ms = max(since_ms - 86400 * 1000, end_ms - WINDOW_DAYS_MS)
-            for page_num in range(1, 51):
+            page_num = 1
+            last_time_progress = 1
+            oldest, newest = float("inf"), float("-inf")
+            total: int | None = None
+            window_ids: set[str] = set()
+            while True:
                 res = await self._safe_get(
                     "/asset-api/account/private/v1/user-transfer-rercord/page",
                     [
@@ -549,31 +535,45 @@ class EasiCoinReadOnlyClient:
                 if res is _MISSING:
                     break
                 data = (res or {}).get("data") if isinstance(res, dict) else None
-                rows = (
-                    list(data.get("list") or [])
-                    if isinstance(data, dict) and isinstance(data.get("list"), list)
-                    else (list(data) if isinstance(data, list) else [])
-                )
-                if not rows:
+                rows = data.get("list") if isinstance(data, dict) else data
+                if not isinstance(rows, list):
+                    self._transfer_warnings.append(f"transfers: malformed page {page_num} in window [{start_ms}, {end_ms}]")
                     break
-                new_in_page = 0
+                total_raw = data.get("total") if isinstance(data, dict) else None
+                if str(total_raw).isdecimal():
+                    total = max(total or 0, int(total_raw))
+                previous_count = len(window_ids)
                 for r in rows:
                     if not isinstance(r, dict):
                         continue
+                    timestamp = float(r.get("time") or 0)
+                    if timestamp > 0 and (timestamp < oldest or timestamp > newest):
+                        oldest, newest = min(oldest, timestamp), max(newest, timestamp)
+                        last_time_progress = page_num
                     tid = str(r.get("transfer_id") or r.get("id") or "").strip()
                     dedup_k = (
                         f"id:{tid}"
                         if tid
                         else f"comp:{int(float(r.get('time') or 0))}_{r.get('coin')}_{r.get('amount')}_{r.get('from_wallet')}_{r.get('to_wallet')}_{r.get('transfer_status')}"
                     )
+                    window_ids.add(dedup_k)
                     if dedup_k not in seen_keys:
                         seen_keys.add(dedup_k)
                         out.append(dict(r))
-                        new_in_page += 1
-                if new_in_page == 0 or len(rows) < 100:
+                if total is not None and len(window_ids) >= total:
                     break
-                if page_num == 50 and len(rows) >= 100:
+                if len(rows) < 100 or len(window_ids) == previous_count:
+                    if total is not None or len(rows) == 100:
+                        self._transfer_warnings.append(
+                            f"transfers: incomplete page {page_num} in window [{start_ms}, {end_ms}]"
+                        )
+                    break
+                # Some responses omit total. Continue while dated rows advance,
+                # but stop an unbounded stream of distinct IDs at the same timestamp.
+                if total is None and page_num - last_time_progress >= 49:
                     self._transfer_warnings.append(
-                        f"transfers: pagination limit (50 pages / 5000 rows) reached in window [{start_ms}, {end_ms}]"
+                        f"transfers: pagination limit (50 pages / 5000 rows) without timestamp progress in window [{start_ms}, {end_ms}]"
                     )
+                    break
+                page_num += 1
         return out

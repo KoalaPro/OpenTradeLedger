@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from decimal import Decimal
 import logging
 import re
@@ -24,6 +25,7 @@ from opentradeledger.core.account_partition import (
 from opentradeledger.core.ai_reviewer import build_zero_trade_texts
 from opentradeledger.core.demo_provider import build_demo_dashboard
 from opentradeledger.core.store import LedgerStore
+from opentradeledger.core.venue_health import visible_sync_warnings
 from opentradeledger.core.venue_primitives import dec, f2, fmt_bj
 from opentradeledger.security.vault import CredentialVault
 
@@ -271,11 +273,21 @@ def _collect_venue_warnings(
                 candidates.extend(str(w) for w in lb[wk] if w)
     if extra_errors:
         candidates.extend(str(w) for w in extra_errors if w)
-    return list(dict.fromkeys(w.strip() for w in candidates if w and w.strip()))
+    return visible_sync_warnings(candidates)
 
 
-def _summarize_venue_warnings(w_list: list[str]) -> tuple[str, str]:
-    joined_low = " ".join(w_list).lower()
+def _summarize_venue_warnings(
+    w_list: list[str], labels: Mapping[str, tuple[str, str]],
+) -> tuple[str, str]:
+    en_parts: list[str] = []
+    zh_parts: list[str] = []
+    fields = {w.partition(":")[0] for w in w_list}
+    for field, (en, zh) in labels.items():
+        if field in fields:
+            en_parts.append(en)
+            zh_parts.append(zh)
+    remaining = [w for w in w_list if w.partition(":")[0] not in labels]
+    joined_low = " ".join(remaining).lower()
     has_perm = any(
         tok in joined_low
         for tok in ("spot", "wallet", "deposit", "withdraw", "permission", "403", "unauthorized", "forbidden", "funding")
@@ -286,9 +298,8 @@ def _summarize_venue_warnings(w_list: list[str]) -> tuple[str, str]:
     )
     has_crash = any("ledger computation failed" in w.lower() for w in w_list)
 
-    en_parts: list[str] = []
-    zh_parts: list[str] = []
-    if has_perm:
+    invalid_wallet = "invalidwalletsnapshot" in joined_low
+    if has_perm and not invalid_wallet:
         en_parts.append(
             "Some sub-account balances or deposit/withdrawal records could not be read (check Spot/Wallet read-only permissions); total equity or principal may be understated."
         )
@@ -298,7 +309,10 @@ def _summarize_venue_warnings(w_list: list[str]) -> tuple[str, str]:
             "Historical records reached the exchange API pagination cap; earlier history may be truncated."
         )
         zh_parts.append("历史记录已达交易所接口分页上限，更早历史可能被截断")
-    if has_crash:
+    if invalid_wallet:
+        en_parts.append("The saved balance is invalid. This account is excluded from totals until a successful sync.")
+        zh_parts.append("余额待重新同步，该账户已暂时从总资产中排除")
+    elif has_crash:
         en_parts.append(
             "Local snapshot encountered a calculation error and was isolated to protect other accounts."
         )
@@ -385,6 +399,49 @@ class LedgerService:
         updated = UserPreferences.model_validate(current)
         return self.store.save_preferences(updated)
 
+    def _apply_archived_trade_notes(
+        self, adapter: BaseExchangeAdapter, archive_ids: list[str], bundle: VenueLedgerBundle,
+        journals: dict[str, dict[str, Any]], current_journals: Mapping[str, Any],
+        now_s: float, spot_prices: dict[str, float],
+    ) -> None:
+        """Show a corroborated archive note without rewriting its original journal key."""
+        def trade_key(tr: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                tr.get("trade_id"), tr.get("symbol"), tr.get("side"), tr.get("open_time_ms"),
+                tr.get("close_time_ms"), tr.get("qty"), tr.get("contract_count"),
+                (tr.get("entry_leg") or {}).get("avg_price"), (tr.get("exit_leg") or {}).get("avg_price"),
+            )
+
+        eligible = {
+            trade_key(tr): tr for tr in bundle.trades
+            if tr.get("trade_id") and tr.get("symbol") and tr.get("close_time_ms")
+            and tr["trade_id"] not in current_journals
+        }
+        if not eligible:
+            return
+        archive_notes: dict[tuple[Any, ...], list[Mapping[str, Any]]] = defaultdict(list)
+        for archive_id in archive_ids:
+            scoped = scope_journals_for_account(journals, archive_id)
+            if not any(key[0] in scoped for key in eligible):
+                continue
+            try:
+                archived = adapter.build_venue_ledger(
+                    self.store.for_account(archive_id, adapter.meta.venue_id),
+                    journals={}, now_s=now_s, global_spot_prices=spot_prices,
+                )
+            except Exception as exc:
+                logger.warning("Could not read archived trades for %s: %s", archive_id, exc)
+                continue
+            for tr in archived.trades if archived else []:
+                key = trade_key(tr)
+                note = scoped.get(tr.get("trade_id", ""))
+                if key in eligible and note:
+                    archive_notes[key].append(note)
+        for key, notes in archive_notes.items():
+            if len(notes) == 1:
+                eligible[key]["note"] = notes[0].get("note", "")
+                eligible[key]["tags"] = list(notes[0].get("tags") or [])
+
     def save_journal(self, trade_id: str, tags: list[str], note: str) -> None:
         self.store.save_journal(trade_id, tags, note, demo_mode=self.is_demo_active())
 
@@ -450,10 +507,11 @@ class LedgerService:
         # 1. Gather cross-venue spot ticker fallback map uniformly across all active account partitions
         vault_creds = self.vault.list_decrypted()
         creds_by_acct = {c.venue_id.lower(): c for c in vault_creds}
-        all_live_or_archived_ids: set[str] = set(creds_by_acct.keys())
         candidate_targets: list[tuple[BaseExchangeAdapter, str]] = []
         active_accts_by_adapter: dict[str, list[tuple[BaseExchangeAdapter, str]]] = defaultdict(list)
         unattributed_archived_by_adapter: dict[str, list[tuple[BaseExchangeAdapter, str]]] = defaultdict(list)
+        active_by_uid: dict[tuple[str, str], list[str]] = defaultdict(list)
+        archived_uids: dict[str, tuple[str, str]] = {}
 
         for adapter, acct_id in self._iter_account_targets():
             ad_id = adapter.meta.venue_id.lower()
@@ -462,42 +520,48 @@ class LedgerService:
                 has_data = bool(adapter.has_venue_data(scoped_check))
             except Exception:
                 has_data = False
-            if has_data:
-                all_live_or_archived_ids.add(acct_id)
             if acct_id in creds_by_acct and not creds_by_acct[acct_id].enabled:
                 continue
             if is_secondary_account_id(acct_id) and bool(self.store.venue_scope(acct_id).get_kv("duplicate_uid_conflict")):
                 continue
             candidate_targets.append((adapter, acct_id))
-            if acct_id in creds_by_acct:
-                active_accts_by_adapter[ad_id].append((adapter, acct_id))
-            elif has_data:
-                raw_sc = self.store.venue_scope(acct_id)
-                saved_uid = str(
-                    raw_sc.get_kv("account_uid")
+            credential = creds_by_acct.get(acct_id)
+            if credential or has_data:
+                uid = str(
+                    (credential.remote_uid if credential else "")
                     or adapter.extract_cached_account_uid(scoped_check)
                     or ""
-                ).strip()
-                if not saved_uid:
+                ).strip().lower()
+                if credential:
+                    active_accts_by_adapter[ad_id].append((adapter, acct_id))
+                    if uid:
+                        active_by_uid[ad_id, uid].append(acct_id)
+                elif uid:
+                    archived_uids[acct_id] = (ad_id, uid)
+                else:
                     unattributed_archived_by_adapter[ad_id].append((adapter, acct_id))
 
+        dashboard_warnings: list[dict[str, Any]] = []
         suppressed_archived_ids: set[str] = set()
+        journal_archives_by_owner: dict[str, list[str]] = defaultdict(list)
+        for archive_id, uid_key in archived_uids.items():
+            owners = active_by_uid.get(uid_key, [])
+            if owners:
+                suppressed_archived_ids.add(archive_id)
+                if len(owners) == 1 and journals:
+                    journal_archives_by_owner[owners[0]].append(archive_id)
+
         for ad_id, arch_list in unattributed_archived_by_adapter.items():
-            act_list = active_accts_by_adapter.get(ad_id)
-            if not arch_list or not act_list:
-                continue
-            active_fps: set[str] = set()
-            for act_adapter, act_id in act_list:
+            active_fps_by_id: dict[str, set[str]] = {}
+            for act_adapter, act_id in active_accts_by_adapter.get(ad_id, []):
                 try:
-                    active_fps.update(
-                        act_adapter.extract_archive_record_fingerprints(
-                            self.store.for_account(act_id, ad_id),
-                            include_legacy_fallback=not is_secondary_account_id(act_id),
-                        )
+                    active_fps_by_id[act_id] = act_adapter.extract_archive_record_fingerprints(
+                        self.store.for_account(act_id, ad_id),
+                        include_legacy_fallback=not is_secondary_account_id(act_id),
                     )
                 except Exception:
                     continue
-            if not active_fps:
+            if not active_accts_by_adapter.get(ad_id):
                 continue
             for arch_adapter, arch_id in arch_list:
                 try:
@@ -506,9 +570,31 @@ class LedgerService:
                         include_legacy_fallback=not is_secondary_account_id(arch_id),
                     )
                 except Exception:
+                    arch_fps = set()
+                matches = {}
+                for aid, fps in active_fps_by_id.items():
+                    shared = arch_fps & fps
+                    if shared:
+                        matches[aid] = shared
+                if not matches and arch_adapter.meta.identity_mode not in ("probe", "sync_bound"):
                     continue
-                if arch_fps and (arch_fps & active_fps):
-                    suppressed_archived_ids.add(arch_id)
+                suppressed_archived_ids.add(arch_id)
+                if not matches:
+                    label = self.store.venue_scope(arch_id).get_kv("account_label") or arch_id
+                    en = f"Archived account {label} has no verified owner. Its history is kept and excluded from totals. Rebind the original account in Settings to verify its UID."
+                    zh = f"封存账号「{label}」尚未确认归属，历史数据已保留，暂不计入汇总。请在设置中用原账户密钥重新绑定以确认 UID。"
+                    dashboard_warnings.append({
+                        "venue_id": arch_id,
+                        "display_name": arch_adapter.meta.display_name,
+                        "display_name_zh": arch_adapter.meta.display_name_zh,
+                        "summary": en, "summary_zh": zh, "warnings": [en],
+                    })
+                if len(matches) == 1 and journals:
+                    owner, shared = next(iter(matches.items()))
+                    # A second distinct historical record corroborates ownership.
+                    # The same record appearing in two streams is only one witness.
+                    if len({fp.partition(":")[2] for fp in shared}) >= 2:
+                        journal_archives_by_owner[owner].append(arch_id)
 
         account_targets: list[tuple[BaseExchangeAdapter, str]] = [
             (adapter, acct_id)
@@ -529,7 +615,6 @@ class LedgerService:
                     global_spot_prices.setdefault(sym, px)
 
         # 2. Compute each active account's self-contained ledger bundle independently
-        journals = dict(journals)
         raw_bundles: list[tuple[BaseExchangeAdapter, str, VenueLedgerBundle]] = []
         isolated_build_errors: list[tuple[BaseExchangeAdapter, str, str]] = []
         sibling_counts: dict[str, int] = defaultdict(int)
@@ -551,28 +636,11 @@ class LedgerService:
                 )
                 continue
             if bundle is not None:
-                if is_secondary_account_id(acct_id) and bundle.trades and journals:
-                    ad_pref = f"{ad_id}__"
-                    has_orphan_candidate = any(
-                        str(jk).lower().startswith(ad_pref)
-                        and len(str(jk).split("__", 2)) >= 3
-                        and f"{str(jk).split('__', 2)[0].lower()}__{str(jk).split('__', 2)[1].lower()}"
-                        not in all_live_or_archived_ids
-                        for jk in journals.keys()
+                archives = journal_archives_by_owner.get(acct_id)
+                if archives:
+                    self._apply_archived_trade_notes(
+                        adapter, archives, bundle, journals, scoped_journals, now_s, global_spot_prices,
                     )
-                    if has_orphan_candidate:
-                        raw_tids = {
-                            str(tr.get("trade_id") or "")
-                            for tr in bundle.trades
-                            if tr.get("trade_id")
-                        }
-                        if raw_tids and self.store.claim_orphan_secondary_journals(
-                            ad_id,
-                            acct_id,
-                            all_live_or_archived_ids,
-                            raw_tids,
-                        ) > 0:
-                            journals = self.store.load_journals(demo_mode=False)
                 raw_bundles.append((adapter, acct_id, bundle))
                 sibling_counts[ad_id] += 1
 
@@ -623,7 +691,6 @@ class LedgerService:
         }
 
         exchanges: list[dict[str, Any]] = []
-        dashboard_warnings: list[dict[str, Any]] = []
         all_open_positions: list[dict[str, Any]] = []
         spot_wallet_balances: list[dict[str, Any]] = []
         spot_holdings: list[dict[str, Any]] = []
@@ -669,7 +736,7 @@ class LedgerService:
             ex_card["warnings"] = w_list
 
             if w_list:
-                sum_en, sum_zh = _summarize_venue_warnings(w_list)
+                sum_en, sum_zh = _summarize_venue_warnings(w_list, adapter.sync_warning_labels)
                 dashboard_warnings.append(
                     {
                         "venue_id": vid,
@@ -757,7 +824,7 @@ class LedgerService:
                 ordinal=1,
             )
             err_w_list = _collect_venue_warnings(err_sc, err_vh, extra_errors=[err_msg])
-            sum_en_err, sum_zh_err = _summarize_venue_warnings(err_w_list)
+            sum_en_err, sum_zh_err = _summarize_venue_warnings(err_w_list, err_adapter.sync_warning_labels)
             dashboard_warnings.append(
                 {
                     "venue_id": err_vid,

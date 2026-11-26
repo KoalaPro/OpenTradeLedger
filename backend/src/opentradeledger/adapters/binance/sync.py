@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from opentradeledger.adapters.balance_validation import require_wallet_cache
 from opentradeledger.adapters.base import VenueSyncOutcome
-from opentradeledger.adapters.binance.client import BinanceApiError
+from opentradeledger.adapters.binance.client import BinanceApiError, valid_spot_balances, valid_wallet_balances
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
@@ -34,6 +35,16 @@ async def sync_binance_venue(
     )
 
     live = await client.fetch_live_overview_bundle()
+    if live.get("_invalid_wallet_fields"):
+        invalid = live["_invalid_wallet_fields"]
+        try:
+            require_wallet_cache(
+                live, scope.get_kv("live_bundle"),
+                {"wallet_balances": valid_wallet_balances, "spot_balances": valid_spot_balances},
+            )
+        except ValueError as exc:
+            path = "/sapi/v1/asset/wallet/balance" if "wallet_balances" in invalid else "/api/v3/account"
+            raise BinanceApiError(200, path, str(exc)) from exc
     acc_mode = str(live.get("account_mode") or "PAPI")
     inc = await client.fetch_um_income(since_sec=since_sec, account_mode=acc_mode)
 

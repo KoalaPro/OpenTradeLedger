@@ -204,13 +204,14 @@ describe('v1.3.1 Public Copy Watcher & Bark Onboarding UX', () => {
       channels: { bark: true }, items: [{
         portfolio_id: '3988776655443322110', nickname: 'Fixture', enabled: true,
         recent_orders: [], inferred_positions: [], trade_stale: true, trade_updated_at_ms: 0,
+        trade_error_zh: '币安公开订单历史请求受限（-1003）',
         uncertain_symbols: ['BTCUSDT'], pending_alert_count: 2,
       }],
     })))
     render(<I18nProvider locale="zh-CN"><CurrencyProvider currency="USDT" fx={DEFAULT_FX}>
       <ExtensionsPage data={emptyDash} enableWatcher enableCopy enableStocks requestedTab="watcher" />
     </CurrencyProvider></I18nProvider>)
-    expect(await screen.findByText(/公开成交数据暂不可用/)).toBeTruthy()
+    expect(await screen.findByText(/币安公开订单历史请求受限（-1003）/)).toBeTruthy()
     expect(screen.getByText(/BTCUSDT.*无法确认净持仓/)).toBeTruthy()
     expect(screen.getByText(/2 条手机提醒待重试/)).toBeTruthy()
     expect(screen.queryByText(/当前空仓观望中/)).toBeNull()

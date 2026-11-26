@@ -302,6 +302,7 @@ class BaseExchangeAdapter(ABC):
     """
 
     meta: AdapterMeta
+    sync_warning_labels: Mapping[str, tuple[str, str]] = {}
 
     @abstractmethod
     def create_client(self, cred: ExchangeCredentialRecord) -> Any:

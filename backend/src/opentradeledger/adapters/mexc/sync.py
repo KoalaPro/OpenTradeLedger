@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from opentradeledger.adapters.balance_validation import require_wallet_cache
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.mexc.client import valid_futures_assets, valid_spot_balances
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
@@ -32,6 +34,11 @@ async def sync_mexc_venue(
     )
 
     live = await client.fetch_live_overview_bundle()
+    if live.get("_invalid_wallet_fields"):
+        require_wallet_cache(
+            live, scope.get_kv("live_bundle"),
+            {"spot_balances": valid_spot_balances, "futures_assets": valid_futures_assets},
+        )
     pos_hist = await client.fetch_history_positions(since_sec=since_sec, max_pages=20 if do_full else 3)
     deals = await client.fetch_order_deals(since_sec=since_sec, max_pages=30 if do_full else 4)
     orders = await client.fetch_history_orders(since_sec=since_sec, max_pages=30 if do_full else 4)

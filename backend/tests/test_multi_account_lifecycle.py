@@ -995,7 +995,7 @@ def test_legacy_137_uidless_active_and_archived_partitions_never_double_count_to
 
 
 def test_legacy_random_secondary_partition_purge_and_reconnect_recovers_trade_journals_and_archive_preserves_timestamps(tmp_path: Path) -> None:
-    """Purging old random-suffix secondary partitions (with or without UID) and reconnecting same UID restores trade notes; keep_data=true never mutates unchanged KV updated_at."""
+    """Recover known-owner notes, retain unattributed originals, and preserve archive timestamps."""
     eth_trade = {
         "orderId": "ord-eth-77",
         "symbol": "ETHUSDT",
@@ -1122,6 +1122,10 @@ def test_legacy_random_secondary_partition_purge_and_reconnect_recovers_trade_jo
     store2.save_journal("bybit__keep9999__bybit_ord-eth-77_1732203600000", ["勿动"], "另一个禁用子号的笔记")
 
     http2 = TestClient(create_app(data_dir=d2, registry=reg, auto_prompt_setup=False, enable_background_sync=False))
+    # A purged random partition carries no lasting proof of its UID. Another
+    # account can return the same exchange order ID and closing millisecond.
+    store2.save_journal("bybit__cafefeed__bybit_ord-eth-77_1732203600000", ["另一个"], "另一个旧账号的同号笔记")
+    before_reconnect = store2.load_journals()
     re_res2 = http2.post(
         "/api/v1/sync",
         json={"candidate_credential": {"venue_id": "bybit", "create_new": True, "label": "重接子号2", "api_key": "k-sub-new", "api_secret": "s3"}},
@@ -1129,8 +1133,9 @@ def test_legacy_random_secondary_partition_purge_and_reconnect_recovers_trade_jo
     assert re_res2.status_code == 200
     det_id2 = re_res2.json()["account_id"]
     rec_tr2 = http2.get(f"/api/v1/dashboard?venue={det_id2}").json()["trades"][0]
-    assert rec_tr2["note"] == "无UID随机分区历史笔记"
-    assert rec_tr2["tags"] == ["孤儿恢复"]
+    assert rec_tr2["note"] == ""
+    assert rec_tr2["tags"] == []
+    assert store2.load_journals() == before_reconnect
     # Disabled sibling `bybit__keep9999`'s journal MUST NOT be stolen!
     all_j2 = store2.load_journals()
     assert all_j2["bybit__keep9999__bybit_ord-eth-77_1732203600000"]["note"] == "另一个禁用子号的笔记"
@@ -1144,7 +1149,7 @@ def test_hyperliquid_batch_subaccount_import_skips_already_connected_wallets_and
 
     master_addr = "0x" + "1" * 40
     sub1_addr = "0x" + "2" * 40
-    sub2_addr = "0x" + "3" * 40
+    sub2_addr = "0x2222" + "3" * 32 + "2222"
 
     def hl_handler(req: httpx.Request) -> httpx.Response:
         body = _json.loads(req.content.decode("utf-8"))
@@ -1157,6 +1162,8 @@ def test_hyperliquid_batch_subaccount_import_skips_already_connected_wallets_and
             return httpx.Response(200, json={"balances": []})
         if tp == "allMids":
             return httpx.Response(200, json={})
+        if tp == "subAccounts":
+            return httpx.Response(200, json=[{"name": name, "subAccountUser": addr} for name, addr in [("One", sub1_addr), ("Two", sub2_addr)]])
         if tp == "userNonFundingLedgerUpdates":
             dep = "1000.0" if usr == master_addr else ("400.0" if usr == sub1_addr else "600.0")
             return httpx.Response(200, json=[{"hash": f"0x{usr[:8]}", "time": 1732100000000, "delta": {"type": "deposit", "usdc": dep}}])
@@ -1183,6 +1190,9 @@ def test_hyperliquid_batch_subaccount_import_skips_already_connected_wallets_and
     ).json()
     assert len(r1["added_subaccounts"]) == 1
     assert "failed_subaccounts" not in r1
+
+    discovered = http.post("/api/v1/exchanges/verify", json={"venue_id": "hyperliquid", "wallet_address": master_addr}).json()["subaccounts"]
+    assert {s["address"]: s["already_connected"] for s in discovered} == {sub1_addr: True, sub2_addr: False}
 
     # Step 2: Later add Sub2 while keeping Sub1 checked -> Sub1 skipped cleanly (NO failed_subaccounts!), only Sub2 added!
     r2 = http.post(
@@ -1278,10 +1288,142 @@ def test_hyperliquid_batch_subaccount_import_skips_already_connected_wallets_and
                 await cw_client.fetch_trade_activity(pid, now_ms=now_ms)
             assert "11012005" in str(exc_info.value)
             _en, zh_msg = humanize_watcher_error(exc_info.value)
-            assert zh_msg == "币安公开订单历史服务繁忙（11012005），请稍后重试（已保留上次调仓快照）"
+            assert zh_msg == "币安公开订单历史服务繁忙（11012005），请稍后重试"
 
             polled = await svc.poll_once(force_trades=True)
             assert len(polled["items"][0]["inferred_positions"]) == 1
             assert polled["items"][0]["trade_stale"] is True
 
     asyncio.run(_run_busy_cw())
+
+
+def _archived_bybit_snapshot(symbol="BTCUSDT", oid="shared", deposit="deposit-A"):
+    return {
+        "venue_id": "bybit",
+        "wallet": {"list": [{"totalEquity": "1100", "totalAvailableBalance": "1100", "coin": []}]},
+        "closed_pnl": [{
+            "orderId": oid, "symbol": symbol, "side": "Sell", "closedSize": "1",
+            "avgEntryPrice": "1000", "avgExitPrice": "1100", "closedPnl": "100",
+            "createdTime": "1732200000000", "updatedTime": "1732203600000",
+        }],
+        "deposits": [{"id": deposit, "coin": "USDT", "amount": "1000", "successAt": "1732100000000"}],
+        "executions": [],
+        "withdrawals": [],
+    }
+
+
+@pytest.mark.parametrize("history", ["empty", "disjoint"])
+def test_uidless_archive_requires_proof_before_a_separate_account_is_added(tmp_path, history):
+    old = _archived_bybit_snapshot()
+    fetched = _archived_bybit_snapshot(oid="other-window", deposit="later-deposit")
+    if history == "empty":
+        fetched.update(closed_pnl=[], deposits=[])
+    store = LedgerStore(tmp_path)
+    store.upsert_plugin_snapshot("bybit", old)
+    original = store.snapshot_venue_partition("bybit")
+    registry = build_default_registry()
+
+    class Client:
+        def __init__(self, cred):
+            self.key = cred.api_key
+
+        async def get_wallet_balance(self, account_type="UNIFIED"):
+            return old["wallet"]
+
+        async def get_api_key_info(self):
+            return {"userID": "770022" if self.key == "other" else "770011", "readOnly": 1}
+
+        async def fetch_full_snapshot(self, **kwargs):
+            return old if self.key == "prove" else fetched
+
+        async def aclose(self):
+            pass
+
+    registry.get("bybit").create_client = Client
+    http = TestClient(create_app(data_dir=tmp_path, registry=registry, auto_prompt_setup=False, enable_background_sync=False))
+    payload = {"venue_id": "bybit", "api_key": "unknown-owner", "api_secret": "fixture", "create_new": True}
+    for path in ("/api/v1/sync", "/api/v1/exchanges"):
+        resp = http.post(path, json={"candidate_credential": payload} if path.endswith("/sync") else payload)
+        assert resp.status_code == 409
+        assert resp.json()["error_code"] == "ARCHIVE_OWNER_UNVERIFIED"
+        assert "重新绑定" in resp.json()["detail_zh"]
+        assert not CredentialVault(tmp_path).list_decrypted()
+        assert store.snapshot_venue_partition("bybit") == original
+        assert http.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 1100
+    http.post("/api/v1/sync", json={"candidate_credential": {**payload, "create_new": False, "account_id": "bybit", "api_key": "prove"}}).raise_for_status()
+    http.post("/api/v1/sync", json={"candidate_credential": {**payload, "api_key": "other"}}).raise_for_status()
+    assert http.get("/api/v1/dashboard").json()["summary"]["total_equity_usd"] == 2200
+
+
+@pytest.mark.parametrize("same_symbol", [True, False])
+def test_read_deduplicated_archive_note_only_on_its_corresponding_trade(tmp_path, same_symbol):
+    store = LedgerStore(tmp_path)
+    active = "bybit__77112233"
+    store.upsert_plugin_snapshot("bybit", _archived_bybit_snapshot())
+    store.upsert_plugin_snapshot(active, _archived_bybit_snapshot("BTCUSDT" if same_symbol else "SOLUSDT"))
+    CredentialVault(tmp_path).upsert(ExchangeCredentialRecord(venue_id=active, adapter_id="bybit", remote_uid="770011", api_key="key", api_secret="fixture"))
+    tid = "bybit_shared_1732203600000"
+    store.save_journal(tid, ["retro"], "Archive owner's BTC note")
+    http = TestClient(create_app(data_dir=tmp_path, auto_prompt_setup=False, enable_background_sync=False))
+    trades = http.get("/api/v1/dashboard").json()["trades"]
+    assert len(trades) == 1
+    assert trades[0]["trade_id"] == f"{active}__{tid}"
+    if same_symbol:
+        assert (trades[0]["note"], trades[0]["tags"]) == ("Archive owner's BTC note", ["retro"])
+        http.put("/api/v1/journal/" + trades[0]["trade_id"], json={"tags": [], "note": ""}).raise_for_status()
+    assert http.get("/api/v1/dashboard").json()["trades"][0]["note"] == ""
+    assert store.load_journals()[tid]["note"] == "Archive owner's BTC note"
+
+
+def test_migrating_legacy_account_prefix_preserves_conflicting_originals(tmp_path):
+    store = LedgerStore(tmp_path)
+    for acct, note in (("bybit__old", "first original"), ("bybit__new", "second original")):
+        store.save_journal(acct + "__raw-tid", ["tag"], note)
+    before = store.load_journals()
+    store.migrate_account_journal_prefix("bybit__old", "bybit__new")
+    assert store.load_journals() == before
+
+
+def test_existing_unattributed_archive_with_separate_window_is_retained_but_excluded_from_total(tmp_path):
+    store = LedgerStore(tmp_path)
+    active_id = "bybit__uid2222"
+    old = _archived_bybit_snapshot()
+    store.upsert_plugin_snapshot("bybit", old)
+    store.venue_scope("bybit").set_kv("account_label", "旧档乙")
+    before = store.snapshot_venue_partition("bybit")
+    store.upsert_plugin_snapshot(active_id, _archived_bybit_snapshot(oid="later", deposit="new"))
+    CredentialVault(tmp_path).upsert(ExchangeCredentialRecord(venue_id=active_id, adapter_id="bybit", api_key="new", api_secret="fixture", remote_uid="770022"))
+    http = TestClient(create_app(data_dir=tmp_path, auto_prompt_setup=False, enable_background_sync=False))
+    dash = http.get("/api/v1/dashboard").json()
+    assert dash["summary"]["total_equity_usd"] == 1100
+    assert any(w["venue_id"] == "bybit" and "旧档乙" in w["summary_zh"] and "重新绑定" in w["summary_zh"] for w in dash["warnings"])
+    assert store.snapshot_venue_partition("bybit") == before
+    # Once the original row has a confirmed, different UID the 2 accounts count independently.
+    store.venue_scope("bybit").set_kv("account_uid", "770011")
+    confirmed = http.get("/api/v1/dashboard").json()
+    assert confirmed["summary"]["total_equity_usd"] == 2200
+    assert not any(w["venue_id"] == "bybit" and "重新绑定" in w["summary_zh"] for w in confirmed["warnings"])
+
+
+@pytest.mark.parametrize("archive_uid", ["770011", "770022"])
+def test_verified_archive_uid_takes_precedence_over_shared_order_history(tmp_path, archive_uid):
+    store = LedgerStore(tmp_path)
+    active = "bybit__77112233"
+    snapshot = _archived_bybit_snapshot()
+    snapshot["deposits"] = []  # The exchange UID supplies independent proof.
+    for aid in ("bybit", active):
+        store.upsert_plugin_snapshot(aid, snapshot)
+    store.venue_scope("bybit").set_kv("account_uid", archive_uid)
+    CredentialVault(tmp_path).upsert(ExchangeCredentialRecord(
+        venue_id=active, adapter_id="bybit", api_key="new", api_secret="fixture", remote_uid="770011",
+    ))
+    store.save_journal("bybit_shared_1732203600000", [], "archived author")
+    http = TestClient(create_app(data_dir=tmp_path, auto_prompt_setup=False, enable_background_sync=False))
+    dash = http.get("/api/v1/dashboard").json()
+    active_trade = next(t for t in dash["trades"] if t["venue_id"] == active)
+    if archive_uid == "770011":
+        assert dash["summary"]["total_equity_usd"] == 1100
+        assert active_trade["note"] == "archived author"
+    else:
+        assert dash["summary"]["total_equity_usd"] == 2200
+        assert active_trade["note"] == ""

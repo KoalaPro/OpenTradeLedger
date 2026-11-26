@@ -68,6 +68,17 @@ def _is_valid_htx_num(val: Any) -> bool:
     return False
 
 
+def htx_swap_equity(row: dict[str, Any]) -> float:
+    for key in ("margin_balance", "margin_available", "margin_static"):
+        if key in row and not _is_valid_htx_num(row[key]):
+            raise HtxApiError("Malformed HTX swap account payload")
+    if "margin_balance" in row:
+        return float(row["margin_balance"])
+    if "margin_static" in row:
+        return float(row["margin_static"])
+    raise HtxApiError("Malformed HTX swap account payload: missing total equity")
+
+
 def _fmt_bj_ms(ms: int) -> str:
     if not ms:
         return ""
@@ -273,14 +284,7 @@ class HtxReadOnlyClient:
         for r in res:
             if not isinstance(r, dict):
                 raise HtxApiError("Malformed HTX swap account payload")
-            has_num = False
-            for k in ("margin_balance", "margin_available", "margin_static"):
-                if k in r:
-                    if not _is_valid_htx_num(r.get(k)):
-                        raise HtxApiError("Malformed HTX swap account payload")
-                    has_num = True
-            if not has_num:
-                raise HtxApiError("Malformed HTX swap account payload")
+            htx_swap_equity(r)
             out.append(r)
         return out
 

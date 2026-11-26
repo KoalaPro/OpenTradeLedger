@@ -73,35 +73,6 @@ export function formatRoleLabel(role: string | undefined, isZh: boolean): string
   return ''
 }
 
-export function isSubaccountAlreadyConnected(
-  subAddress: string,
-  adapter: ExchangeAdapterInfo | undefined,
-): boolean {
-  const cleanAddr = (subAddress || '').trim().toLowerCase()
-  if (!cleanAddr || !adapter) return false
-  const short64 =
-    cleanAddr.length > 10 ? `${cleanAddr.slice(0, 6)}...${cleanAddr.slice(-4)}` : cleanAddr
-  const short44 =
-    cleanAddr.length > 8 ? `${cleanAddr.slice(0, 4)}...${cleanAddr.slice(-4)}` : cleanAddr
-  const accounts = normalizeAdapterAccounts(adapter)
-  for (const acct of accounts) {
-    if (!acct.configured) continue
-    const candidates = [
-      acct.masked_uid,
-      acct.credential?.masked_uid,
-      acct.credential?.masked_api_key,
-    ]
-    for (const cand of candidates) {
-      const norm = (cand || '').trim().toLowerCase()
-      if (!norm) continue
-      if (norm === cleanAddr || norm === short64 || norm === short44) {
-        return true
-      }
-    }
-  }
-  return false
-}
-
 export function resolveAccountWarnings(
   acct: ExchangeAccountInstance,
   dashboardWarnings: DashboardWarningItem[],

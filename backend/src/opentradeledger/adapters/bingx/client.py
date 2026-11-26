@@ -83,15 +83,19 @@ def _validate_bingx_spot_item(row: Any) -> dict[str, Any]:
     asset = row.get("asset")
     if not isinstance(asset, str) or not asset.strip():
         raise BingxApiError("Malformed BingX spot balance payload")
-    has_num = False
-    for key in ("free", "locked", "balance"):
-        if key in row:
-            if not _is_valid_bingx_num(row.get(key)):
-                raise BingxApiError("Malformed BingX spot balance payload")
-            has_num = True
-    if not has_num:
-        raise BingxApiError("Malformed BingX spot balance payload")
+    bingx_spot_quantity(row)
     return row
+
+
+def bingx_spot_quantity(row: dict[str, Any]) -> float:
+    for key in ("free", "locked", "balance"):
+        if key in row and not _is_valid_bingx_num(row[key]):
+            raise BingxApiError("Malformed BingX spot balance payload")
+    if "balance" in row:
+        return float(row["balance"])
+    if "free" in row and "locked" in row:
+        return float(row["free"]) + float(row["locked"])
+    raise BingxApiError("Malformed BingX spot balance payload: missing total or its components")
 
 
 def parse_bingx_ts_ms(raw: Any) -> int:

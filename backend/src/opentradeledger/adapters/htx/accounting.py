@@ -12,7 +12,11 @@ from opentradeledger.adapters.base import (
     VenueLedgerBundle,
     VenueStockBundle,
 )
-from opentradeledger.adapters.htx.client import normalize_htx_closed_trades, normalize_htx_symbol
+from opentradeledger.adapters.htx.client import (
+    htx_swap_equity,
+    normalize_htx_closed_trades,
+    normalize_htx_symbol,
+)
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -84,13 +88,11 @@ def build_htx_venue_ledger(
     for acc in snap.get("swap_accounts") or []:
         if not isinstance(acc, dict):
             continue
-        mb_raw = (
-            acc.get("margin_balance")
-            if acc.get("margin_balance") is not None
-            else (acc.get("margin_static") if acc.get("margin_static") is not None else acc.get("margin_available"))
-        )
-        mb = float(mb_raw or 0.0)
-        av = float(acc.get("margin_available") or acc.get("withdraw_available") or mb)
+        mb = htx_swap_equity(acc)
+        available = acc.get("margin_available")
+        if available is None:
+            available = acc.get("withdraw_available")
+        av = float(available) if available is not None else mb
         fut_equity += mb
         avail_margin += av
         if mb > 0:

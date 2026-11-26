@@ -104,7 +104,14 @@ type OnboardingFailedSubaccount = {
 
 function readStoredOnboardingWarning(): OnboardingFailedSubaccount[] {
   try {
-    const raw = window.sessionStorage.getItem(ONBOARDING_WARNING_STORAGE_KEY)
+    const local = window.localStorage
+    const legacy = window.sessionStorage?.getItem(ONBOARDING_WARNING_STORAGE_KEY)
+    const stored = local?.getItem(ONBOARDING_WARNING_STORAGE_KEY)
+    if (legacy && local) {
+      if (!stored) local.setItem(ONBOARDING_WARNING_STORAGE_KEY, legacy)
+      window.sessionStorage.removeItem(ONBOARDING_WARNING_STORAGE_KEY)
+    }
+    const raw = stored || legacy
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
@@ -124,13 +131,15 @@ function readStoredOnboardingWarning(): OnboardingFailedSubaccount[] {
 
 function writeStoredOnboardingWarning(items: OnboardingFailedSubaccount[]): void {
   try {
+    const storage = window.localStorage ?? window.sessionStorage
     if (items.length > 0) {
-      window.sessionStorage.setItem(ONBOARDING_WARNING_STORAGE_KEY, JSON.stringify(items))
+      storage.setItem(ONBOARDING_WARNING_STORAGE_KEY, JSON.stringify(items))
     } else {
-      window.sessionStorage.removeItem(ONBOARDING_WARNING_STORAGE_KEY)
+      storage.removeItem(ONBOARDING_WARNING_STORAGE_KEY)
+      window.sessionStorage?.removeItem(ONBOARDING_WARNING_STORAGE_KEY)
     }
   } catch {
-    /* sessionStorage may be unavailable in restricted environments */
+    /* Storage may be unavailable in restricted environments. */
   }
 }
 
@@ -180,6 +189,15 @@ export default function App() {
   const updateOnboardingWarning = useCallback((next: OnboardingFailedSubaccount[]) => {
     setOnboardingWarningState(next)
     writeStoredOnboardingWarning(next)
+  }, [])
+  useEffect(() => {
+    const syncWarning = (event: StorageEvent) => {
+      if (event.key === ONBOARDING_WARNING_STORAGE_KEY || event.key === null) {
+        setOnboardingWarningState(readStoredOnboardingWarning())
+      }
+    }
+    window.addEventListener('storage', syncWarning)
+    return () => window.removeEventListener('storage', syncWarning)
   }, [])
   const authGateLocaleRef = useRef<Locale | null>(null)
   const [adapters, setAdapters] = useState<ExchangeAdapterInfo[]>([])
@@ -926,7 +944,6 @@ export default function App() {
                           }
                         }}
                         onUpsertExchange={async (body, onStep) => {
-                          updateOnboardingWarning([])
                           onStep?.('verifying')
                           const verRes = await api.verifyExchange(body)
                           onStep?.('syncing')
@@ -950,7 +967,11 @@ export default function App() {
                                 (isZh ? '交易所同步失败' : 'Exchange sync failed'),
                             )
                           }
-                          if (syncRes.failed_subaccounts && syncRes.failed_subaccounts.length > 0) {
+                          if (body.include_subaccounts?.length) {
+                            const attempted = new Set(body.include_subaccounts.map(sub => sub.address.toLowerCase()))
+                            const remaining = readStoredOnboardingWarning().filter(sub => !attempted.has(sub.address.toLowerCase()))
+                            updateOnboardingWarning([...remaining, ...(syncRes.failed_subaccounts ?? [])])
+                          } else if (syncRes.failed_subaccounts?.length) {
                             updateOnboardingWarning(syncRes.failed_subaccounts)
                           }
                           if (syncRes.auth_status) {

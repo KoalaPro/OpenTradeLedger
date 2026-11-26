@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
+from opentradeledger.adapters.gate.client import is_unopened_gate_copy_probe
 from opentradeledger.core.account_partition import AccountIdentityError
 from opentradeledger.core.store import LedgerStore
 
@@ -321,6 +322,11 @@ def humanize_exchange_error(venue_id: str, raw_err: Any) -> dict[str, str]:
     }
 
 
+def visible_sync_warnings(warnings: list[Any]) -> list[str]:
+    texts = dict.fromkeys(str(w or "").strip() for w in warnings)
+    return [w for w in texts if w and not is_unopened_gate_copy_probe(w)]
+
+
 class VenueHealthTracker:
     """Persists real connection health per exchange in SQLite meta (`venue_health`)."""
 
@@ -439,7 +445,7 @@ class VenueHealthTracker:
         if isinstance(recorded, dict) and recorded.get("status") in {"connected", "error", "unverified"}:
             out = dict(recorded)
             raw_w = out.get("warnings")
-            out["warnings"] = [str(w).strip() for w in raw_w if str(w or "").strip()] if isinstance(raw_w, list) else []
+            out["warnings"] = visible_sync_warnings(raw_w) if isinstance(raw_w, list) else []
             return out
 
         # Backward compatibility: if adaptive sync schedule already recorded a clean sync timestamp

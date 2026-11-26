@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from opentradeledger.adapters.balance_validation import require_wallet_cache
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.easicoin.client import valid_funding_balances, valid_spot_balances
 from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError, account_uid, transfer_record_id, verify_archive_rows
 from opentradeledger.core.venue_primitives import USD_CASH_ASSETS
 
@@ -35,6 +37,11 @@ async def sync_easicoin_venue(
     )
 
     live = await client.fetch_live_overview_bundle()
+    if live.get("_invalid_wallet_fields"):
+        require_wallet_cache(
+            live, scope.get_kv("live_bundle"),
+            {"spot_balances": valid_spot_balances, "funding_balances": valid_funding_balances},
+        )
     uid = account_uid(live.get("userid"))
     if not uid:
         raise EasiCoinIdentityError("ACCOUNT_UID_UNAVAILABLE")
@@ -47,7 +54,9 @@ async def sync_easicoin_venue(
     closed = await client.fetch_closed_pnl(since_sec=since_sec)
     fills = await client.fetch_trade_fills(since_sec=since_sec)
     orders = await client.fetch_orders_history(since_sec=since_sec)
-    transfers = await client.fetch_transfers(since_sec=since_sec, max_windows=13 if do_full else 2)
+    full_transfers = do_full or not scope.get_kv("transfer_history_backfilled_v2")
+    transfer_since = now_s - FULL_BACKFILL_LOOKBACK_SEC if full_transfers else since_sec
+    transfers = await client.fetch_transfers(since_sec=transfer_since, max_windows=13 if full_transfers else 2)
 
     verified_archive_rows = 0
     for stream, rows in (("closed_pnl", closed), ("fills", fills), ("orders", orders), ("transfers", transfers)):
@@ -128,7 +137,9 @@ async def sync_easicoin_venue(
                     live[fk] = prev_live[fk]
 
     scope.set_kv("live_bundle", live)
-    scope.set_kv("backfill_completed", True)
+    transfers_complete = not getattr(client, "_transfer_warnings", None)
+    scope.set_kv("backfill_completed", transfers_complete)
+    scope.set_kv("transfer_history_backfilled_v2", transfers_complete)
 
     px_map: dict[str, float] = {c: 1.0 for c in USD_CASH_ASSETS}
     for tk in live.get("tickers") or []:

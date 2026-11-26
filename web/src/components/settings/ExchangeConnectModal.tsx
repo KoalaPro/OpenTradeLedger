@@ -8,7 +8,6 @@ import { api, ApiError, type ExchangeUpsertPayload } from '../../lib/api'
 import type { DiscoveredSubaccount, ExchangeAdapterInfo } from '../../lib/types'
 import {
   EVM_ADDR_RE,
-  isSubaccountAlreadyConnected,
   renderMaskedErrorText,
 } from './settingsHelpers'
 
@@ -137,7 +136,7 @@ export function ExchangeConnectModal({
       setDiscoveredSubs(subs)
       const nextChecked: Record<string, boolean> = {}
       for (const s of subs) {
-        nextChecked[s.address] = !isSubaccountAlreadyConnected(s.address, selectedAdapter)
+        nextChecked[s.address] = !s.already_connected
       }
       setSelectedSubs(nextChecked)
       setSubsProbedOnce(true)
@@ -510,10 +509,7 @@ export function ExchangeConnectModal({
                     </div>
                     <div className="space-y-1.5">
                       {discoveredSubs.map(sub => {
-                        const alreadyConnected = isSubaccountAlreadyConnected(
-                          sub.address,
-                          selectedAdapter,
-                        )
+                        const alreadyConnected = sub.already_connected
                         const checked = Boolean(selectedSubs[sub.address])
                         const shortAddr = `${sub.address.slice(0, 6)}...${sub.address.slice(-4)}`
                         return (

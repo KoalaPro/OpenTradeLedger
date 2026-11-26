@@ -6,6 +6,8 @@ Classic USD-M Futures (`https://fapi.binance.com`) accounts, plus Spot/SAPI read
 
 from __future__ import annotations
 
+from functools import partial
+
 from datetime import datetime, timezone
 import asyncio
 import hashlib
@@ -29,6 +31,7 @@ def _parse_utc_str_ms(raw: str) -> int:
 
 import httpx
 
+from opentradeledger.adapters.balance_validation import has_amount, wallet_rows
 from opentradeledger.adapters.compat_creds import BinanceCredentials
 from opentradeledger.adapters.stock_channels import _KNOWN_CRYPTO_EXCLUSIONS, classify_spot_stock_token
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
@@ -43,31 +46,26 @@ SAPI_150D_WINDOW_MS = 150 * 86400 * 1000
 _MISSING = object()
 
 
-def _is_valid_binance_wallet_balances(res: Any) -> bool:
-    if not isinstance(res, list):
-        return False
-    return all(isinstance(w, dict) and ("balance" in w or "walletName" in w) for w in res)
+valid_spot_balances = partial(wallet_rows, names=("asset",), amounts=("free",), optional=("locked",))
+
+def valid_wallet_balances(res: Any) -> bool:
+    return wallet_rows(res, names=("walletName",), amounts=("balance",))
 
 
 def _is_valid_binance_spot_account(res: Any) -> bool:
-    if not isinstance(res, dict) or not isinstance(res.get("balances"), list):
+    if not isinstance(res, dict):
         return False
-    return all(
-        isinstance(b, dict) and ("asset" in b or "free" in b or "locked" in b)
-        for b in res["balances"]
-    )
+    rows = res.get("balances")
+    return valid_spot_balances(rows)
 
 
 def _is_valid_binance_papi_account(res: Any) -> bool:
-    return isinstance(res, dict) and any(
-        k in res for k in ("accountEquity", "actualEquity", "totalAvailableBalance", "uniMMR")
-    )
+    return has_amount(res, "accountEquity", "actualEquity")
 
 
 def _is_valid_binance_fapi_account(res: Any) -> bool:
-    return isinstance(res, dict) and any(
-        k in res for k in ("totalMarginBalance", "totalWalletBalance", "assets")
-    )
+    return has_amount(res, "totalMarginBalance", "totalWalletBalance")
+
 
 _SPOT_FALLBACK_BASES = (
     "https://api.binance.com",
@@ -377,12 +375,14 @@ class BinanceReadOnlyClient:
         self._pagination_warnings = []
         warnings: list[str] = []
         failed_fields: list[str] = []
+        invalid_wallet_fields: list[str] = []
         spot_acc: Any = {}
         try:
             raw_spot = await self.raw_get("/api/v3/account", [("omitZeroBalances", "true")])
             if not _is_valid_binance_spot_account(raw_spot):
                 failed_fields.append("spot_balances")
                 warnings.append("spot_balances: malformed response structure")
+                invalid_wallet_fields.append("spot_balances")
             else:
                 spot_acc = raw_spot
         except Exception as sp_exc:
@@ -404,10 +404,11 @@ class BinanceReadOnlyClient:
         )
         if raw_wallet_bal is _MISSING:
             wallet_bal: list[dict[str, Any]] = []
-        elif not _is_valid_binance_wallet_balances(raw_wallet_bal):
+        elif not valid_wallet_balances(raw_wallet_bal):
             if "wallet_balances" not in failed_fields:
                 failed_fields.append("wallet_balances")
             warnings.append("wallet_balances: malformed response structure")
+            invalid_wallet_fields.append("wallet_balances")
             wallet_bal = []
         else:
             wallet_bal = raw_wallet_bal
@@ -592,6 +593,8 @@ class BinanceReadOnlyClient:
             "futures_open_orders": futures_open_orders,
             "stock_bundle": stock_bundle,
         }
+        if invalid_wallet_fields:
+            out["_invalid_wallet_fields"] = invalid_wallet_fields
         if failed_fields:
             out["_failed_fields"] = failed_fields
         if warnings:
@@ -742,10 +745,10 @@ class BinanceReadOnlyClient:
     ) -> None:
         w_cur = max(0, int(start_ms))
         cursor_param = "fromId" if id_field == "id" else "orderId"
-        while w_cur < end_ms:
+        while w_cur <= end_ms:
             w_end = min(end_ms, w_cur + UM_TRADE_WINDOW_MS)
             page_start = w_cur
-            for _ in range(100):
+            while page_start <= w_end:
                 rows = await self._safe_get(
                     path,
                     [("symbol", sym), ("startTime", page_start), ("endTime", w_end), ("limit", page_limit)],
@@ -788,7 +791,7 @@ class BinanceReadOnlyClient:
                     max_seen_rt = eff_max_t
                     if max_id_int >= 0:
                         cur_from_id = max_id_int + 1
-                        for _ in range(50):
+                        while True:
                             id_rows = await self._safe_get(
                                 path,
                                 [("symbol", sym), (cursor_param, cur_from_id), ("limit", page_limit)],
@@ -844,8 +847,6 @@ class BinanceReadOnlyClient:
                 else:
                     page_start = max_t if (new_in_page > 0 and max_t > page_start) else (eff_max_t + 1)
 
-                if page_start > w_end:
-                    break
             w_cur = w_end + 1
 
     async def fetch_um_trades_for_symbols(

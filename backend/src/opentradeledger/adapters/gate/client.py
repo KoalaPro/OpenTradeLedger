@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.balance_validation import finite_amount, wallet_rows
 from opentradeledger.adapters.compat_creds import GateManualCredentials
 from opentradeledger.adapters.stock_channels import classify_spot_stock_token
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
@@ -26,14 +27,7 @@ _MISSING = object()
 def _is_valid_gate_wallet_total(wt: Any) -> bool:
     if not isinstance(wt, dict) or not isinstance(wt.get("total"), dict):
         return False
-    amt = wt["total"].get("amount")
-    if amt is None or isinstance(amt, bool):
-        return False
-    try:
-        float(amt)
-        return True
-    except (TypeError, ValueError):
-        return False
+    return finite_amount(wt["total"].get("amount"))
 
 
 def _is_valid_gate_unified(u: Any) -> bool:
@@ -49,11 +43,8 @@ def _is_valid_gate_futures_account(f: Any) -> bool:
 
 
 def _is_valid_gate_spot_accounts(s: Any) -> bool:
-    if not isinstance(s, list):
-        return False
-    return all(
-        isinstance(item, dict) and any(k in item for k in ("currency", "available", "locked"))
-        for item in s
+    return wallet_rows(s, names=("currency",), amounts=("available",)) and all(
+        "locked" not in row or finite_amount(row["locked"]) for row in s
     )
 
 
@@ -82,6 +73,16 @@ class GateApiHttpError(RuntimeError):
         self.subpath = subpath
         self.detail = detail
         super().__init__(f"Gate GET {subpath} failed with HTTP {status_code}: {detail}")
+
+
+def is_unopened_gate_copy_probe(warning: str) -> bool:
+    """Recognize the optional feature response, including warnings saved by older releases."""
+    msg = warning.lower().replace('"', "'")
+    return (
+        msg.startswith("copy_trading_probe: gate get /copy_trading/positions failed with http 403:")
+        and "'label': 'forbidden'" in msg
+        and "'message': 'permission not open yet'" in msg
+    )
 
 
 def _is_fatal_gate_error(exc: BaseException) -> bool:
@@ -450,8 +451,11 @@ class GateReadOnlyClient:
             detail = getattr(exc, "detail", None)
             if isinstance(detail, dict):
                 label = str(detail.get("label") or detail.get("message") or "")
+            warning = f"copy_trading_probe: {exc}"
+            if is_unopened_gate_copy_probe(warning):
+                return {"accessible": False, "reason": "permission not open yet", "positions": []}
             if warnings is not None:
-                warnings.append(f"copy_trading_probe: {exc}")
+                warnings.append(warning)
             if failed_fields is not None and "copy_trading_probe" not in failed_fields:
                 failed_fields.append("copy_trading_probe")
             return {
@@ -647,6 +651,7 @@ class GateReadOnlyClient:
         since_sec: Optional[int] = None,
         max_pages: int = 20,
     ) -> list[dict[str, Any]]:
+        self.spot_book_warnings: list[str] = []
         results: list[dict[str, Any]] = []
         if since_sec is not None:
             empty_streak = 0
@@ -656,7 +661,7 @@ class GateReadOnlyClient:
                     rows = await self._safe_get(
                         "/spot/account_book",
                         [("from", w_from), ("to", w_to), ("limit", 100), ("page", page)],
-                        default=[],
+                        default=[], field_name="spot_account_book", warnings=self.spot_book_warnings,
                     )
                     if not isinstance(rows, list) or not rows:
                         break
@@ -664,6 +669,8 @@ class GateReadOnlyClient:
                     window_count += len(rows)
                     if len(rows) < 100:
                         break
+                if self.spot_book_warnings:
+                    break
                 if window_count == 0:
                     empty_streak += 1
                     if empty_streak >= 3:
@@ -671,10 +678,11 @@ class GateReadOnlyClient:
                 else:
                     empty_streak = 0
 
-        if not results:
+        if not results and not self.spot_book_warnings:
             for page in range(1, max_pages + 1):
                 rows = await self._safe_get(
-                    "/spot/account_book", [("limit", 100), ("page", page)], default=[]
+                    "/spot/account_book", [("limit", 100), ("page", page)],
+                    default=[], field_name="spot_account_book", warnings=self.spot_book_warnings,
                 )
                 if not isinstance(rows, list) or not rows:
                     break

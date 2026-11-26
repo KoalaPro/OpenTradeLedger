@@ -10,6 +10,7 @@ from __future__ import annotations
 from decimal import Decimal
 import hashlib
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Mapping
 from uuid import uuid4
 
@@ -174,12 +175,13 @@ class AccountIdentityError(RuntimeError):
             )
         elif code == "ARCHIVE_OWNER_UNVERIFIED":
             self.reason = (
-                f"Legacy local {ex_en} ledger has no verified UID binding and its historical records do not match this credential. "
-                "Do not mix keys from another account; use '+ Add Account' to connect a new account or remove old local data first."
+                f"Ownership of the existing {ex_en} history{lbl_part_en} could not be verified. "
+                "Use the original account's read-only key to sync its connected row, or Rebind its archived row "
+                "with matching history. Once its UID is verified, use Add Account for the other account."
             )
             self.reason_zh = (
-                f"旧本地{ex_zh}账本缺少 UID 归属证明且新密钥历史记录无法匹配，请勿混入其他账户密钥；"
-                "如需接入新账户请使用「+ 添加账号」或先移除旧数据。"
+                f"暂时无法核验{ex_zh}旧账本{lbl_part_zh}的归属。请用原账户只读密钥同步原账号行，"
+                "或在封存行点击「重新绑定」并核对历史流水。原账号确认 UID 后，可用「添加账号」接入另一账户。"
             )
         elif code == "INVALID_WALLET_ADDRESS":
             self.reason = "Invalid EVM wallet address — enter a 42-character 0x... public address (never enter a private key)."
@@ -216,12 +218,14 @@ class AccountScopedStore:
         *,
         merge_history: bool = True,
         merge_specs: Mapping[str, Any] | None = None,
+        validate: Callable[[dict[str, Any]], object] | None = None,
     ) -> dict[str, Any]:
         return self._store.upsert_plugin_snapshot(
             self._resolve_vid(venue_id),
             payload,
             merge_history=merge_history,
             merge_specs=merge_specs,
+            validate=validate,
         )
 
     def snapshot_venue_partition(self, venue_id: str) -> dict[str, list[tuple[Any, ...]]]:

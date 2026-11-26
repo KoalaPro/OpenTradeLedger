@@ -459,7 +459,13 @@ describe('Warnings, Partial Sync Banners, Sub-Account Onboarding & AuthGate Pref
     expect(screen.queryByTestId('onboarding-subaccount-warning-banner')).toBeNull()
   })
 
-  it('7. persists onboarding failed_subaccounts warning across browser refresh (F5) on AuthGate and clears on dismiss or demo switch', async () => {
+  it('retains failed imports when the onboarding tab is closed, and clears them on dismissal', async () => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    })
     let requireSetup = false
     let authenticated = true
     const masterAddr = '0x' + 'a'.repeat(40)
@@ -539,10 +545,11 @@ describe('Warnings, Partial Sync Banners, Sub-Account Onboarding & AuthGate Pref
 
     // AuthGate pops up
     await screen.findByTestId('auth-setup-card')
-    expect(window.sessionStorage.getItem('otl_onboarding_warning_v1')).toContain('SubVaultB')
+    expect(window.localStorage.getItem('otl_onboarding_warning_v1')).toContain('SubVaultB')
 
-    // Simulate browser F5 refresh WHILE still on AuthGate!
+    // Close the onboarding tab. The replacement tab only shares localStorage.
     firstMount.unmount()
+    window.sessionStorage.removeItem('otl_onboarding_warning_v1')
     const secondMount = render(<App />)
     await screen.findByTestId('auth-setup-card')
 
@@ -555,22 +562,22 @@ describe('Warnings, Partial Sync Banners, Sub-Account Onboarding & AuthGate Pref
     // Dismissing removes from sessionStorage so subsequent refresh won't resurrect it
     fireEvent.click(screen.getByTestId('dismiss-onboarding-warning-btn'))
     expect(screen.queryByTestId('onboarding-subaccount-warning-banner')).toBeNull()
-    expect(window.sessionStorage.getItem('otl_onboarding_warning_v1')).toBeNull()
+    expect(window.localStorage.getItem('otl_onboarding_warning_v1')).toBeNull()
     secondMount.unmount()
   })
 
   it('8. distinguishes already-connected Hyperliquid sub-wallets on re-probe and blurs masked UIDs inside conflict error banners', async () => {
     const masterAddr = '0x' + 'a'.repeat(40)
     const connectedSubAddr = '0x' + '1'.repeat(40)
-    const missingSubAddr = '0x' + '2'.repeat(40)
+    const missingSubAddr = '0x1111' + '2'.repeat(32) + '1111'
 
     vi.spyOn(api, 'verifyExchange').mockResolvedValue({
       ok: true,
       verified: true,
       account_id: 'hyperliquid',
       subaccounts: [
-        { name: 'AlreadyInSub', address: connectedSubAddr, equity_usd: '800' },
-        { name: 'MissedSub', address: missingSubAddr, equity_usd: '1500' },
+        { name: 'AlreadyInSub', address: connectedSubAddr, equity_usd: '800', already_connected: true },
+        { name: 'MissedSub', address: missingSubAddr, equity_usd: '1500', already_connected: false },
       ],
     })
 

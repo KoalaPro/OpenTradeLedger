@@ -225,18 +225,6 @@ class SyncManager:
             occupied.add(ad_id)
         return occupied
 
-    def _live_or_archived_account_ids(self, adapter_id: str, adapter: Any) -> set[str]:
-        ad_id = parse_adapter_id(adapter_id)
-        live_ids = {c.venue_id.strip().lower() for c in self.vault.list_for_adapter(ad_id)}
-        if adapter is None:
-            return live_ids
-        for cand_acct in {ad_id, *self.store.list_partition_account_ids(ad_id)}:
-            if cand_acct in live_ids:
-                continue
-            if adapter.has_venue_data(self.store.for_account(cand_acct, ad_id)):
-                live_ids.add(cand_acct)
-        return live_ids
-
     async def backfill_unattributed_sibling_uids(
         self,
         adapter_id: str,
@@ -816,7 +804,7 @@ class SyncManager:
                     require_uid_for_existing_data=bool(uses_probe_uid and is_rotating_existing and has_existing_data),
                 )
 
-                if (uses_probe_uid or uses_sync_uid) and is_secondary_account_id(acct_id):
+                if (uses_probe_uid or uses_sync_uid) and not (existing_cred and prev_bound_uid):
                     active_creds_by_acct = {
                         c.venue_id.strip().lower(): c
                         for c in self.vault.list_decrypted()
@@ -852,24 +840,19 @@ class SyncManager:
                             other_scoped,
                             include_legacy_fallback=not is_secondary_account_id(other_acct),
                         )
-                        if bool(other_fps and fresh_fps and (other_fps & fresh_fps)) or (not other_fps):
-                            other_label = str(
-                                (other_cred.label if other_cred else "")
-                                or other_sc.get_kv("account_label")
-                                or other_acct
-                            ).strip()
-                            err_code = (
-                                "DUPLICATE_ACCOUNT_UID"
-                                if other_cred is not None
-                                else "ARCHIVED_ACCOUNT_UID_EXISTS"
-                            )
-                            raise AccountIdentityError(
-                                err_code,
-                                masked_uid=mask_uid(resolved_uid),
-                                existing_label=other_label,
-                                exchange_name=adapter.meta.display_name,
-                                exchange_name_zh=adapter.meta.display_name_zh,
-                            )
+                        # Missing or disjoint history cannot establish that a second
+                        # credential belongs to a separate exchange account.
+                        err_code = "ARCHIVE_OWNER_UNVERIFIED"
+                        if other_fps & fresh_fps:
+                            err_code = "DUPLICATE_ACCOUNT_UID" if other_cred else "ARCHIVED_ACCOUNT_UID_EXISTS"
+                        raise AccountIdentityError(
+                            err_code,
+                            masked_uid=mask_uid(resolved_uid),
+                            existing_label=(other_cred.label if other_cred else "")
+                            or str(other_sc.get_kv("account_label") or other_acct),
+                            exchange_name=adapter.meta.display_name,
+                            exchange_name_zh=adapter.meta.display_name_zh,
+                        )
 
                 if raw_scope.get_kv("duplicate_uid_conflict"):
                     raw_scope.set_kv("duplicate_uid_conflict", False)
@@ -930,24 +913,6 @@ class SyncManager:
                 if probed.get("subaccounts"):
                     result["subaccounts"] = probed["subaccounts"]
                 result["credential"] = self.vault.upsert(updated_cred)
-                if is_secondary_account_id(acct_id):
-                    try:
-                        live_or_arch = self._live_or_archived_account_ids(adapter_id, adapter) | {acct_id}
-                        tmp_bundle = adapter.build_venue_ledger(scoped_store, journals={}, now_s=float(now_s))
-                        raw_tids = {
-                            str(tr.get("trade_id") or "")
-                            for tr in (tmp_bundle.trades if tmp_bundle is not None else ())
-                            if tr.get("trade_id")
-                        }
-                        if raw_tids:
-                            self.store.claim_orphan_secondary_journals(
-                                adapter_id,
-                                acct_id,
-                                live_or_arch,
-                                raw_tids,
-                            )
-                    except Exception as claim_exc:
-                        logger.debug("Optional orphan secondary journal claim skipped for %s: %s", acct_id, claim_exc)
                 self.ledger_service.last_sync_ms = now_ms
                 return result
             except EasiCoinIdentityError:

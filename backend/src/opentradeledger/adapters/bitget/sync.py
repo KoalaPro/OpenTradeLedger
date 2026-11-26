@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from opentradeledger.adapters.balance_validation import require_wallet_cache
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.bitget.accounting import bitget_uta_equity
+from opentradeledger.adapters.bitget.client import valid_funding_assets
 
 if TYPE_CHECKING:
     from opentradeledger.core.store import LedgerStore
@@ -32,6 +35,11 @@ async def sync_bitget_venue(
     )
 
     live = await client.fetch_live_overview_bundle()
+    if live.get("_invalid_wallet_fields"):
+        require_wallet_cache(
+            live, scope.get_kv("live_bundle"),
+            {"funding_assets": valid_funding_assets},
+        )
     bg_mode = str(live.get("account_mode") or "UTA")
 
     pos_hist = await client.fetch_history_positions(since_sec=since_sec, account_mode=bg_mode)
@@ -90,19 +98,7 @@ async def sync_bitget_venue(
 
     scope.set_kv("backfill_completed", True)
 
-    eq_val = 0.0
-    uta_obj = live.get("uta_assets")
-    if isinstance(uta_obj, dict):
-        eq_val = float(uta_obj.get("accountEquity") or uta_obj.get("usdtEquity") or 0.0)
-    elif isinstance(uta_obj, list):
-        for ua_item in uta_obj:
-            if isinstance(ua_item, dict):
-                eq_val += float(
-                    ua_item.get("accountEquity")
-                    or ua_item.get("usdtEquity")
-                    or ua_item.get("equity")
-                    or 0.0
-                )
+    eq_val = float(bitget_uta_equity(live.get("uta_assets")))
     for fa_item in live.get("funding_assets") or []:
         c_fa = str(fa_item.get("coin") or "").upper()
         q_fa = float(fa_item.get("balance") or fa_item.get("available") or 0.0) + float(

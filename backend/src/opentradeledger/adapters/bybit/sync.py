@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from opentradeledger.adapters.balance_validation import require_wallet_cache
 from opentradeledger.adapters.base import VenueSyncOutcome
+from opentradeledger.adapters.bybit.client import valid_funding_balance, validate_snapshot_funding
 from opentradeledger.core.venue_primitives import STABLECOINS
 
 if TYPE_CHECKING:
@@ -20,13 +22,22 @@ BYBIT_MERGE_SPECS = {
 }
 
 
+def _activity_counts(snap: dict[str, Any]) -> tuple[int, int, int]:
+    return (
+        sum(1 for row in snap.get("positions") or [] if float(row.get("size") or 0.0) != 0),
+        len(snap.get("closed_pnl") or []),
+        len(snap.get("executions") or []),
+    )
+
+
 def extract_bybit_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, tuple[int, ...]]:
     tickers = snap.get("tickers") if isinstance(snap.get("tickers"), dict) else {}
     equity_usd = 0.0
     wallet = snap.get("wallet") or {}
     for acct in wallet.get("list") or []:
         equity_usd += float(acct.get("totalEquity") or 0.0)
-    funding = snap.get("funding") or {}
+    validate_snapshot_funding(snap)
+    funding = snap.get("funding", {})
     for coin in funding.get("balance") or []:
         explicit_u = float(coin.get("usdValue") or 0.0)
         if explicit_u > 0:
@@ -43,10 +54,8 @@ def extract_bybit_snapshot_activity(snap: dict[str, Any]) -> tuple[float, bool, 
                 equity_usd += amt * float(tickers.get(ccy) or 0.0)
             except (TypeError, ValueError):
                 pass
-    open_count = sum(1 for p in (snap.get("positions") or []) if abs(float(p.get("size") or 0.0)) > 0)
-    fills_count = len(snap.get("executions") or [])
-    closed_count = len(snap.get("closed_pnl") or [])
-    return round(equity_usd, 4), open_count > 0, (open_count, closed_count, fills_count)
+    counts = _activity_counts(snap)
+    return round(equity_usd, 4), counts[0] > 0, counts
 
 
 async def sync_bybit_venue(
@@ -57,14 +66,26 @@ async def sync_bybit_venue(
     force_full: bool = False,
 ) -> VenueSyncOutcome:
     existing_snap = store.venue_scope("bybit").get_kv("snapshot") or {}
-    _, _, fp_before = extract_bybit_snapshot_activity(existing_snap) if existing_snap else (0.0, False, ())
+    # An older release could store an invalid wallet amount. Only history counts
+    # are needed here; a healthy response must always be able to replace that wallet.
+    fp_before = _activity_counts(existing_snap) if existing_snap else ()
     last_sync_ms = int(existing_snap.get("_last_sync_ms") or 0)
-    since_ms = max(0, last_sync_ms - 2 * 86_400_000) if (last_sync_ms > 0 and not force_full) else 0
+    history_backfilled = bool(existing_snap.get("_closed_pnl_backfilled_v2"))
+    since_ms = max(0, last_sync_ms - 2 * 86_400_000) if history_backfilled and not force_full else 0
     try:
         raw_snap = await client.fetch_full_snapshot(since_ms=since_ms)
     except TypeError:
         raw_snap = await client.fetch_full_snapshot()
-    snap = store.upsert_plugin_snapshot("bybit", raw_snap, merge_specs=BYBIT_MERGE_SPECS)
+    if raw_snap.get("_invalid_wallet_fields"):
+        require_wallet_cache(
+            raw_snap, existing_snap,
+            {"funding": valid_funding_balance},
+        )
+    # Older releases stopped after empty weeks and still recorded a successful sync.
+    raw_snap["_closed_pnl_backfilled_v2"] = "closed_pnl" not in (raw_snap.get("_failed_fields") or [])
+    snap = store.upsert_plugin_snapshot(
+        "bybit", raw_snap, merge_specs=BYBIT_MERGE_SPECS, validate=extract_bybit_snapshot_activity,
+    )
     eq_usd, has_open, fp_after = extract_bybit_snapshot_activity(snap)
     new_closed = 0
     if len(fp_before) >= 2 and sum(fp_before) > 0 and len(fp_after) >= 2:

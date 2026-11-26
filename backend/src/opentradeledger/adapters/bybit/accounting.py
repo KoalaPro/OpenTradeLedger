@@ -13,6 +13,7 @@ from opentradeledger.adapters.base import (
     VenueStockBundle,
 )
 from opentradeledger.adapters.bybit.client import normalize_bybit_closed_trades
+from opentradeledger.adapters.bybit.client import validate_snapshot_funding
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -54,6 +55,7 @@ def build_bybit_venue_ledger(
     if not isinstance(snap, dict):
         return None
 
+    validate_snapshot_funding(snap)
     px_map = {**(global_spot_prices or {}), **extract_bybit_spot_prices(store)}
 
     def _coin_usd(ccy_raw: str, amt: float) -> float:

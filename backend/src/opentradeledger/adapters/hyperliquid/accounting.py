@@ -118,7 +118,10 @@ def build_hyperliquid_venue_ledger(
     ch = snap.get("clearinghouse") if isinstance(snap.get("clearinghouse"), dict) else {}
     ms = ch.get("marginSummary") if isinstance(ch.get("marginSummary"), dict) else {}
     perp_equity_usd = float(ms.get("accountValue") or 0.0)
-    withdrawable_usd = float(ch.get("withdrawable") or ms.get("withdrawable") or perp_equity_usd)
+    withdrawable = ch.get("withdrawable")
+    if withdrawable is None:
+        withdrawable = ms.get("withdrawable")
+    withdrawable_usd = float(withdrawable) if withdrawable is not None else perp_equity_usd
 
     raw_spot_rows: list[tuple[str, float, float, str]] = []
     wallet_spot_prices: dict[str, float] = {}
