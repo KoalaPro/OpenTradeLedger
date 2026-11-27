@@ -16,13 +16,15 @@ import { useI18n } from '../i18n'
 import { fmtSyncTime } from '../lib/format'
 import type { NavPage, VersionCheckPayload } from '../lib/types'
 
+export type ManualSyncResult = 'synced' | 'failed' | 'no_accounts' | 'demo'
+
 interface SidebarProps {
   page: NavPage
   onNavigate: (next: NavPage) => void
   showExtensions: boolean
   lastSyncMs: number
   manualSyncing: boolean
-  syncFailed?: boolean
+  syncResult?: ManualSyncResult
   syncPartialWarning?: boolean
   syncWarningTitle?: string
   onSync: () => void
@@ -37,7 +39,7 @@ export function Sidebar({
   showExtensions,
   lastSyncMs,
   manualSyncing,
-  syncFailed = false,
+  syncResult,
   syncPartialWarning = false,
   syncWarningTitle = '',
   onSync,
@@ -46,6 +48,7 @@ export function Sidebar({
   versionStatus,
 }: SidebarProps) {
   const { locale, t } = useI18n()
+  const syncFailed = syncResult === 'failed'
   const asideRef = useRef<HTMLElement | null>(null)
   const navRef = useRef<HTMLElement | null>(null)
   const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({})
@@ -279,12 +282,17 @@ export function Sidebar({
             type="button"
             data-testid="sync-now-btn"
             title={syncWarningTitle || undefined}
+            aria-live="polite"
             disabled={manualSyncing}
             onClick={onSync}
             className="otl-btn flex-1"
           >
-            {justSynced && !manualSyncing ? (
-              syncFailed ? (
+            {justSynced && !manualSyncing && syncResult ? (
+              syncResult === 'no_accounts' ? (
+                <span>{locale === 'en' ? 'No accounts to sync' : '没有可同步的账户'}</span>
+              ) : syncResult === 'demo' ? (
+                <span>{locale === 'en' ? 'Demo data' : '演示数据'}</span>
+              ) : syncFailed ? (
                 <>
                   <AlertTriangle size={13} style={{ color: 'var(--warn)' }} />
                   <span style={{ color: 'var(--warn)' }}>

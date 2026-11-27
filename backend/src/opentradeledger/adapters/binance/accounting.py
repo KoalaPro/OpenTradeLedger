@@ -15,6 +15,7 @@ from opentradeledger.adapters.base import (
     VenueLedgerBundle,
     VenueStockBundle,
 )
+from opentradeledger.adapters.binance.client import binance_stock_catalog
 from opentradeledger.adapters.stock_channels import (
     US_EQUITY_TICKERS,
     classify_spot_stock_token,
@@ -1093,17 +1094,7 @@ def _build_binance_stock_section(
     """Return `(VenueStockBundle, bn_spot_stk_val, bn_iso_stk_eq, bn_stock_net_usd)`."""
     bn_sb = bn_lb.get("stock_bundle") or {}
     bn_tickers = bn_lb.get("spot_tickers") or {}
-    bn_dyn_cat: dict[str, dict[str, Any]] = {}
-    for ta in bn_sb.get("tokenized_assets") or []:
-        if isinstance(ta, Mapping):
-            a_sym = str(ta.get("asset") or ta.get("tokenSymbol") or ta.get("symbol") or "").strip().upper()
-            u_sym = str(ta.get("underlying") or ta.get("underlyingSymbol") or "").strip().upper()
-            if a_sym:
-                bn_dyn_cat[a_sym] = {
-                    "underlying": u_sym or a_sym.rstrip("B"),
-                    "name": str(ta.get("name") or US_EQUITY_TICKERS.get(u_sym, u_sym or a_sym)),
-                    "series": "币安 bStock",
-                }
+    bn_dyn_cat = binance_stock_catalog(bn_sb.get("tokenized_assets") or [])
 
     holdings: list[dict[str, Any]] = []
     spot_stk_val = Decimal("0")

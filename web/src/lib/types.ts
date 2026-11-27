@@ -6,6 +6,8 @@ export type NavPage = 'overview' | 'trades' | 'analytics' | 'fees' | 'extensions
 export type ExtensionSubTab = 'watcher' | 'copy' | 'stock'
 
 export interface AuthStatusPayload {
+  account_revision?: string
+  last_sync_ms?: number
   explicit_demo_mode?: boolean
   demo_bypass?: boolean
   initialized?: boolean
@@ -236,7 +238,18 @@ export interface VenueFeeRow {
   potential_maker_savings_usd: number
 }
 
+export interface SpotMarket {
+  pair?: string
+  quote_asset?: string
+  price?: number
+  volume_24h_quote?: number | null
+  source?: string | null
+  liquidity: 'zero_volume' | 'holding_exceeds_volume' | 'unflagged' | 'unknown'
+}
+
 export interface SpotHolding {
+  spot_token_index?: number
+  spot_market?: SpotMarket
   venue_id: string
   venue_name: string
   color_token: string
@@ -469,6 +482,8 @@ export interface DashboardData {
         summary_zh?: string
       }>
       holdings: Array<{
+        spot_token_index?: number
+        spot_market?: SpotMarket
         venue_id: string
         venue_name: string
         venue_name_zh?: string

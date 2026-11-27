@@ -715,6 +715,15 @@ class SyncManager:
                             except Exception:
                                 pass
 
+                if not results:
+                    return {
+                        "ok": False,
+                        "status": "no_accounts",
+                        "synced_ms": int(self.store.get_meta("last_sync_ms", 0) or 0),
+                        "venues": {},
+                        "schedule": self.get_schedule_summary(),
+                    }
+
                 self._save_schedule(schedule)
                 if any_synced:
                     now_ms = int(time.time() * 1000)

@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from opentradeledger.api.app import create_app
 from opentradeledger.core.store import LedgerStore
+from opentradeledger.security.vault import CredentialVault, ExchangeCredentialRecord
 
 
 def test_public_health_omits_account_state_even_while_demo_is_selected(tmp_path, monkeypatch):
@@ -106,3 +107,61 @@ def test_existing_trade_notes_keep_their_original_mode_on_upgrade(tmp_path):
     store.save_journal("demo_okx_BTC_USDT_1", [], "revised", demo_mode=True)
     restarted = LedgerStore(tmp_path)
     assert restarted.load_journals(demo_mode=True)["demo_okx_BTC_USDT_1"]["note"] == "revised"
+
+
+def test_turning_off_explicit_demo_opens_empty_live_ledger_even_after_restart(tmp_path):
+    def open_client():
+        return TestClient(create_app(data_dir=tmp_path, demo_mode=True, auto_prompt_setup=False,
+                                     enable_background_sync=False))
+
+    client = open_client()
+    demo = client.get("/api/v1/dashboard").json()
+    assert demo["demo_mode"] and demo["summary"]["total_equity_usd"] > 0 and demo["trades"]
+    client.post("/api/v1/demo", json={"enabled": False}).raise_for_status()
+    for live_client in (client, open_client()):
+        dash = live_client.get("/api/v1/dashboard").json()
+        assert dash["demo_mode"] is False
+        assert dash["has_live_data"] is False
+        assert dash["summary"]["total_equity_usd"] == 0
+        assert dash["exchanges"] == dash["trades"] == dash["open_positions"] == []
+        assert dash["last_sync_ms"] == 0
+    client.post("/api/v1/demo", json={"enabled": True}).raise_for_status()
+    assert client.get("/api/v1/dashboard").json()["demo_mode"] is True
+
+
+def test_manual_sync_without_enabled_accounts_reports_no_accounts_and_keeps_sync_time(tmp_path):
+    client = TestClient(create_app(data_dir=tmp_path, auto_prompt_setup=False,
+                                   enable_background_sync=False))
+    store = LedgerStore(tmp_path)
+    for archived in (False, True):
+        prior_sync = 1234 if archived else 0
+        if archived:
+            store.set_meta("last_sync_ms", prior_sync)
+            store.upsert_plugin_snapshot("okx", {"balances": [{"totalEq": "1050", "details": []}]})
+        sync = client.post("/api/v1/sync", json={"force_all": True}).json()
+        assert sync["ok"] is False and sync["status"] == "no_accounts"
+        assert sync["venues"] == {}
+        assert sync["synced_ms"] == prior_sync
+        dash = client.get("/api/v1/dashboard").json()
+        assert dash["last_sync_ms"] == prior_sync
+        assert dash["has_live_data"] is archived
+        if archived:
+            assert dash["summary"]["total_equity_usd"] == 1050
+            assert dash["exchanges"][0]["health_status"] == "archived"
+
+
+def test_configured_account_without_snapshot_and_zero_balance_are_not_first_accounts(tmp_path):
+    vault = CredentialVault(tmp_path)
+    vault.upsert(ExchangeCredentialRecord(venue_id="okx", api_key="test", api_secret="test"))
+    store = LedgerStore(tmp_path)
+    client = TestClient(create_app(data_dir=tmp_path, auto_prompt_setup=False,
+                                   enable_background_sync=False))
+    store.set_meta("venue_health", {"okx": {"status": "error"}})
+    unverified = client.get("/api/v1/dashboard").json()
+    assert unverified["demo_mode"] is False and unverified["has_live_data"] is True
+    assert unverified["exchanges"] == []
+    store.upsert_plugin_snapshot("okx", {"balances": [{"totalEq": "0", "details": []}]})
+    store.set_meta("venue_health", {"okx": {"status": "connected"}})
+    zero = client.get("/api/v1/dashboard").json()
+    assert zero["has_live_data"] is True and zero["summary"]["total_equity_usd"] == 0
+    assert zero["exchanges"][0]["connected"] is True

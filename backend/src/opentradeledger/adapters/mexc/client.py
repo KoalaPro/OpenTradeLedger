@@ -452,8 +452,12 @@ class MexcReadOnlyClient:
                     for sym_item in ex_info.get("symbols") or []:
                         if not isinstance(sym_item, Mapping):
                             continue
-                        plates = [str(p).lower() for p in (sym_item.get("conceptPlates") or [])]
-                        if any("stock" in p or "股票" in p for p in plates):
+                        pair = str(sym_item.get("symbol") or "").strip().upper()
+                        base = str(sym_item.get("baseAsset") or "").strip().upper()
+                        if pair != f"{coin_u}USDT" or base != coin_u:
+                            continue
+                        plates = {str(p).strip().lower() for p in (sym_item.get("conceptPlates") or [])}
+                        if plates & {"tokenized stocks", "stock tokens", "xstocks", "股票代币", "代币化股票"}:
                             if not spot_stock_fee_rate and (
                                 sym_item.get("makerCommission") is not None
                                 or sym_item.get("takerCommission") is not None
@@ -463,10 +467,10 @@ class MexcReadOnlyClient:
                                     "takerCommission": str(sym_item.get("takerCommission") or "0"),
                                 }
                             if coin_u in candidates:
-                                und = coin_u[:-2] if coin_u.endswith("ON") else (coin_u[:-1] if coin_u.endswith("X") else coin_u)
                                 tokenized_catalog[coin_u] = {
-                                    "underlying": und,
-                                    "name": str(sym_item.get("fullName") or und),
+                                    "spot_pair": pair,
+                                    "underlying": str(sym_item.get("underlyingSymbol") or ""),
+                                    "name": str(sym_item.get("fullName") or ""),
                                     "series": "MEXC 美股代币",
                                 }
             except Exception as exc:

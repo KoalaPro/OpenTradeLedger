@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { AlertTriangle, X } from 'lucide-react'
 import { AnimatedCollapse } from './components/AnimatedCollapse'
 import { AuthGate } from './components/AuthGate'
-import { Sidebar } from './components/Sidebar'
+import { Sidebar, type ManualSyncResult } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { TradeDrilldownDrawer } from './components/TradeDrilldownDrawer'
 import { I18nProvider } from './i18n'
@@ -12,6 +12,7 @@ import { useLedgerSession } from './lib/ledgerSession'
 import { CurrencyProvider, DEFAULT_FX } from './lib/currency'
 import { attachVelvetRippleListener } from './lib/velvetRipple'
 import type {
+  AuthStatusPayload,
   CurrencyCode,
   DashboardData,
   ExchangeAdapterInfo,
@@ -172,6 +173,9 @@ export default function App() {
   const currencyRequest = useRef(0)
   const [pendingCurrency, setPendingCurrency] = useState<CurrencyCode | null>(null)
   const bootstrappedRef = useRef(false)
+  const observedLedger = useRef<{ accounts?: string; sync?: number } | null>(null)
+  const bootstrapRequest = useRef(0)
+  const lastRefreshCheck = useRef<AuthStatusPayload | null>(null)
   const [rangeKey, setRangeKey] = useState('all')
   const [venueFilter, setVenueFilter] = useState('ALL')
   const [symbolFilter, setSymbolFilter] = useState('ALL')
@@ -205,10 +209,11 @@ export default function App() {
   const [fx, setFx] = useState<FxRatesPayload>(DEFAULT_FX)
   const [versionStatus, setVersionStatus] = useState<VersionCheckPayload | null>(null)
   const [manualSyncing, setManualSyncing] = useState(false)
-  const [lastSyncHadError, setLastSyncHadError] = useState(false)
+  const [lastSyncResult, setLastSyncResult] = useState<ManualSyncResult>()
   const [generatingAi, setGeneratingAi] = useState(false)
   const [error, setError] = useState('')
   const [dashboardError, setDashboardError] = useState('')
+  const [bootstrapError, setBootstrapError] = useState('')
   const [drilldown, setDrilldown] = useState<{ venueId: string; venueName?: string; symbol: string; rangeKey?: string } | null>(null)
   const [drilldownOpen, setDrilldownOpen] = useState(false)
 
@@ -285,6 +290,7 @@ export default function App() {
   const invalidateDashboard = useCallback(() => {
     dashboardRequest.current++
     ledgerEpoch.current++
+    observedLedger.current = null
     bootstrappedRef.current = false
     initializedPrivacyRef.current = false
     pendingSettingsWrites.current = 0
@@ -297,13 +303,14 @@ export default function App() {
     setError('')
     setVenueFilter('ALL')
     setSymbolFilter('ALL')
-    setLastSyncHadError(false)
+    setLastSyncResult(undefined)
     setManualSyncing(false)
     setGeneratingAi(false)
     setDashboardError('')
     setDashboardLoading(false)
     setBootstrapLoading(false)
     setData(null)
+    setBootstrapError('')
     setAppliedScope(null)
     setDrilldown(null)
     setDrilldownOpen(false)
@@ -316,14 +323,14 @@ export default function App() {
   const isAuthLocked = Boolean(authStatus.require_setup || authStatus.authenticated === false)
 
   const loadDashboardOnly = useCallback(async () => {
-    if (!allowed.current) return
+    if (!allowed.current) return false
     const id = ++dashboardRequest.current
     const query = { ...currentQuery.current }
     setDashboardLoading(true)
     setDashboardError('')
     try {
       const dash = await api.getDashboard(query.rangeKey, query.effVenue, query.effSymbol)
-      if (id !== dashboardRequest.current) return
+      if (id !== dashboardRequest.current) return false
       setData(dash)
       setAppliedScope({
         rangeKey: dash.range_key || query.rangeKey,
@@ -331,9 +338,11 @@ export default function App() {
         symbolFilter: normSymbol(dash.symbol_filter ?? query.effSymbol),
       })
       setDashboardError('')
+      return true
     } catch (e) {
-      if (id !== dashboardRequest.current || handlePossibleAuthError(e)) return
+      if (id !== dashboardRequest.current || handlePossibleAuthError(e)) return false
       setDashboardError(e instanceof Error ? e.message : 'Failed to load data')
+      return false
     } finally {
       if (id === dashboardRequest.current) {
         setDashboardLoading(false)
@@ -342,14 +351,15 @@ export default function App() {
   }, [allowed, handlePossibleAuthError])
 
   const loadAll = useCallback(async () => {
-    if (!allowed.current) return
+    if (!allowed.current) return false
     const epoch = ledgerEpoch.current
+    const requestId = ++bootstrapRequest.current
     const revision = settingsRevision.current
     const writing = pendingSettingsWrites.current > 0
     setBootstrapLoading(true)
     try {
-      const [, pref, ex] = await Promise.all([loadDashboardOnly(), api.getSettings(), api.listExchanges()])
-      if (epoch !== ledgerEpoch.current) return
+      const [loaded, pref, ex] = await Promise.all([loadDashboardOnly(), api.getSettings(), api.listExchanges()])
+      if (epoch !== ledgerEpoch.current || requestId !== bootstrapRequest.current) return false
       const pendingAuthLocale = authGateLocaleRef.current
       const effectivePref = pendingAuthLocale ? { ...pref, locale: pendingAuthLocale } : pref
       if (pendingAuthLocale) {
@@ -363,14 +373,17 @@ export default function App() {
         setPreferencesReady(true)
       }
       applyExchangeList(ex)
+      setBootstrapError('')
+      return loaded
     } catch (e) {
-      if (epoch !== ledgerEpoch.current || handlePossibleAuthError(e)) return
+      if (epoch !== ledgerEpoch.current || requestId !== bootstrapRequest.current || handlePossibleAuthError(e)) return false
       if (!initializedPrivacyRef.current) {
         bootstrappedRef.current = false
       }
-      setError(e instanceof Error ? e.message : 'Failed to load settings')
+      setBootstrapError(e instanceof Error ? e.message : 'Failed to load settings')
+      return false
     } finally {
-      if (epoch === ledgerEpoch.current) {
+      if (epoch === ledgerEpoch.current && requestId === bootstrapRequest.current) {
         setBootstrapLoading(false)
       }
     }
@@ -388,6 +401,25 @@ export default function App() {
     }
     void loadDashboardOnly()
   }, [authChecked, isAuthLocked, generation, rangeKey, effVenue, effSymbol, loadAll, loadDashboardOnly])
+
+  const { account_revision: accounts, last_sync_ms: sync } = authStatus
+  useEffect(() => {
+    if (!authChecked || isAuthLocked) return
+    const previous = observedLedger.current
+    if (!previous) {
+      observedLedger.current = { accounts, sync }
+      return
+    }
+    // A busy NAS can complete several syncs during a single dashboard read.
+    // Consume only the newest revision once the current request has settled.
+    if (bootstrapLoading || dashboardLoading || lastRefreshCheck.current === authStatus) return
+    if (previous.accounts === accounts && previous.sync === sync) return
+    lastRefreshCheck.current = authStatus
+    const read = previous.accounts !== accounts ? loadAll : loadDashboardOnly
+    void read().then(loaded => {
+      if (loaded && observedLedger.current === previous) observedLedger.current = { accounts, sync }
+    })
+  }, [authStatus, authChecked, isAuthLocked, accounts, sync, bootstrapLoading, dashboardLoading, loadAll, loadDashboardOnly])
 
   useEffect(() => {
     if (!authChecked || isAuthLocked) return
@@ -459,7 +491,7 @@ export default function App() {
       if (epoch !== ledgerEpoch.current) return
       const failedEntries = Object.entries(syncRes.venues || {}).filter(([, v]) => !v.ok)
       if (failedEntries.length > 0) {
-        setLastSyncHadError(true)
+        setLastSyncResult('failed')
         const isZh = settings.locale === 'zh-CN'
         const details = failedEntries
           .map(([vid, v]) => `${vid.toUpperCase()}: ${(isZh ? v.error_zh : v.error) || v.error || 'Error'}`)
@@ -469,12 +501,16 @@ export default function App() {
             ? `部分交易所同步异常 — ${details}`
             : `Exchange sync errors — ${details}`,
         )
+      } else if (syncRes.demo_mode) {
+        setLastSyncResult('demo')
+      } else if (syncRes.status === 'no_accounts' || !Object.keys(syncRes.venues ?? {}).length) {
+        setLastSyncResult('no_accounts')
       } else {
-        setLastSyncHadError(false)
+        setLastSyncResult('synced')
       }
     } catch (e) {
       if (epoch !== ledgerEpoch.current) return
-      setLastSyncHadError(true)
+      setLastSyncResult('failed')
       if (handlePossibleAuthError(e)) return
       setError(e instanceof Error ? e.message : 'Sync failed')
     } finally {
@@ -582,7 +618,7 @@ export default function App() {
     setDrilldownOpen(false)
   }, [data?.demo_mode])
 
-  const visibleError = error || dashboardError
+  const visibleError = error || dashboardError || bootstrapError
   const activeCurrency: CurrencyCode = pendingCurrency || settings.display_currency || 'USDT'
   const activeWarnings = useMemo(() => collectActiveWarnings(data, adapters), [data, adapters])
   const warningSummaryTitle = useMemo(
@@ -596,6 +632,10 @@ export default function App() {
         .join(' | '),
     [activeWarnings, settings.locale],
   )
+
+  const needsFirstAccount = !data?.demo_mode && data?.has_live_data === false
+  const needsAccountSnapshot = data && !data.demo_mode && data.exchanges.length === 0 &&
+    activeWarnings.length === 0 && adapters.some(adapter => adapter.configured)
 
   const isFilterScopeMismatch = Boolean(
     page !== 'settings' &&
@@ -612,7 +652,7 @@ export default function App() {
   )
 
   const isScopeMismatch = isFilterScopeMismatch || isRangeScopeMismatch
-  const scopeFailureMsg = dashboardError || (!preferencesReady ? error : '')
+  const scopeFailureMsg = dashboardError || (!preferencesReady ? bootstrapError || error : '')
 
   const isLoadingAny = dashboardLoading || bootstrapLoading
   const isWaitingForScope = Boolean(
@@ -623,6 +663,7 @@ export default function App() {
 
   const handleRetryDashboard = useCallback(() => {
     setError('')
+    setBootstrapError('')
     setDashboardError('')
     if (!preferencesReady || !data) {
       bootstrappedRef.current = true
@@ -709,7 +750,7 @@ export default function App() {
               showExtensions={enabledTabs.length > 0}
               lastSyncMs={data?.last_sync_ms ?? 0}
               manualSyncing={manualSyncing}
-              syncFailed={lastSyncHadError}
+              syncResult={lastSyncResult}
               syncPartialWarning={!data?.demo_mode && activeWarnings.length > 0}
               syncWarningTitle={warningSummaryTitle}
               onSync={() => void handleSync()}
@@ -722,7 +763,7 @@ export default function App() {
               <TopBar
                 page={page}
                 demoMode={Boolean(data?.demo_mode)}
-                reconciledZero={Boolean(data && Math.abs(data.reconciliation.residual_usd) < 0.01)}
+                reconciledZero={Boolean(data && !needsFirstAccount && !needsAccountSnapshot && Math.abs(data.reconciliation.residual_usd) < 0.01)}
                 theme={settings.theme}
                 onChangeTheme={next => void handleUpdateSettings({ theme: next })}
                 polarity={settings.polarity}
@@ -845,7 +886,25 @@ export default function App() {
                     hidden={page !== 'trades' && isRangeScopeMismatch}
                     className="otl-page-enter"
                   >
-                    {page === 'overview' && data && (
+                    {page === 'overview' && (needsFirstAccount || needsAccountSnapshot) && (
+                      <section className="py-16 px-5 text-center space-y-4">
+                        <h2 className="t-h2">
+                          {needsFirstAccount
+                            ? (settings.locale === 'en' ? 'No exchange connected yet' : '尚未连接交易所')
+                            : (settings.locale === 'en' ? 'Waiting for account data' : '尚未获取账户数据')}
+                        </h2>
+                        <button
+                          type="button"
+                          className="otl-btn otl-btn-primary"
+                          onClick={() => navigateTo('settings')}
+                        >
+                          {needsFirstAccount
+                            ? (settings.locale === 'en' ? 'Add your first account' : '添加第一个账户')
+                            : (settings.locale === 'en' ? 'Check account connection' : '检查账户连接')}
+                        </button>
+                      </section>
+                    )}
+                    {page === 'overview' && data && !needsFirstAccount && !needsAccountSnapshot && (
                       <OverviewPage
                         data={data}
                         activeWarnings={activeWarnings}
@@ -923,13 +982,9 @@ export default function App() {
                         adapters={adapters}
                         dashboardWarnings={activeWarnings}
                         demoMode={Boolean(
-                          (data as (DashboardData & { explicit_demo_mode?: boolean }) | null)?.explicit_demo_mode ??
+                          data?.explicit_demo_mode ??
                             authStatus.explicit_demo_mode ??
                             data?.demo_mode,
-                        )}
-                        previewFallback={Boolean(
-                          data?.demo_mode &&
-                            (data as (DashboardData & { explicit_demo_mode?: boolean }) | null)?.explicit_demo_mode === false,
                         )}
                         authStatus={authStatus}
                         onAuthChanged={session.changed}
@@ -997,8 +1052,11 @@ export default function App() {
                             if (isRetry) {
                               const syncRes = await api.triggerSync(vid)
                               const venueRes = syncRes.venues?.[vid]
-                              if (venueRes && !venueRes.ok) {
-                                const isZh = settings.locale === 'zh-CN'
+                              const isZh = settings.locale === 'zh-CN'
+                              if (!venueRes) {
+                                throw new Error(isZh ? '没有可同步的账户' : 'No accounts to sync')
+                              }
+                              if (!venueRes.ok) {
                                 throw new Error(
                                   (isZh ? venueRes.error_zh : venueRes.error) ||
                                     venueRes.error ||

@@ -45,13 +45,8 @@ def valid_funding_assets(res: Any) -> bool:
 
 
 def _is_valid_bitget_spot_assets(res: Any) -> bool:
-    if not isinstance(res, list):
-        return False
-    return all(
-        isinstance(item, dict)
-        and any(k in item for k in ("coin", "available", "frozen", "locked", "usdtBalance"))
-        for item in res
-    )
+    return wallet_rows(res, names=("coin",), amounts=("available",), optional=("frozen", "locked"))
+
 
 _ALLOWED_GET_PATHS = frozenset(
     {
@@ -541,6 +536,7 @@ class BitgetReadOnlyClient:
             "uta_assets": {},
             "funding_assets": [],
             "classic_balances": classic_list,
+            "spot_assets": spot_v2_assets,
             "futures_accounts": [dict(a) for a in (mix_acc or []) if isinstance(a, dict)],
             "futures_positions": [dict(p) for p in (mix_pos or []) if isinstance(p, dict)],
             "futures_open_orders": [dict(o) for o in (mix_open or []) if isinstance(o, dict)],

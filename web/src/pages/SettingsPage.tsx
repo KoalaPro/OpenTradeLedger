@@ -41,7 +41,6 @@ interface SettingsPageProps {
   adapters: ExchangeAdapterInfo[]
   dashboardWarnings?: DashboardWarningItem[]
   demoMode: boolean
-  previewFallback?: boolean
   authStatus?: AuthStatusPayload
   onAuthChanged?: (next: AuthStatusPayload) => void
   onLockNow?: () => Promise<void>
@@ -64,7 +63,6 @@ export function SettingsPage({
   adapters,
   dashboardWarnings = [],
   demoMode,
-  previewFallback = false,
   authStatus,
   onAuthChanged,
   onLockNow,
@@ -89,7 +87,7 @@ export function SettingsPage({
   const modalSeqRef = useRef<number>(0)
 
   const firstLiveConnection =
-    (demoMode || previewFallback) &&
+    demoMode &&
     !adapters.some(adapter => normalizeAdapterAccounts(adapter).some(a => a.configured))
 
   const flashOk = (msg: string, ms = 3200) => {
@@ -597,7 +595,6 @@ export function SettingsPage({
         <PreferencesAndGoalSection
           settings={settings}
           demoMode={demoMode}
-          previewFallback={previewFallback}
           onUpdateSettings={onUpdateSettings}
           onToggleDemo={onToggleDemo}
           onClearStatus={() => setStatusMsg('')}

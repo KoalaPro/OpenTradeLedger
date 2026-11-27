@@ -16,8 +16,10 @@ from opentradeledger.adapters.base import (
 from opentradeledger.adapters.hyperliquid.client import (
     _norm_hl_symbol,
     normalize_hyperliquid_closed_trades,
+    resolve_hyperliquid_spot_market,
     resolve_hyperliquid_spot_price,
 )
+from opentradeledger.adapters.stock_channels import classify_spot_stock_token, spot_token_holding
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -125,8 +127,9 @@ def build_hyperliquid_venue_ledger(
         withdrawable = ms.get("withdrawable")
     withdrawable_usd = float(withdrawable) if withdrawable is not None else perp_equity_usd
 
-    raw_spot_rows: list[tuple[str, float, float, str]] = []
-    wallet_spot_prices: dict[str, float] = {}
+    wallet_balances: list[dict[str, Any]] = []
+    spot_holdings: list[dict[str, Any]] = []
+    stock_holdings: list[dict[str, Any]] = []
     spot_equity_usd = 0.0
     spot = snap.get("spot") if isinstance(snap.get("spot"), dict) else {}
     for bal in spot.get("balances") or []:
@@ -136,17 +139,37 @@ def build_hyperliquid_venue_ledger(
         qty = float(bal.get("total") or 0.0)
         if not ccy or qty <= 0:
             continue
-        if ccy in STABLECOINS:
-            usd_val = qty
-            wallet_spot_prices[ccy] = 1.0
-        else:
-            unit_px = resolve_hyperliquid_spot_price(bal, snap)
-            usd_val = qty * unit_px
-            if unit_px > 0:
-                wallet_spot_prices[ccy] = unit_px
+        unit_px = 1.0 if ccy in STABLECOINS else resolve_hyperliquid_spot_price(bal, snap)
+        usd_val = qty * unit_px
         spot_equity_usd += usd_val
-        raw_spot_rows.append((ccy, qty, usd_val, "SPOT"))
+        market = None if ccy in STABLECOINS else resolve_hyperliquid_spot_market(
+            bal, snap, unit_price=unit_px, quantity=qty,
+        )
+        idx = str(bal.get("token"))
+        identity = {"spot_token_index": int(idx)} if idx.isascii() and idx.isdigit() else {}
+        stock = classify_spot_stock_token(ccy, exchange="HYPERLIQUID", token_index=idx)
+        if stock and usd_val >= 0.5:
+            holding = spot_token_holding(
+                stock, qty, usd_val, venue_id="hyperliquid", venue_name=meta.display_name,
+                venue_name_zh=meta.display_name_zh, spot_market=market,
+            )
+            stock_holdings.append({**holding, **identity})
+            continue
 
+        # HyperCore permits duplicate tickers. Keep each token's own quantity,
+        # quote and liquidity through both wallet and overview projections.
+        rows = build_spot_wallet_balances(
+            [(ccy, qty, usd_val, "SPOT")], venue_id="hyperliquid", venue_name=meta.display_name,
+            color_token=meta.color_token, spot_prices={}, excluded_symbols=set(),
+        )
+        for row in rows:
+            row.update(identity)
+            if market:
+                row["spot_market"] = market
+        wallet_balances.extend(rows)
+        spot_holdings.extend(spot_holdings_from_wallets(rows))
+
+    raw_spot_rows: list[tuple[str, float, float, str]] = []
     if perp_equity_usd > 0:
         raw_spot_rows.append(("USDC", perp_equity_usd, perp_equity_usd, "PERP_MARGIN"))
 
@@ -277,14 +300,14 @@ def build_hyperliquid_venue_ledger(
         fallback_detail_zh="链上永续与现货账户估值净变动",
     )
 
-    wallet_balances = build_spot_wallet_balances(
+    wallet_balances.extend(build_spot_wallet_balances(
         raw_spot_rows,
         venue_id="hyperliquid",
         venue_name=meta.display_name,
         color_token=meta.color_token,
-        spot_prices=wallet_spot_prices,
+        spot_prices={},
         excluded_symbols=set(),
-    )
+    ))
     stock_perps = build_venue_stock_perpetuals(
         trades,
         venue_id="hyperliquid",
@@ -314,13 +337,16 @@ def build_hyperliquid_venue_ledger(
         },
         trades=trades,
         open_positions=open_positions,
-        spot_holdings=spot_holdings_from_wallets(wallet_balances),
+        spot_holdings=spot_holdings,
         spot_wallet_balances=wallet_balances,
         reconcile_streams=reconcile_streams,
         daily_pnl=dict(daily_pnl),
         daily_components={d: dict(c) for d, c in daily_comp.items()},
         copy_trading=VenueCopyBundle(),
-        stocks=VenueStockBundle(perpetuals=stock_perps),
+        stocks=VenueStockBundle(
+            holdings=stock_holdings, perpetuals=stock_perps,
+            equity_usd=round(sum(row["market_value_usd"] for row in stock_holdings), 2),
+        ),
         fee_context={
             "maker_bps": 1.5,
             "taker_bps": 4.5,

@@ -7,6 +7,8 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from math import isfinite
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.adapters.stock_listings import HYPERCORE_STOCK_LISTINGS, VENUE_STOCK_LISTINGS
+
 if TYPE_CHECKING:
     from opentradeledger.adapters.base import VenueLedgerBundle
 
@@ -224,103 +226,34 @@ def classify_spot_stock_token(
     *,
     exchange: str,
     dynamic_catalog: Mapping[str, Mapping[str, Any]] | None = None,
+    token_index: int | str | None = None,
 ) -> dict[str, str] | None:
-    """Identify whether a spot wallet asset is a 1:1 tokenized stock/ETF (`SPOT_TOKEN`)."""
-    raw = (asset or "").strip()
-    if not raw:
+    """Look up an exact venue spot listing before attaching an equity identity."""
+    symbol = (asset or "").strip().upper()
+    venue = (exchange or "").strip().upper()
+    if venue == "HYPERLIQUID":
+        listing = HYPERCORE_STOCK_LISTINGS.get((str(token_index), symbol))
+    else:
+        listing = VENUE_STOCK_LISTINGS.get(venue, {}).get(symbol)
+
+    metadata = (dynamic_catalog or {}).get(symbol) if venue != "HYPERLIQUID" else None
+    if isinstance(metadata, Mapping) and metadata:
+        underlying = str(metadata.get("underlying") or (listing[0] if listing else symbol)).strip().upper()
+        series = str(metadata.get("series") or (listing[1] if listing else "1:1 美股代币"))
+        name = str(metadata.get("name") or US_EQUITY_TICKERS.get(underlying, underlying))
+    elif listing:
+        underlying, series = listing
+        name = US_EQUITY_TICKERS.get(underlying, underlying)
+    else:
         return None
-    asset_u = raw.upper()
-    if asset_u in _KNOWN_CRYPTO_EXCLUSIONS:
-        return None
-
-    ex_u = (exchange or "").strip().upper()
-    if dynamic_catalog and asset_u in dynamic_catalog:
-        meta = dynamic_catalog[asset_u]
-        und = str(meta.get("underlying") or "").strip().upper()
-        if not und:
-            if asset_u.endswith("ON") and len(asset_u) > 3:
-                und = asset_u[:-2]
-            elif asset_u.endswith(("X", "B")) and len(asset_u) > 2:
-                und = asset_u[:-1]
-            elif asset_u.startswith("R") and len(asset_u) > 2:
-                und = asset_u[1:]
-            else:
-                und = asset_u
-        name = str(meta.get("name") or US_EQUITY_TICKERS.get(und) or und)
-        return {
-            "token_symbol": asset_u,
-            "underlying": und,
-            "name": name,
-            "series": str(meta.get("series") or "1:1 美股代币"),
-            "channel": "SPOT_TOKEN",
-            "channel_zh": "1:1 美股代币",
-        }
-
-    # 1. Ondo Global Markets (`<TICKER>ON`, e.g. NVDAON, AAPLON, SPYON)
-    if asset_u.endswith("ON") and len(asset_u) >= 4:
-        base = asset_u[:-2]
-        if base in US_EQUITY_TICKERS:
-            return {
-                "token_symbol": asset_u,
-                "underlying": base,
-                "name": US_EQUITY_TICKERS[base],
-                "series": "Ondo 美股代币",
-                "channel": "SPOT_TOKEN",
-                "channel_zh": "1:1 美股代币",
-            }
-
-    # 2. xStocks (`<TICKER>X`, e.g. NVDAX, TSLAX, AAPLX, QQQX)
-    if asset_u.endswith("X") and len(asset_u) >= 3:
-        base = asset_u[:-1]
-        if base in US_EQUITY_TICKERS:
-            return {
-                "token_symbol": asset_u,
-                "underlying": base,
-                "name": US_EQUITY_TICKERS[base],
-                "series": "xStocks 美股代币",
-                "channel": "SPOT_TOKEN",
-                "channel_zh": "1:1 美股代币",
-            }
-
-    # 3. Bitget Reality (`r<TICKER>` / `R<TICKER>`, e.g. rNVDA, rAAPL, rSPY)
-    if ex_u == "BITGET" and asset_u.startswith("R") and len(asset_u) >= 3:
-        base = asset_u[1:]
-        if base in US_EQUITY_TICKERS:
-            return {
-                "token_symbol": asset_u,
-                "underlying": base,
-                "name": US_EQUITY_TICKERS[base],
-                "series": "Bitget rStock",
-                "channel": "SPOT_TOKEN",
-                "channel_zh": "1:1 美股代币",
-            }
-
-    # 4. Binance bStocks (`<TICKER>B`, e.g. NVDAB, TSLAB, QQQB)
-    if ex_u == "BINANCE" and asset_u.endswith("B") and len(asset_u) >= 3:
-        base = asset_u[:-1]
-        if base in US_EQUITY_TICKERS:
-            return {
-                "token_symbol": asset_u,
-                "underlying": base,
-                "name": US_EQUITY_TICKERS[base],
-                "series": "币安 bStock",
-                "channel": "SPOT_TOKEN",
-                "channel_zh": "1:1 美股代币",
-            }
-
-    # 5. `<TICKER>STOCK` explicit suffix
-    if asset_u.endswith("STOCK") and len(asset_u) > 5:
-        base = asset_u[:-5]
-        return {
-            "token_symbol": asset_u,
-            "underlying": base,
-            "name": US_EQUITY_TICKERS.get(base, base),
-            "series": "1:1 美股代币",
-            "channel": "SPOT_TOKEN",
-            "channel_zh": "1:1 美股代币",
-        }
-
-    return None
+    return {
+        "token_symbol": symbol,
+        "underlying": underlying,
+        "name": name,
+        "series": series,
+        "channel": "SPOT_TOKEN",
+        "channel_zh": "1:1 美股代币",
+    }
 
 
 def _extract_fill_fields(
@@ -489,6 +422,30 @@ def reconstruct_spot_cost_basis(
     }
 
 
+def spot_token_holding(
+    token: Mapping[str, str], qty: float, mv: float, *, venue_id: str, venue_name: str,
+    venue_name_zh: str, spot_market: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the wallet-derived holding when the exchange supplies no cost basis."""
+    cur_px = mv / qty
+    return {
+        "venue_id": venue_id,
+        "venue_name": venue_name,
+        "venue_name_zh": venue_name_zh,
+        "symbol": token["token_symbol"],
+        "name": token["name"],
+        "channel": "1:1 Stock Token",
+        "channel_zh": "1:1美股代币",
+        **({"spot_market": spot_market} if spot_market else {}),
+        "shares": round(qty, 6),
+        "avg_cost_usd": round(cur_px, 2),
+        "current_price_usd": round(cur_px, 2),
+        "market_value_usd": round(mv, 2),
+        "pnl_usd": 0.0,
+        "pnl_pct": 0.0,
+    }
+
+
 def promote_spot_stock_tokens_from_wallets(
     bundle: "VenueLedgerBundle",
     *,
@@ -534,33 +491,19 @@ def promote_spot_stock_tokens_from_wallets(
     venue_name = str(ex_card.get("display_name") or ex_code)
     venue_name_zh = str(ex_card.get("display_name_zh") or venue_name)
 
+    spot_markets = {r["asset"]: r["spot_market"] for r in source_rows if r.get("spot_market")}
     promoted_rows: list[dict[str, Any]] = []
     promoted_syms: set[str] = set()
     promoted_mv_total = 0.0
     for asset_u, (qty, mv, t_info) in agg.items():
         if qty <= 0.0 or mv < 0.5:
             continue
-        cur_px = mv / qty
-        mv_2dp = round(mv, 2)
         promoted_syms.add(asset_u)
-        promoted_mv_total += mv_2dp
-        promoted_rows.append(
-            {
-                "venue_id": venue_id,
-                "venue_name": venue_name,
-                "venue_name_zh": venue_name_zh,
-                "symbol": asset_u,
-                "name": t_info["name"],
-                "channel": "1:1 Stock Token",
-                "channel_zh": "1:1美股代币",
-                "shares": round(qty, 6),
-                "avg_cost_usd": round(cur_px, 2),
-                "current_price_usd": round(cur_px, 2),
-                "market_value_usd": mv_2dp,
-                "pnl_usd": 0.0,
-                "pnl_pct": 0.0,
-            }
-        )
+        promoted_mv_total += round(mv, 2)
+        promoted_rows.append(spot_token_holding(
+            t_info, qty, mv, venue_id=venue_id, venue_name=venue_name, venue_name_zh=venue_name_zh,
+            spot_market=spot_markets.get(asset_u),
+        ))
 
     if not promoted_syms:
         return 0

@@ -6,13 +6,19 @@ import { PublicCopyWatcherPanel } from '../components/PublicCopyWatcherPanel'
 import { I18nProvider } from '../i18n'
 import { api } from '../lib/api'
 import { CurrencyProvider, DEFAULT_FX, useCurrency } from '../lib/currency'
-import { fmtSignedPct, fmtSignedUsd, fmtUsd } from '../lib/format'
+import { fmtPrice, fmtSignedPct, fmtSignedUsd, fmtUsd } from '../lib/format'
 import type { DashboardData, ExchangeAdapterInfo, UserSettings } from '../lib/types'
 import { AnalyticsPage } from '../pages/AnalyticsPage'
 import { FeesAiPage } from '../pages/FeesAiPage'
 import { OverviewPage } from '../pages/OverviewPage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { TradesPage } from '../pages/TradesPage'
+
+it('displays a tiny positive spot price at a readable precision', () => {
+  expect(fmtPrice(0.0000001)).toBe('0.0000001')
+  expect(fmtPrice(0.00000010012345)).toBe('0.00000010012')
+  expect(fmtPrice(0)).toBe('—')
+})
 
 class ResizeObserverMock {
   observe() {}
@@ -802,7 +808,7 @@ it.each([
 ] as const)('reports the origin and freshness of %s rates (stale=%s)', (source, stale, updated_at, label) => {
   render(
     <I18nProvider locale="zh-CN"><CurrencyProvider currency="CNY" fx={{ ...DEFAULT_FX, source, stale, updated_at }}>
-      <PreferencesAndGoalSection settings={baseSettings} demoMode={false} previewFallback={false}
+      <PreferencesAndGoalSection settings={baseSettings} demoMode={false}
         onUpdateSettings={async () => true} onToggleDemo={async () => {}} onClearStatus={() => {}}
         flashOk={() => {}} setErrorMsg={() => {}} />
     </CurrencyProvider></I18nProvider>,

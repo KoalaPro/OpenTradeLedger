@@ -6,6 +6,8 @@ latest API test or background sync failed, and surfaces clear, actionable reason
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from typing import Any
@@ -336,6 +338,15 @@ class VenueHealthTracker:
     def get_all(self) -> dict[str, dict[str, Any]]:
         raw = self.store.get_meta(VENUE_HEALTH_META_KEY, {})
         return dict(raw) if isinstance(raw, dict) else {}
+
+    def display_revision(self) -> str:
+        """Detect a changed connection badge, error or warning without sending account details."""
+        fields = ("status", "error_code", "error_reason", "error_reason_zh", "raw_error", "warnings")
+        visible = {
+            venue: [state.get(field) for field in fields]
+            for venue, state in self.get_all().items() if isinstance(state, dict)
+        }
+        return hashlib.sha256(json.dumps(visible, sort_keys=True).encode()).hexdigest()
 
     def _save_all(self, data: dict[str, dict[str, Any]]) -> None:
         self.store.set_meta(VENUE_HEALTH_META_KEY, data)

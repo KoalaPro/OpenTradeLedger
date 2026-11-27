@@ -173,6 +173,20 @@ def _is_fatal_binance_error(exc: BaseException) -> bool:
     )
 
 
+def binance_stock_catalog(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """Support Binance's native fields and stock records saved by older adapters."""
+    catalog = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        asset = str(row.get("assetCode") or row.get("asset") or row.get("tokenSymbol") or row.get("symbol") or "").strip().upper()
+        underlying = str(row.get("underlyingEquitySymbol") or row.get("underlying") or row.get("underlyingSymbol") or "").strip().upper()
+        if asset:
+            catalog[asset] = {"underlying": underlying, "name": str(row.get("assetName") or row.get("name") or ""),
+                              "series": "币安 bStock"}
+    return catalog
+
+
 class BinanceReadOnlyClient:
     """HMAC-SHA256 hex signed strictly read-only client for Binance Spot/SAPI + PAPI/FAPI."""
 
@@ -263,6 +277,8 @@ class BinanceReadOnlyClient:
             headers["X-MBX-APIKEY"] = self.credentials.api_key
         else:
             final_qs = urlencode(filtered)
+            if clean_path == "/sapi/v1/equity/market/tokenized-assets":
+                headers["X-MBX-APIKEY"] = self.credentials.api_key
 
         rel_url = f"{clean_path}?{final_qs}" if final_qs else clean_path
         primary_base = self._base_for_path(clean_path)
@@ -656,13 +672,8 @@ class BinanceReadOnlyClient:
                 if isinstance(ta_res, list)
                 else ((ta_res.get("data") or ta_res.get("list") or []) if isinstance(ta_res, dict) else [])
             )
-            for item in rows_ta or []:
-                if isinstance(item, dict):
-                    tokenized_assets.append(dict(item))
-                    a_u = str(item.get("asset") or item.get("tokenSymbol") or item.get("symbol") or "").strip().upper()
-                    u_u = str(item.get("underlying") or item.get("underlyingSymbol") or "").strip().upper()
-                    if a_u:
-                        dyn_cat[a_u] = {"underlying": u_u or a_u.rstrip("B"), "name": str(item.get("name") or u_u or a_u)}
+            tokenized_assets = [dict(row) for row in rows_ta if isinstance(row, dict)]
+            dyn_cat = binance_stock_catalog(tokenized_assets)
 
         spot_stock_trades: dict[str, list[dict[str, Any]]] = {}
         for cand in candidate_spot_assets[:15]:

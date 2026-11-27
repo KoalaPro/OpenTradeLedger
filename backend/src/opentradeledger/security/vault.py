@@ -130,6 +130,14 @@ class CredentialVault:
         tmp.replace(self.vault_path)
         _chmod_600(self.vault_path)
 
+    def accounts_revision(self) -> str:
+        """Each atomic vault replacement changes the account list's revision."""
+        try:
+            stat = self.vault_path.stat()
+        except FileNotFoundError:
+            return "empty"
+        return f"{stat.st_ino:x}-{stat.st_mtime_ns:x}"
+
     def revision(self, venue_id: str) -> str:
         existing = self.get_decrypted(venue_id)
         return existing.revision if existing is not None else "absent"

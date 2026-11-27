@@ -9,6 +9,54 @@ from opentradeledger.core.venue_health import humanize_exchange_error
 from opentradeledger.security.local_auth import AUTH_COOKIE_NAME, LocalAuthManager
 
 
+def test_session_exposes_change_markers_only_after_unlock(tmp_path: Path):
+    from opentradeledger.core.store import LedgerStore
+    from opentradeledger.security.vault import CredentialVault, ExchangeCredentialRecord
+
+    client = TestClient(create_app(data_dir=tmp_path, demo_mode=False, enable_background_sync=False))
+    def status():
+        response = client.get("/api/v1/auth/status")
+        assert response.headers.get("cache-control") == "no-store"
+        return response.json()
+
+    assert "account_revision" not in status()
+    assert "last_sync_ms" not in status()
+    assert client.post("/api/v1/auth/skip").is_success
+    before = status()
+    vault = CredentialVault(tmp_path)
+    vault.upsert(ExchangeCredentialRecord(venue_id="hyperliquid", api_key="public-test-address"))
+    after = status()
+    assert after["account_revision"] != before["account_revision"]
+    assert status()["account_revision"] == after["account_revision"]
+    LedgerStore(tmp_path).set_meta("last_sync_ms", 123456)
+    assert status()["last_sync_ms"] == 123456
+    vault.delete("hyperliquid")
+    assert status()["account_revision"] != after["account_revision"]
+
+
+def test_account_change_marker_tracks_connection_errors_recovery_and_warnings(tmp_path):
+    from opentradeledger.core.store import LedgerStore
+    from opentradeledger.core.venue_health import VenueHealthTracker
+
+    client = TestClient(create_app(data_dir=tmp_path, demo_mode=False, enable_background_sync=False))
+    assert client.post("/api/v1/auth/skip").is_success
+    health = VenueHealthTracker(LedgerStore(tmp_path))
+
+    def revision():
+        reply = client.get("/api/v1/auth/status").json()
+        assert reply["last_sync_ms"] == 0
+        return reply["account_revision"]
+
+    health.record_success("gate")
+    connected = revision()
+    health.record_error("gate", RuntimeError("connection timed out"))
+    assert revision() != connected
+    health.record_success("gate", warnings=["incomplete history"])
+    assert revision() != connected
+    health.record_success("gate")
+    assert revision() == connected
+
+
 def test_local_auth_lifecycle_rate_limit_session_rotation_and_reset(tmp_path: Path):
     app = create_app(data_dir=tmp_path, demo_mode=False, enable_background_sync=False)
     client = TestClient(app)

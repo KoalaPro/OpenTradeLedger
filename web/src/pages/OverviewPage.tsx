@@ -4,6 +4,7 @@ import { EquityChart } from '../components/EquityChart'
 import { FloatingModal } from '../components/FloatingModal'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { KpiCard } from '../components/KpiCard'
+import { SpotMarketDetail, lowLiquidity } from '../components/SpotMarketDetail'
 import { SpotWalletTable, formatWalletType } from '../components/SpotWalletTable'
 import { UnderlineTabs } from '../components/UnderlineTabs'
 import { VenueBadge } from '../components/VenueBadge'
@@ -51,8 +52,9 @@ export function OverviewPage({
     [activeWarnings, data],
   )
   const [openModal, setOpenModal] = useState<null | 'equity' | 'reconcile' | 'wallet'>(null)
-  const [selectedStock, setSelectedStock] = useState<StockHoldingItem | null>(null)
-  const [selectedSpot, setSelectedSpot] = useState<SpotHolding | null>(null)
+  const [showAllLowLiquidity, setShowAllLowLiquidity] = useState(false)
+  const [stockSelection, setSelectedStock] = useState<StockHoldingItem | null>(null)
+  const [spotSelection, setSelectedSpot] = useState<SpotHolding | null>(null)
   const [holdingTab, setHoldingTab] = useState<'all' | 'futures' | 'stocks' | 'spot'>('all')
   const [barsReady, setBarsReady] = useState(false)
 
@@ -76,6 +78,18 @@ export function OverviewPage({
   const stockList = data.extensions?.stocks?.holdings || []
   const spotList = data.spot_holdings || []
   const wallets = data.spot_wallet_balances ?? spotList
+  const selectedStock = stockSelection && stockList.find(h =>
+    h.venue_id === stockSelection.venue_id && h.symbol === stockSelection.symbol && h.spot_token_index === stockSelection.spot_token_index,
+  )
+  const selectedSpot = (spotSelection && spotList.find(h =>
+    h.venue_id === spotSelection.venue_id && h.asset === spotSelection.asset && h.spot_token_index === spotSelection.spot_token_index,
+  )) ?? null
+  const lowLiquidityRows = [
+    ...wallets.filter(h => lowLiquidity(h.spot_market)),
+    ...stockList.filter(h => lowLiquidity(h.spot_market)).map(h => ({ ...h, asset: h.symbol })),
+  ].sort((a, b) => (b.market_value_usd ?? 0) - (a.market_value_usd ?? 0))
+  const lowLiquidityTotal = lowLiquidityRows.reduce((total, h) => total + (h.market_value_usd ?? 0), 0)
+  const lowLiquidityLabel = locale === 'en' ? 'Low-liquidity estimate' : '低流动性估值'
   const totalHoldingsCount = futuresList.length + stockList.length + spotList.length
   const activeCategoriesCount =
     (futuresList.length > 0 ? 1 : 0) + (stockList.length > 0 ? 1 : 0) + (spotList.length > 0 ? 1 : 0)
@@ -180,12 +194,22 @@ export function OverviewPage({
             </span>
           }
           active={showEquity}
-          onClick={() => setOpenModal(d => (d === 'equity' ? null : 'equity'))}
+          onClick={() => {
+            setShowAllLowLiquidity(false)
+            setOpenModal(d => (d === 'equity' ? null : 'equity'))
+          }}
           value={cur.money(s.total_equity_usd)}
           sub={
-            <span className="whitespace-nowrap">
-              {t('kpi_net_principal')} <span className="sensitive">{cur.money(s.net_principal_usd)}</span>
-            </span>
+            <>
+              <span className="whitespace-nowrap">
+                {t('kpi_net_principal')} <span className="sensitive">{cur.money(s.net_principal_usd)}</span>
+              </span>
+              {lowLiquidityTotal > 0 && (
+                <span className="block text-[var(--warn)]">
+                  {lowLiquidityLabel} <strong className="sensitive">{cur.money(lowLiquidityTotal)}</strong>
+                </span>
+              )}
+            </>
           }
         />
 
@@ -334,6 +358,30 @@ export function OverviewPage({
           })}
         </div>
 
+        {lowLiquidityRows.length > 0 && (
+          <section className="border-b border-[var(--border)] px-6 py-4 text-[12px]">
+            <h3 className="text-[13px] font-semibold text-[var(--warn)]">
+              {lowLiquidityLabel} <span className="sensitive">{cur.money(lowLiquidityTotal)}</span>
+            </h3>
+            <ul className="space-y-3 mt-2">
+              {(showAllLowLiquidity ? lowLiquidityRows : lowLiquidityRows.slice(0, 3)).map(row => (
+                <li key={`${row.venue_id}-${row.asset}-${row.spot_token_index ?? ''}`}>
+                  <div>{row.venue_name} · <span className="sensitive">{cur.money(row.market_value_usd ?? 0)}</span></div>
+                  <SpotMarketDetail asset={row.asset} market={row.spot_market!} />
+                </li>
+              ))}
+            </ul>
+            {lowLiquidityRows.length > 3 && (
+              <button type="button" aria-expanded={showAllLowLiquidity}
+                onClick={() => setShowAllLowLiquidity(open => !open)}
+                className="mt-3 text-[var(--accent)] hover:underline">
+                {showAllLowLiquidity
+                  ? (locale === 'en' ? 'Show fewer holdings' : '收起明细')
+                  : (locale === 'en' ? `Show ${lowLiquidityRows.length - 3} more holdings` : `查看其余 ${lowLiquidityRows.length - 3} 项`)}
+              </button>
+            )}
+          </section>
+        )}
         <div className="overflow-x-auto">
           <table className="otl-table otl-modal-table">
             <thead>
@@ -707,7 +755,7 @@ export function OverviewPage({
                     const weightPct = s.total_equity_usd > 0 ? (sp.market_value_usd / s.total_equity_usd) * 100 : 0
                     return (
                       <tr
-                        key={`spot-${sp.venue_id}-${sp.asset}`}
+                        key={`spot-${sp.venue_id}-${sp.asset}-${sp.spot_token_index ?? ''}`}
                         className="clickable"
                         onClick={() => setSelectedSpot(sp)}
                       >
@@ -743,7 +791,7 @@ export function OverviewPage({
 
       {/* Stock / Tokenized Equity Detail Modal */}
       <FloatingModal
-        open={selectedStock !== null}
+        open={!!selectedStock}
         onClose={() => setSelectedStock(null)}
         testId="stock-holding-detail-modal"
         maxWidthClass="max-w-[700px]"
@@ -815,6 +863,7 @@ export function OverviewPage({
                 </div>
               </div>
 
+              {selectedStock.spot_market && <SpotMarketDetail asset={selectedStock.symbol} market={selectedStock.spot_market} />}
               {relatedLedger.length > 0 && (
                 <div className="border-t border-[var(--border)] pt-3">
                   <div className="pb-2 text-[13px] font-semibold text-[var(--fg)]">
@@ -923,6 +972,7 @@ export function OverviewPage({
               </div>
             </div>
           )}
+          {selectedSpot?.spot_market && <SpotMarketDetail asset={selectedSpot.asset} market={selectedSpot.spot_market} />}
           <SpotWalletTable balances={wallets} spotTotal={spotTotalVal} selected={selectedSpot} />
         </div>
       </FloatingModal>

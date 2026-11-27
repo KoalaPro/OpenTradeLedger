@@ -216,6 +216,8 @@ export const api = {
   ): Promise<{
     ok: boolean
     committed?: boolean
+    status?: 'no_accounts'
+    demo_mode?: boolean
     account_id?: string
     adapter_id?: string
     subaccounts?: DiscoveredSubaccount[]

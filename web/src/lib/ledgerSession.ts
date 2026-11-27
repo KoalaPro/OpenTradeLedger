@@ -4,6 +4,7 @@ import type { AuthStatusPayload } from './types'
 
 const CHANGE_KEY = 'otl.ledger-changed'
 const STATUS_TIMEOUT_MS = 8000
+const LEDGER_CHECK_INTERVAL_MS = 15000
 const PENDING_LOCK_KEY = 'otl.logout-pending'
 let pendingWithoutStorage = false
 
@@ -77,21 +78,22 @@ export function useLedgerSession(clearPrivateUi: () => void) {
     if (reload && allowed.current) setGeneration(value => value + 1)
   }, [invalidate])
 
-  const check = useCallback(async (reset = false) => {
+  const check = useCallback(async (reset = false, background = false) => {
     if (changing.current) return
+    if (background && (document.visibilityState === 'hidden' || activeCheck.current || !allowed.current)) return
     if (reset) invalidate()
     const id = ++request.current
     activeCheck.current?.abort()
     const controller = new AbortController()
     activeCheck.current = controller
     const timeout = window.setTimeout(() => controller.abort(), STATUS_TIMEOUT_MS)
-    document.documentElement.dataset.sessionCheck = 'pending'
+    if (!background) document.documentElement.dataset.sessionCheck = 'pending'
     try {
       const status = await api.authStatus(controller.signal)
       if (id !== request.current) return
       apply(status)
     } catch {
-      if (id !== request.current) return
+      if (id !== request.current || background) return
       invalidate()
       lastStatus.current = null
       setAuthStatus({})
@@ -183,8 +185,10 @@ export function useLedgerSession(clearPrivateUi: () => void) {
     document.addEventListener('visibilitychange', onVisibility)
     document.addEventListener('freeze', onPageHide)
     document.addEventListener('resume', onFocus)
+    const timer = window.setInterval(() => { void check(false, true) }, LEDGER_CHECK_INTERVAL_MS)
     void check()
     return () => {
+      window.clearInterval(timer)
       ++request.current
       activeCheck.current?.abort()
       channel?.close()

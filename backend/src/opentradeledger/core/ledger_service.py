@@ -386,7 +386,7 @@ class LedgerService:
         )
 
     def is_demo_active(self) -> bool:
-        return self.demo_mode or (not self.has_live_data())
+        return self.demo_mode
 
     def get_preferences(self) -> UserPreferences:
         return self.store.get_preferences()
@@ -479,7 +479,6 @@ class LedgerService:
             latest_ai_review=latest_ai,
         )
         live_payload["explicit_demo_mode"] = bool(self.demo_mode)
-        live_payload["has_live_data"] = True
         return live_payload
 
     def _build_live_dashboard(
@@ -508,6 +507,7 @@ class LedgerService:
         # 1. Gather cross-venue spot ticker fallback map uniformly across all active account partitions
         vault_creds = self.vault.list_decrypted()
         creds_by_acct = {c.venue_id.lower(): c for c in vault_creds}
+        has_live_data = bool(vault_creds)
         candidate_targets: list[tuple[BaseExchangeAdapter, str]] = []
         active_accts_by_adapter: dict[str, list[tuple[BaseExchangeAdapter, str]]] = defaultdict(list)
         unattributed_archived_by_adapter: dict[str, list[tuple[BaseExchangeAdapter, str]]] = defaultdict(list)
@@ -521,6 +521,7 @@ class LedgerService:
                 has_data = bool(adapter.has_venue_data(scoped_check))
             except Exception:
                 has_data = False
+            has_live_data = has_live_data or has_data
             if acct_id in creds_by_acct and not creds_by_acct[acct_id].enabled:
                 continue
             if is_secondary_account_id(acct_id) and bool(self.store.venue_scope(acct_id).get_kv("duplicate_uid_conflict")):
@@ -1185,6 +1186,7 @@ class LedgerService:
 
         return {
             "demo_mode": False,
+            "has_live_data": has_live_data or bool(raw_bundles),
             "read_only": True,
             "last_sync_ms": self.last_sync_ms or int(self.store.get_meta("last_sync_ms", 0) or 0),
             "syncing": self.syncing,

@@ -561,6 +561,118 @@ describe('ledger access and settings races', () => {
     render(<App />)
   }
 
+  it('refreshes another device after onboarding and sync without starting an exchange sync', async () => {
+    vi.useFakeTimers()
+    let account = 'empty'
+    let synced = 0
+    let dashboardReads = 0
+    let exchangeReads = 0
+    const paths: string[] = []
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    try {
+      await act(async () => {
+        serve(async path => {
+          paths.push(path)
+          if (path === '/api/v1/auth/status') {
+            return Response.json({ authenticated: true, explicit_demo_mode: false, account_revision: account, last_sync_ms: synced })
+          }
+          if (path === '/api/v1/dashboard') {
+            dashboardReads++
+            return Response.json({
+              ...mockDashboard, demo_mode: false,
+              summary: { ...mockDashboard.summary, total_equity_usd: synced },
+            })
+          }
+          if (path === '/api/v1/exchanges') exchangeReads++
+        })
+      })
+      const initialReads = dashboardReads
+      const initialAccounts = exchangeReads
+      await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+      expect(dashboardReads).toBe(initialReads)
+      account = 'first-wallet'
+      synced = 75
+      await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+      expect(screen.getByTestId('kpi-equity').textContent).toContain('75.00')
+      expect(exchangeReads).toBeGreaterThan(initialAccounts)
+      visibility.mockReturnValue('hidden')
+      fireEvent(document, new Event('visibilitychange'))
+      const hiddenRequests = paths.length
+      synced = 99
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      expect(paths.length).toBe(hiddenRequests)
+      visibility.mockReturnValue('visible')
+      await act(async () => { fireEvent(document, new Event('visibilitychange')) })
+      expect(screen.getByTestId('kpi-equity').textContent).toContain('99.00')
+      expect(paths).not.toContain('/api/v1/sync')
+    } finally {
+      visibility.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets a slow dashboard finish and coalesces newer NAS syncs', async () => {
+    vi.useFakeTimers()
+    let synced = 0
+    const reads: number[] = []
+    const slow = pause()
+    try {
+      await act(async () => {
+        serve(async path => {
+          if (path === '/api/v1/auth/status') {
+            return Response.json({ authenticated: true, explicit_demo_mode: false, account_revision: 'same', last_sync_ms: synced })
+          }
+          if (path === '/api/v1/dashboard') {
+            const at = synced
+            reads.push(at)
+            if (at === 1) await slow.pending
+            return Response.json({ ...mockDashboard, demo_mode: false, summary: { ...mockDashboard.summary, total_equity_usd: at } })
+          }
+        })
+      })
+      for (synced = 1; synced <= 3; synced++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+      }
+      expect(reads).toEqual([0, 1])
+      synced = 3
+      await act(async () => { slow.resume() })
+      expect(reads).toEqual([0, 1, 3])
+      expect(screen.getByTestId('kpi-equity').textContent).toContain('3.00')
+    } finally {
+      slow.resume()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['dashboard', 'exchanges'])('retries a failed %s read on the next check without another NAS mutation', async resource => {
+    vi.useFakeTimers()
+    let changed = false
+    let attempts = 0
+    try {
+      await act(async () => {
+        serve(async path => {
+          if (path === '/api/v1/auth/status') {
+            return Response.json({ authenticated: true, account_revision: changed && resource === 'exchanges' ? 'new' : 'old', last_sync_ms: changed ? 2 : 1 })
+          }
+          if (changed && path === '/api/v1/' + resource && ++attempts === 1) {
+            return Response.json({ detail: 'Temporary read error' }, { status: 503 })
+          }
+          if (path === '/api/v1/dashboard') {
+            return Response.json({ ...mockDashboard, demo_mode: false, summary: { ...mockDashboard.summary, total_equity_usd: changed ? 99 : 1 } })
+          }
+        })
+      })
+      changed = true
+      await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+      expect(attempts).toBe(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+      expect(attempts).toBe(2)
+      expect(screen.getByTestId('kpi-equity').textContent).toContain('99.00')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('withholds ledger details until the saved privacy preference arrives', async () => {
     const settings = pause()
     const dashboard = pause()

@@ -600,13 +600,13 @@ def test_unified_tokenized_stock_promotion_all_venues_and_subaccounts(tmp_path: 
         },
     )
 
-    # 3. HTX holding AAPLON + deceptive crypto NEON
+    # 3. HTX holding AAPL + deceptive crypto NEON
     store.upsert_plugin_snapshot(
         "htx",
         {
             "swap_accounts": [{"margin_balance": "700.00", "margin_available": "700.00"}],
             "spot_balances": [
-                {"currency": "aaplon", "type": "trade", "balance": "2.0"},
+                {"currency": "aapl", "type": "trade", "balance": "2.0"},
                 {"currency": "neon", "type": "trade", "balance": "50.0"},
             ],
             "deposits": [{"id": "htx_d1", "currency": "usdt", "amount": "1100.00", "state": "safe", "created-at": 1732000000000}],
@@ -614,25 +614,25 @@ def test_unified_tokenized_stock_promotion_all_venues_and_subaccounts(tmp_path: 
             "positions": [],
             "matches": [],
             "financials": [],
-            "tickers": {"AAPLON": 220.0, "NEON": 1.0},
+            "tickers": {"AAPL": 220.0, "NEON": 1.0},
         },
     )
 
-    # 4. Hyperliquid holding QQQSTOCK in on-chain spot
+    # 4. Hyperliquid holding QQQX in on-chain spot
     store.upsert_plugin_snapshot(
         "hyperliquid",
         {
             "wallet_address": "0x" + "2" * 40,
             "clearinghouse": {"marginSummary": {"accountValue": "600.00", "withdrawable": "600.00"}, "assetPositions": []},
-            "spot": {"balances": [{"coin": "QQQSTOCK", "total": "1.0"}]},
-            "tickers": {"QQQSTOCK": 500.0},
+            "spot": {"balances": [{"coin": "QQQX", "token": 847, "total": "1.0"}]},
+            "spot_token_prices": {"847": 500.0},
             "fills": [],
             "funding_history": [],
             "ledger_updates": [{"hash": "0xhl2", "time": 1732000000000, "delta": {"type": "deposit", "usdc": "1100.00"}}],
         },
     )
 
-    # 5. OKX unified COSTX (from 140-ticker dict, preserves openAvgPx PnL) + funding NVDAX (promoted centrally)
+    # 5. OKX unified XCOST (exchange-listed, preserves openAvgPx PnL) + funding XNVDA (promoted centrally)
     store.upsert_plugin_snapshot(
         "okx",
         {
@@ -641,21 +641,21 @@ def test_unified_tokenized_stock_promotion_all_venues_and_subaccounts(tmp_path: 
                     "totalEq": "1800.00",
                     "details": [
                         {"ccy": "USDT", "availBal": "900.00", "eq": "900.00", "eqUsd": "900.00"},
-                        {"ccy": "COSTX", "eq": "1.0", "eqUsd": "900.00", "openAvgPx": "850.00"},
+                        {"ccy": "XCOST", "eq": "1.0", "eqUsd": "900.00", "openAvgPx": "850.00"},
                     ],
                 }
             ],
-            "funding": [{"ccy": "NVDAX", "bal": "1.0"}],
+            "funding": [{"ccy": "XNVDA", "bal": "1.0"}],
             "deposits": [{"depId": "okx_d1", "ccy": "USDT", "amt": "1800.00", "state": "2"}],
             "withdrawals": [],
             "positions_history": [],
             "fills": [],
-            "tickers": {"COSTX": 900.0, "NVDAX": 130.0},
+            "tickers": {"XCOST": 900.0, "XNVDA": 130.0},
             "observed_rebate_ratio": 0.0,
         },
     )
 
-    # 6. Bybit unified VOOX (from 140-ticker dict, preserves avgPrice PnL) + funding TSLAX (promoted centrally)
+    # 6. Bybit unified SPCXX (exchange-listed, preserves avgPrice PnL) + funding TSLAX (promoted centrally)
     store.upsert_plugin_snapshot(
         "bybit",
         {
@@ -666,7 +666,7 @@ def test_unified_tokenized_stock_promotion_all_venues_and_subaccounts(tmp_path: 
                         "totalAvailableBalance": "1000.00",
                         "coin": [
                             {"coin": "USDT", "walletBalance": "1000.0", "usdValue": "1000.0"},
-                            {"coin": "VOOX", "walletBalance": "1.0", "usdValue": "500.0", "avgPrice": "480.0"},
+                            {"coin": "SPCXX", "walletBalance": "1.0", "usdValue": "500.0", "avgPrice": "480.0"},
                         ],
                     }
                 ]
@@ -676,7 +676,7 @@ def test_unified_tokenized_stock_promotion_all_venues_and_subaccounts(tmp_path: 
             "withdrawals": [],
             "closed_pnl": [],
             "executions": [],
-            "tickers": {"VOOX": 500.0, "TSLAX": 250.0},
+            "tickers": {"SPCXX": 500.0, "TSLAX": 250.0},
             "observed_rebate_ratio": 0.0,
         },
     )
@@ -717,15 +717,15 @@ def test_unified_tokenized_stock_promotion_all_venues_and_subaccounts(tmp_path: 
 
     # BingX, HTX, Hyperliquid promoted with localized names
     assert holdings_by_key[("bingx", "TSLAX")]["name"] == "Tesla 特斯拉"
-    assert holdings_by_key[("htx", "AAPLON")]["name"] == "Apple 苹果"
-    assert holdings_by_key[("hyperliquid", "QQQSTOCK")]["name"] == "Invesco QQQ 纳指100 ETF"
+    assert holdings_by_key[("htx", "AAPL")]["name"] == "Apple 苹果"
+    assert holdings_by_key[("hyperliquid", "QQQX")]["name"] == "Invesco QQQ 纳指100 ETF"
 
     # OKX & Bybit unified keep native cost basis & get Chinese names, funding tokens promoted without duplicating unified
-    assert holdings_by_key[("okx", "COSTX")]["name"] == "Costco 开市客"
-    assert holdings_by_key[("okx", "COSTX")]["pnl_usd"] == pytest.approx(50.0)
-    assert holdings_by_key[("okx", "NVDAX")]["market_value_usd"] == pytest.approx(130.0)
-    assert holdings_by_key[("bybit", "VOOX")]["name"] == "Vanguard S&P 500 ETF"
-    assert holdings_by_key[("bybit", "VOOX")]["pnl_usd"] == pytest.approx(20.0)
+    assert holdings_by_key[("okx", "XCOST")]["name"] == "Costco 开市客"
+    assert holdings_by_key[("okx", "XCOST")]["pnl_usd"] == pytest.approx(50.0)
+    assert holdings_by_key[("okx", "XNVDA")]["market_value_usd"] == pytest.approx(130.0)
+    assert holdings_by_key[("bybit", "SPCXX")]["name"] == "SpaceX 指数/份额"
+    assert holdings_by_key[("bybit", "SPCXX")]["pnl_usd"] == pytest.approx(20.0)
     assert holdings_by_key[("bybit", "TSLAX")]["market_value_usd"] == pytest.approx(250.0)
     assert len([h for h in dash["extensions"]["stocks"]["holdings"] if h["venue_id"] == "okx"]) == 2
     assert len([h for h in dash["extensions"]["stocks"]["holdings"] if h["venue_id"] == "bybit"]) == 2

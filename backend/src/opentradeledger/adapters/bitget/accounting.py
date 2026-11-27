@@ -1056,6 +1056,13 @@ def build_bitget_venue_ledger(
     elif isinstance(uta_assets, list):
         bg_uta_equity_usd = bitget_uta_equity(uta_assets)
     else:
+        # These token quantities break down the existing classic account total.
+        # Do not add their USD values again to equity or reconciliation streams.
+        for asset in bg_lb.get("spot_assets") or []:
+            if not isinstance(asset, Mapping):
+                continue
+            qty = sum((dec(asset.get(k)) for k in ("available", "frozen", "locked")), Decimal("0"))
+            raw_spot_rows.append((str(asset.get("coin") or ""), float(qty), 0.0, "SPOT"))
         for cb in bg_lb.get("classic_balances") or []:
             bg_uta_equity_usd += dec(cb.get("usdtBalance"))
         for fa_bg in bg_lb.get("futures_accounts") or []:

@@ -223,10 +223,13 @@ def create_app(
         status = auth_manager.get_status(token, demo_mode=bool(ledger_service.demo_mode))
         if status["authenticated"]:
             status["explicit_demo_mode"] = bool(ledger_service.demo_mode)
+            status["account_revision"] = f"{vault.accounts_revision()}.{health_tracker.display_revision()}"
+            status["last_sync_ms"] = int(store.get_meta("last_sync_ms", 0) or 0)
         return status
 
     @app.get("/api/v1/auth/status")
-    async def auth_status(request: Request) -> dict[str, Any]:
+    async def auth_status(request: Request, response: Response) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
         return _session_status(request.cookies.get(AUTH_COOKIE_NAME))
 
     @app.post("/api/v1/auth/setup")

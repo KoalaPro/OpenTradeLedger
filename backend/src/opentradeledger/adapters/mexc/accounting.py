@@ -736,7 +736,12 @@ def _build_mexc_stock_section(
 ) -> tuple[VenueStockBundle, Decimal, Decimal, Decimal]:
     mx_sb = mx_lb.get("stock_bundle") or {}
     mx_tickers = mx_lb.get("spot_tickers") or {}
-    mx_dyn_cat = mx_sb.get("tokenized_catalog") if isinstance(mx_sb.get("tokenized_catalog"), Mapping) else {}
+    catalog = mx_sb.get("tokenized_catalog")
+    # Legacy catalog rows did not verify which spot market had the stock tag.
+    mx_dyn_cat = {
+        asset: row for asset, row in catalog.items()
+        if isinstance(row, Mapping) and row.get("spot_pair") == f"{asset}USDT"
+    } if isinstance(catalog, Mapping) else {}
     mx_sp_trades_map = mx_sb.get("spot_stock_trades") or {}
 
     holdings: list[dict[str, Any]] = []

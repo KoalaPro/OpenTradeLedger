@@ -676,7 +676,7 @@ def spot_holdings_from_wallets(balances: Sequence[dict[str, Any]]) -> list[dict[
             if combined["wallet_type"] != balance["wallet_type"]:
                 combined["wallet_type"] = "MULTIPLE"
     for row in holdings.values():
-        row["price_usd"] = round(row["market_value_usd"] / row["qty"], 4)
+        row["price_usd"] = row["market_value_usd"] / row["qty"]
         row["market_value_usd"] = round(row["market_value_usd"], 2)
         row["qty"] = round(row["qty"], 6)
     return sorted(holdings.values(), key=lambda row: row["market_value_usd"], reverse=True)

@@ -45,6 +45,7 @@ export function fmtPrice(px: number): string {
   if (!Number.isFinite(px) || px === 0) return '—'
   if (px >= 1000) return px.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   if (px >= 1) return px.toFixed(3)
+  if (px > 0 && px < 0.0001) return px.toLocaleString('en-US', { maximumSignificantDigits: 5 })
   return px.toFixed(5)
 }
 

@@ -8,7 +8,6 @@ import type { CurrencyCode, Locale, Polarity, Theme, UserSettings } from '../../
 interface PreferencesAndGoalSectionProps {
   settings: UserSettings
   demoMode: boolean
-  previewFallback: boolean
   onUpdateSettings: (patch: Record<string, unknown>) => Promise<boolean>
   onToggleDemo: (enabled: boolean) => Promise<void>
   onClearStatus: () => void
@@ -19,7 +18,6 @@ interface PreferencesAndGoalSectionProps {
 export function PreferencesAndGoalSection({
   settings,
   demoMode,
-  previewFallback,
   onUpdateSettings,
   onToggleDemo,
   onClearStatus,
@@ -253,11 +251,7 @@ export function PreferencesAndGoalSection({
         <div>
           <div className="text-[13px] font-medium text-[var(--fg)]">{t('set_demo_title')}</div>
           <div className="text-[12px] text-[var(--fg-3)]">
-            {previewFallback
-              ? isZh
-                ? '已切换为实盘模式（接入首个只读交易所 API 后自动替换为真实账单）'
-                : 'Live mode active (sample preview shown until your first read-only API is added)'
-              : t('set_demo_sub')}
+            {t('set_demo_sub')}
           </div>
         </div>
         <button

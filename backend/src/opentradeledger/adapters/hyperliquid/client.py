@@ -7,6 +7,7 @@ Security guarantee:
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import math
 import time
@@ -35,6 +36,7 @@ HYPERLIQUID_ALLOWED_INFO_TYPES: tuple[str, ...] = (
     "allMids",
     "meta",
     "spotMeta",
+    "spotMetaAndAssetCtxs",
 )
 HYPERLIQUID_ALLOWED_POST_TYPES: tuple[str, ...] = HYPERLIQUID_ALLOWED_INFO_TYPES
 
@@ -164,7 +166,7 @@ class HyperliquidReadOnlyClient:
             norm_k = raw_k if raw_k.startswith("@") else raw_k.upper()
             try:
                 px = float(v)
-                if px > 0:
+                if math.isfinite(px) and px > 0:
                     out[norm_k] = px
             except (TypeError, ValueError):
                 continue
@@ -177,6 +179,18 @@ class HyperliquidReadOnlyClient:
     async def get_spot_meta(self) -> dict[str, Any]:
         res = await self.request_info({"type": "spotMeta"})
         return res if isinstance(res, dict) else {}
+
+    async def get_spot_markets(self) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        try:
+            data = await self.request_info({"type": "spotMetaAndAssetCtxs"})
+        except (HyperliquidApiError, httpx.RequestError, ValueError):
+            data = None
+        meta = data[0] if isinstance(data, list) and data else None
+        if isinstance(meta, dict) and isinstance(meta.get("tokens"), list) and isinstance(meta.get("universe"), list):
+            contexts = data[1] if len(data) > 1 and isinstance(data[1], list) else []
+            return meta, contexts
+        # A context outage must not discard a usable accounting quote.
+        return await self.get_spot_meta(), []
 
     async def get_vault_equities(self) -> list[dict[str, Any]]:
         res = await self.request_info({"type": "userVaultEquities", "user": self.wallet_address})
@@ -486,12 +500,14 @@ class HyperliquidReadOnlyClient:
         funding = await self.get_user_funding(since_ms=since_ms, warnings_out=warnings)
         ledger_updates = await self.get_ledger_updates(since_ms=since_ms, warnings_out=warnings)
 
-        spot_meta = await _opt_aux("spot_meta", self.get_spot_meta(), {})
+        spot_meta, spot_contexts = await _opt_aux("spot_meta", self.get_spot_markets(), ({}, []))
         subaccounts = await _opt_aux("subaccounts", self.get_subaccounts(), [])
         vault_equities = await _opt_aux("vault_equities", self.get_vault_equities(), [])
 
         mids = {k: v for k, v in raw_mids.items() if not k.startswith("@") and "/" not in k}
-        spot_token_prices, spot_tickers, has_spot_meta = build_hyperliquid_spot_prices(raw_mids, spot_meta)
+        spot_token_prices, spot_tickers, has_spot_meta, spot_markets = build_hyperliquid_spot_prices(
+            raw_mids, spot_meta, spot_contexts,
+        )
         has_at_mids = any(k.startswith("@") for k in raw_mids)
         if "spot_meta" in failed_fields:
             failed_fields.extend(["spot_tickers", "spot_token_prices", "has_spot_meta"])
@@ -505,6 +521,7 @@ class HyperliquidReadOnlyClient:
             "tickers": mids,
             "spot_tickers": spot_tickers,
             "spot_token_prices": spot_token_prices,
+            "spot_markets": spot_markets,
             "has_spot_meta": has_spot_meta,
             "has_at_mids": has_at_mids,
             "fills": fills,
@@ -524,61 +541,71 @@ _HL_QUOTE_STABLES = {"USDC", "USDT", "USDH", "USD"}
 def build_hyperliquid_spot_prices(
     raw_mids: dict[str, float],
     spot_meta: dict[str, Any] | None,
-) -> tuple[dict[str, float], dict[str, float], bool]:
+    contexts: list[dict[str, Any]],
+) -> tuple[dict[str, float], dict[str, float], bool, dict[str, dict[str, Any]]]:
+    markets: dict[str, dict[str, Any]] = {}
+    volumes: dict[str, float | None] = {}
+    for ctx in contexts:
+        if not isinstance(ctx, dict) or not isinstance(ctx.get("coin"), str):
+            continue
+        pair_id = ctx["coin"].strip().upper()
+        volume = ctx.get("dayNtlVlm")
+        # Ambiguous or invalid observations cannot establish zero turnover.
+        if pair_id in volumes or not _is_valid_hl_num(volume) or float(volume) < 0:
+            volumes[pair_id] = None
+        else:
+            volumes[pair_id] = float(volume)
     spot_by_token: dict[str, float] = {}
     spot_by_coin: dict[str, float] = {}
-    has_spot_meta = False
 
-    for k, px in raw_mids.items():
-        if "/" in k and px > 0:
-            base_part, quote_part = k.split("/", 1)
-            if base_part.strip() and quote_part.strip().upper() in _HL_QUOTE_STABLES:
-                spot_by_coin[base_part.strip().upper()] = float(px)
+    for key, px in raw_mids.items():
+        base, _, quote = key.partition("/")
+        if base and quote in _HL_QUOTE_STABLES and px > 0:
+            spot_by_coin[base] = px
 
-    if isinstance(spot_meta, dict):
-        tokens = spot_meta.get("tokens")
-        universe = spot_meta.get("universe")
-        if isinstance(tokens, list) and isinstance(universe, list) and universe:
-            has_spot_meta = True
-            idx_to_name: dict[int, str] = {}
-            stable_quote_indices: set[int] = {0}
-            for tok in tokens:
-                if not isinstance(tok, dict) or tok.get("index") is None:
-                    continue
-                t_idx = int(tok["index"])
-                t_name = str(tok.get("name") or "").strip().upper()
-                if t_name:
-                    idx_to_name[t_idx] = t_name
-                    if t_name in _HL_QUOTE_STABLES:
-                        stable_quote_indices.add(t_idx)
+    meta = spot_meta or {}
+    tokens, universe = meta.get("tokens"), meta.get("universe")
+    if not isinstance(tokens, list) or not isinstance(universe, list) or not universe:
+        return spot_by_token, spot_by_coin, False, markets
 
-            for pair in universe:
-                if not isinstance(pair, dict):
-                    continue
-                ptoks = pair.get("tokens")
-                if not isinstance(ptoks, list) or len(ptoks) < 2:
-                    continue
-                base_idx, quote_idx = int(ptoks[0]), int(ptoks[1])
-                if quote_idx not in stable_quote_indices:
-                    continue
-                p_name = str(pair.get("name") or "").strip()
-                p_idx = pair.get("index")
-                px = raw_mids.get(p_name) or raw_mids.get(p_name.upper())
-                if px is None and p_idx is not None:
-                    px = raw_mids.get(f"@{p_idx}")
-                if px is None:
-                    b_name = idx_to_name.get(base_idx, "")
-                    if b_name:
-                        px = raw_mids.get(f"{b_name}/USDC")
-                if px is not None and float(px) > 0:
-                    key_tok = str(base_idx)
-                    if key_tok not in spot_by_token or quote_idx == 0:
-                        spot_by_token[key_tok] = float(px)
-                        b_name = idx_to_name.get(base_idx, "")
-                        if b_name:
-                            spot_by_coin[b_name] = float(px)
-
-    return spot_by_token, spot_by_coin, has_spot_meta
+    token_names = {
+        str(t["index"]): str(t["name"]).strip().upper() for t in tokens
+        if isinstance(t, dict) and t.get("index") is not None and t.get("name")
+    }
+    symbol_counts = Counter(token_names.values())
+    for pair in universe:
+        if not isinstance(pair, dict):
+            continue
+        token_ids = pair.get("tokens")
+        if not isinstance(token_ids, list) or len(token_ids) != 2:
+            continue
+        base_id, quote_id = map(str, token_ids)
+        asset = token_names.get(base_id)
+        quote = token_names.get(quote_id)
+        if not asset or quote not in _HL_QUOTE_STABLES:
+            continue
+        pair_id = str(pair.get("name") or "").strip().upper()
+        indexed_name = f"@{pair['index']}" if pair.get("index") is not None else ""
+        if pair_id != indexed_name and pair_id != f"{asset}/{quote}":
+            continue
+        # Only the venue-declared pair name and its official numeric ID are aliases.
+        # An invented BASE/QUOTE alias could borrow a same-named token's price or volume.
+        px = raw_mids.get(pair_id) or raw_mids.get(indexed_name)
+        if px is None or not math.isfinite(px) or px <= 0:
+            continue
+        if base_id in markets and quote_id != "0":
+            continue
+        spot_by_token[base_id] = px
+        spot_by_coin[asset] = px
+        volume = volumes.get(pair_id) if pair_id in volumes else volumes.get(indexed_name)
+        markets[base_id] = {
+            "asset": asset, "pair": pair_id, "quote_asset": quote,
+            "price": px, "volume_24h_quote": volume,
+        }
+    for asset, count in symbol_counts.items():
+        if count > 1:
+            spot_by_coin.pop(asset, None)
+    return spot_by_token, spot_by_coin, True, markets
 
 
 def resolve_hyperliquid_spot_price(bal: dict[str, Any], snap: dict[str, Any]) -> float:
@@ -590,9 +617,9 @@ def resolve_hyperliquid_spot_price(bal: dict[str, Any], snap: dict[str, Any]) ->
     spot_tok_px = snap.get("spot_token_prices") if isinstance(snap.get("spot_token_prices"), dict) else {}
     spot_coin_px = snap.get("spot_tickers") if isinstance(snap.get("spot_tickers"), dict) else {}
     tok_idx = bal.get("token")
-    if tok_idx is not None and str(tok_idx) in spot_tok_px:
+    if tok_idx is not None:
         try:
-            return max(0.0, float(spot_tok_px[str(tok_idx)] or 0.0))
+            return max(0.0, float(spot_tok_px.get(str(tok_idx)) or 0.0))
         except (TypeError, ValueError):
             return 0.0
     if ccy in spot_coin_px:
@@ -607,6 +634,37 @@ def resolve_hyperliquid_spot_price(bal: dict[str, Any], snap: dict[str, Any]) ->
         except (TypeError, ValueError):
             return 0.0
     return 0.0
+
+
+def resolve_hyperliquid_spot_market(
+    bal: dict[str, Any], snap: dict[str, Any], *, unit_price: float, quantity: float,
+) -> dict[str, Any]:
+    markets = snap.get("spot_markets") or {}
+    asset = str(bal.get("coin") or "").strip().upper()
+    if bal.get("token") is not None:
+        market = markets.get(str(bal["token"]))
+    else:
+        matches = [m for m in markets.values() if m.get("asset") == asset]
+        market = matches[0] if len(matches) == 1 else None
+    if not market or market.get("asset") != asset or unit_price <= 0 or market.get("price") != unit_price:
+        return {"liquidity": "unknown"}
+    volume = market.get("volume_24h_quote")
+    liquidity = "unknown"
+    if _is_valid_hl_num(volume) and float(volume) >= 0:
+        volume = float(volume)
+        if volume == 0:
+            liquidity = "zero_volume"
+        elif quantity * unit_price > volume:
+            liquidity = "holding_exceeds_volume"
+        else:
+            liquidity = "unflagged"
+    else:
+        volume = None
+    return {
+        "pair": market["pair"], "quote_asset": market["quote_asset"], "price": unit_price,
+        "volume_24h_quote": volume, "liquidity": liquidity,
+        "source": "Hyperliquid spotMetaAndAssetCtxs" if volume is not None else None,
+    }
 
 
 def _norm_hl_symbol(raw_coin: str) -> str:

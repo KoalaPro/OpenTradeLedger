@@ -272,6 +272,66 @@ afterEach(() => {
 })
 
 describe('Warnings, Partial Sync Banners, Sub-Account Onboarding & AuthGate Preferences', () => {
+  const unconfiguredGate: ExchangeAdapterInfo = {
+    venue_id: 'gate', display_name: 'Gate', display_name_zh: 'Gate', color_token: 'gate',
+    requires_passphrase: false, capabilities: {}, docs_url: '', api_base_url: '', configured: false,
+  }
+
+  function renderLedger(dash: DashboardData, adapter = unconfiguredGate) {
+    vi.spyOn(api, 'authStatus').mockResolvedValue({
+      initialized: true, enabled: false, authenticated: true, require_setup: false,
+    })
+    vi.spyOn(api, 'getDashboard').mockResolvedValue(dash)
+    vi.spyOn(api, 'getSettings').mockResolvedValue(uxBaseSettings)
+    vi.spyOn(api, 'listExchanges').mockResolvedValue({ adapters: [adapter], error_count: 0 })
+    vi.spyOn(api, 'getFxRates').mockResolvedValue(DEFAULT_FX)
+    vi.spyOn(api, 'getVersionCheck').mockRejectedValue(new Error('offline'))
+    render(<App />)
+  }
+
+  it('opens first-account settings from an empty live ledger and explains an empty sync', async () => {
+    vi.spyOn(api, 'triggerSync').mockResolvedValue({ ok: false, status: 'no_accounts', venues: {} })
+    const dash = makeDash({ demo_mode: false, has_live_data: false, exchanges: [], trades: [], last_sync_ms: 0 })
+    dash.reconciliation.residual_usd = 0
+    renderLedger(dash)
+    expect(await screen.findByRole('heading', { name: '尚未连接交易所' })).toBeTruthy()
+    expect(screen.queryByText('闭环对账 · 0.00 误差')).toBeNull()
+    expect(screen.queryByTestId('overview-page')).toBeNull()
+    expect(screen.queryByTestId('demo-mode-badge')).toBeNull()
+    fireEvent.click(screen.getByTestId('sync-now-btn'))
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn').textContent).toContain('没有可同步的账户'))
+    fireEvent.click(screen.getByRole('button', { name: '添加第一个账户' }))
+    expect(await screen.findByTestId('configure-adapter-gate')).toBeTruthy()
+  })
+
+  it('shows a connection check for an existing account awaiting its first readable snapshot', async () => {
+    vi.spyOn(api, 'testExchange').mockResolvedValue({ ok: true })
+    vi.spyOn(api, 'triggerSync').mockResolvedValue({ ok: false, status: 'no_accounts', venues: {} })
+    renderLedger(makeDash({ demo_mode: false, has_live_data: true, exchanges: [], trades: [] }), {
+      ...unconfiguredGate,
+      configured: true,
+      health: {
+        status: 'error', last_attempt_ms: 1, last_ok_ms: 0, error_code: 'AUTH_OR_IP_REJECTED',
+        error_reason: 'Invalid key', error_reason_zh: '密钥无效', raw_error: '',
+      },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: '检查账户连接' }))
+    expect(await screen.findByTestId('settings-page')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '添加第一个账户' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '重试连接' }))
+    expect(await screen.findByText('没有可同步的账户')).toBeTruthy()
+    expect(screen.queryByText(/连接与数据同步已恢复正常/)).toBeNull()
+  })
+
+  it('keeps the explicit demo dashboard and reports a demo refresh without a live sync', async () => {
+    vi.spyOn(api, 'triggerSync').mockResolvedValue({ ok: true, demo_mode: true, venues: {} })
+    renderLedger(makeDash({ demo_mode: true, explicit_demo_mode: true, has_live_data: false }))
+    expect(await screen.findByTestId('overview-page')).toBeTruthy()
+    expect(screen.getByTestId('demo-mode-badge')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('sync-now-btn'))
+    await waitFor(() => expect(screen.getByTestId('sync-now-btn').textContent).toContain('演示数据'))
+  })
+
   it('2. surfaces Partial Sync badge in TopBar and warning banners across Overview, Trades & Settings', async () => {
     const dashWithWarn = makeDash({
       warnings: [

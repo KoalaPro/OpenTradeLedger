@@ -52,8 +52,8 @@ export function SpotWalletTable({ balances, spotTotal, selected }: {
             <tbody>
               {balances.map(b => (
                 <tr
-                  key={`${b.venue_id}-${b.wallet_type}-${b.asset}`}
-                  className={b.venue_id === selected?.venue_id && b.asset === selected.asset ? 'selected' : undefined}
+                  key={`${b.venue_id}-${b.wallet_type}-${b.asset}-${b.spot_token_index ?? ''}`}
+                  className={b.venue_id === selected?.venue_id && b.asset === selected.asset && b.spot_token_index === selected.spot_token_index ? 'selected' : undefined}
                 >
                   <td>
                     <span className="inline-flex items-center gap-2 font-semibold">

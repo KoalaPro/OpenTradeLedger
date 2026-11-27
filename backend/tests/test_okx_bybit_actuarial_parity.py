@@ -35,7 +35,7 @@ async def test_okx_cursor_pagination_c2c_bills_copy_and_per_trade_rebate_matchin
                             "totalEq": "12500.00",
                             "details": [
                                 {"ccy": "USDT", "availBal": "9800.00", "eq": "10500.00", "eqUsd": "10500.00"},
-                                {"ccy": "NVDAX", "availBal": "10", "eq": "10", "eqUsd": "1400.00"},
+                                {"ccy": "XNVDA", "availBal": "10", "eq": "10", "eqUsd": "1400.00"},
                                 {"ccy": "ETH", "availBal": "0.2", "eq": "0.2", "eqUsd": "600.00"},
                             ],
                         }
@@ -169,7 +169,7 @@ async def test_okx_cursor_pagination_c2c_bills_copy_and_per_trade_rebate_matchin
                 json={
                     "code": "0",
                     "data": [
-                        {"instId": "NVDAX-USDT", "last": "140.00"},
+                        {"instId": "XNVDA-USDT", "last": "140.00"},
                         {"instId": "ETH-USDT", "last": "3000.00"},
                     ],
                 },
@@ -392,7 +392,7 @@ def test_okx_and_bybit_dashboard_decomposes_reconcile_streams_and_populates_copy
                     "totalEq": "12500.00",
                     "details": [
                         {"ccy": "USDT", "availBal": "9800.00", "eq": "10500.00", "eqUsd": "10500.00"},
-                        {"ccy": "NVDAX", "availBal": "10", "eq": "10", "eqUsd": "1400.00"},
+                        {"ccy": "XNVDA", "availBal": "10", "eq": "10", "eqUsd": "1400.00"},
                     ],
                 }
             ],
@@ -508,10 +508,10 @@ def test_okx_and_bybit_dashboard_decomposes_reconcile_streams_and_populates_copy
     assert any(p["venue_id"] == "okx" for p in cp["platforms"])
     assert cp["active_equity_usd"] >= 324.50
 
-    # 4. Stocks & Commodities extension includes NVDAX + AAPLX tokenized stocks AND TSLA_USDT + XAU_USDT perps!
+    # 4. Stocks & Commodities extension includes XNVDA + AAPLX tokenized stocks AND TSLA_USDT + XAU_USDT perps!
     st = dash["extensions"]["stocks"]
     holding_syms = {h["symbol"] for h in st["holdings"]}
-    assert {"NVDAX", "AAPLX"}.issubset(holding_syms)
+    assert {"XNVDA", "AAPLX"}.issubset(holding_syms)
     assert st["equity_usd"] >= 2100.0
     perp_syms = {(p["venue_id"], p["symbol"]) for p in st["perpetuals"]}
     assert ("okx", "TSLA_USDT") in perp_syms

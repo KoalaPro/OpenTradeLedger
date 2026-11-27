@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { OverviewPage } from '../pages/OverviewPage'
 import { I18nProvider } from '../i18n'
-import { DEFAULT_FX } from '../lib/currency'
+import { CurrencyProvider, DEFAULT_FX } from '../lib/currency'
 import type { DashboardData, UserSettings } from '../lib/types'
 
 afterEach(() => {
@@ -339,4 +339,86 @@ it('closes details from the previous ledger when a refresh discovers a mode chan
   demo = true
   fireEvent.click(within(screen.getByTestId('topbar-range-slot')).getByRole('button', { name: '7天' }))
   await waitFor(() => expect(screen.queryByTestId('spot-holding-detail-modal')).toBeNull())
+})
+
+it.each(['zh-CN', 'en'] as const)('shows the quoted low-liquidity subtotal and its pair evidence in %s', locale => {
+  const en = locale === 'en'
+  const sample = DASHBOARD_WITH_STOCK_AND_SPOT
+  const rub = { ...sample.spot_holdings![0], asset: 'RUB', venue_id: 'hyperliquid', venue_name: 'Hyperliquid',
+    qty: 2, price_usd: 16438, market_value_usd: 32876, wallet_type: 'SPOT',
+    spot_market: { pair: '@173', quote_asset: 'USDC', price: 16438, volume_24h_quote: 0,
+      source: 'Hyperliquid spotMetaAndAssetCtxs', liquidity: 'zero_volume' as const } }
+  const other = { ...rub, venue_id: 'gate', venue_name: 'Gate', spot_market: undefined }
+  const data = { ...sample, summary: { ...sample.summary, total_equity_usd: 65752 },
+    spot_holdings: [rub, other], spot_wallet_balances: [rub, other] }
+  const view = (current: DashboardData) => <I18nProvider locale={locale}><CurrencyProvider currency="CNY"
+    fx={{ ...DEFAULT_FX, rates: { ...DEFAULT_FX.rates, CNY: 7 } }}><OverviewPage data={current}
+      onNavigate={() => {}} /></CurrencyProvider></I18nProvider>
+  const { rerender } = render(view(data))
+  const kpi = screen.getByTestId('kpi-equity')
+  expect(kpi.textContent).toContain(en ? 'Low-liquidity estimate' : '低流动性估值')
+  expect(within(kpi).getByText(/230,132/).closest('.sensitive')).toBeTruthy()
+  fireEvent.click(kpi)
+  const breakdown = within(screen.getByTestId('equity-drawer'))
+  expect(breakdown.getByText(/RUB.*USDC/)).toBeTruthy()
+  fireEvent.keyDown(screen.getByTestId('equity-drawer'), {key: 'Escape'})
+  fireEvent.click(screen.getAllByRole('button', {name: 'RUB'})[0])
+  const detail = screen.getByTestId('spot-holding-detail-modal')
+  expect(detail.textContent).toContain('@173')
+  expect(detail.textContent).toContain('16,438 USDC')
+  expect(detail.textContent).toContain('0 USDC')
+  expect(detail.textContent).toContain('spotMetaAndAssetCtxs')
+  fireEvent.keyDown(detail, {key: 'Escape'})
+  rerender(view({ ...data, spot_holdings: [other], spot_wallet_balances: [other] }))
+  expect(kpi.textContent).not.toContain(en ? 'Low-liquidity estimate' : '低流动性估值')
+})
+
+it('shows the three largest low-liquidity holdings first and can expand the full breakdown', () => {
+  const sample = DASHBOARD_WITH_STOCK_AND_SPOT
+  const rows = [1, 5, 2, 4, 3].map(value => ({
+    ...sample.spot_holdings![0], asset: 'COIN' + value, market_value_usd: value,
+    spot_market: { pair: '@' + value, quote_asset: 'USDC', price: 1, volume_24h_quote: 0, liquidity: 'zero_volume' as const },
+  }))
+  render(<I18nProvider locale="en"><OverviewPage data={{ ...sample, spot_wallet_balances: rows }}
+    onNavigate={() => {}} /></I18nProvider>)
+  fireEvent.click(screen.getByTestId('kpi-equity'))
+  const drawer = within(screen.getByTestId('equity-drawer'))
+  const pairs = () => drawer.getAllByText(/COIN\d\/USDC/).map(el => el.textContent?.split('/')[0])
+  expect(pairs()).toEqual(['COIN5', 'COIN4', 'COIN3'])
+  fireEvent.click(drawer.getByRole('button', {name: 'Show 2 more holdings'}))
+  expect(pairs()).toEqual(['COIN5', 'COIN4', 'COIN3', 'COIN2', 'COIN1'])
+  fireEvent.click(drawer.getByRole('button', {name: 'Show fewer holdings'}))
+  expect(pairs()).toHaveLength(3)
+})
+
+it('opens the selected token index when two spot balances share a name on the same venue', () => {
+  const sample = DASHBOARD_WITH_STOCK_AND_SPOT
+  const first = { ...sample.spot_holdings![0], asset: 'DUP', venue_id: 'hyperliquid', venue_name: 'Hyperliquid',
+    spot_token_index: 12, spot_market: { pair: '@21', quote_asset: 'USDC', price: 1, volume_24h_quote: 0,
+      liquidity: 'zero_volume' as const } }
+  const second = { ...first, spot_token_index: 33, spot_market: { ...first.spot_market, pair: '@89' } }
+  render(<I18nProvider locale="en"><OverviewPage data={{ ...sample, spot_holdings: [first, second],
+    spot_wallet_balances: [first, second] }} onNavigate={() => {}} /></I18nProvider>)
+  fireEvent.click(screen.getAllByRole('button', {name: 'DUP'})[1])
+  expect(screen.getByTestId('spot-holding-detail-modal').textContent).toContain('@89')
+})
+
+it('counts a promoted stock token and wallet-only dust once, excluding unknown coverage', () => {
+  const sample = DASHBOARD_WITH_STOCK_AND_SPOT
+  const market = { pair: '@20', quote_asset: 'USDC', price: 1, volume_24h_quote: 0, liquidity: 'zero_volume' as const }
+  const spot = { ...sample.spot_holdings![0], asset: 'COIN', market_value_usd: 2, spot_market: market }
+  const dust = { ...spot, asset: 'DUST', market_value_usd: 0.006 }
+  const unknown = { ...spot, asset: 'UNKNOWN', market_value_usd: 400, spot_market: { liquidity: 'unknown' as const } }
+  const stock = { ...sample.extensions.stocks.holdings[0], market_value_usd: 200, spot_market: {
+    ...market, volume_24h_quote: 12, liquidity: 'holding_exceeds_volume' as const } }
+  const data = { ...sample, spot_wallet_balances: [spot, dust, unknown], spot_holdings: [spot, unknown],
+    extensions: { ...sample.extensions, stocks: { ...sample.extensions.stocks, holdings: [stock] } } }
+  render(<I18nProvider locale="en"><OverviewPage data={data} onNavigate={() => {}} /></I18nProvider>)
+  const kpi = screen.getByTestId('kpi-equity')
+  expect(kpi.textContent).toContain('202.01 U')
+  fireEvent.click(kpi)
+  const breakdown = within(screen.getByTestId('equity-drawer'))
+  expect(breakdown.getByText(/DUST\/USDC/)).toBeTruthy()
+  expect(breakdown.getByText(/ANT\/USDC/)).toBeTruthy()
+  expect(breakdown.queryByText(/UNKNOWN/)).toBeNull()
 })
