@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import os
+import re
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from opentradeledger.core.copy_watcher import extract_portfolio_ids
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.security.local_auth import AUTH_COOKIE_NAME
 
+_PROXY_HOST_LABEL = re.compile(rb"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?")
 _HOST_PROXY_ENV = {
     name: os.environ.get(name)
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
@@ -33,19 +35,32 @@ class OutboundProxyError(ValueError):
         self.message_zh = message_zh
 
 
-def _validate_outbound_proxy(raw_proxy: str) -> str:
-    cleaned = raw_proxy.strip()
-    if not cleaned:
-        return ""
+def _validate_outbound_proxy(raw_proxy: object) -> str:
     try:
-        parts = urlsplit(cleaned)
-        if (parts.scheme not in {"http", "https", "socks5", "socks5h"}
-                or not parts.hostname or parts.netloc.endswith(":") or parts.port == 0
-                or parts.path not in ("", "/") or "?" in cleaned or "#" in cleaned
-                or "\\" in cleaned or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in cleaned)):
+        if raw_proxy is None:
+            return ""
+        if not isinstance(raw_proxy, str):
             raise ValueError
-        # Validate with the parser used by the transport as well (e.g. bracketed IPv6).
-        httpx.Proxy(cleaned)
+        cleaned = raw_proxy.strip()
+        if not cleaned:
+            return ""
+        if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in cleaned):
+            raise ValueError
+        parts = urlsplit(cleaned)
+        if parts.scheme not in {"http", "https", "socks5", "socks5h"} or not parts.hostname:
+            raise ValueError
+        if parts.netloc.endswith(":") or parts.port == 0 or parts.path not in ("", "/"):
+            raise ValueError
+        if any(c in cleaned for c in ("?", "#", "\\")):
+            raise ValueError
+
+        # HTTPX validates IP literals and converts international hostnames to ASCII.
+        host = httpx.Proxy(cleaned).url.raw_host
+        if b":" not in host:
+            host = host.removesuffix(b".")
+            labels = host.split(b".")
+            if len(host) > 253 or not all(_PROXY_HOST_LABEL.fullmatch(label) for label in labels):
+                raise ValueError
     except (ValueError, httpx.InvalidURL) as exc:
         raise OutboundProxyError(
             "Invalid proxy address. Enter an HTTP, HTTPS, SOCKS5 or SOCKS5H host with an optional port (1–65535).",

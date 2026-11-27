@@ -1651,6 +1651,27 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   .otl-position-heading > div { column-gap: 5px; }
   .otl-position-lifecycle dl { column-gap: 4px; }
 }
+.otl-leg-fee-lines > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 8px;
+}
+.otl-leg-fee-lines > div > :first-child { flex: none; white-space: nowrap; }
+.otl-leg-fee-lines > div > :last-child {
+  margin-left: auto;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.otl-leg-fee-columns { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+.otl-leg-fee-columns > div {
+  flex: 1 1 max-content;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .otl-trade-inspector { scroll-margin-top: 92px; }
 .otl-position-fills { margin-top: 5px; }
 .otl-position-fills summary {

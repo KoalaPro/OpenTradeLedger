@@ -59,7 +59,7 @@ function LegFeeCard({
   const cur = useCurrency()
   const feeUnknown = leg.fee_known === false
   return (
-    <div data-testid={testId} className={`space-y-2 ${padClass}`}>
+    <div data-testid={testId} className={`min-w-0 space-y-2 ${padClass}`}>
       <div>
         <div className="font-semibold text-[13px] text-[var(--fg)] flex items-center gap-1.5 flex-wrap">
           <span>{title}</span>
@@ -81,16 +81,16 @@ function LegFeeCard({
         </div>
       </div>
 
-      <div className="pt-2 border-t border-[var(--border)] space-y-1 text-[12px] tabular-nums">
-        <div className="flex items-center justify-between gap-2">
+      <div className="otl-leg-fee-lines pt-2 border-t border-[var(--border)] space-y-1 text-[12px] tabular-nums">
+        <div>
           <span className="text-[var(--fg-3)]">{t('leg_gross_fee')}</span>
-          <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
+          <span className={`sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
             {feeUnknown ? t('leg_fee_unknown') : formatExecutionFee(cur, -leg.gross_fee_usd, feeDecimals)}
           </span>
         </div>
-        <div className="flex items-center justify-between gap-2">
+        <div>
           <span className="text-[var(--fg-3)]">{t('leg_rebate_disc')}</span>
-          <span className={`whitespace-nowrap sensitive ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
+          <span className={`sensitive ${!feeUnknown && leg.rebate_usd > 0 ? 'txt-pos' : 'text-[var(--fg-3)]'}`}>
             {feeUnknown
               ? '—'
               : leg.rebate_usd > 0
@@ -99,18 +99,18 @@ function LegFeeCard({
           </span>
         </div>
         {!feeUnknown && leg.discount_saved_usd > 0 && (
-          <div className="flex items-center justify-between gap-2">
+          <div>
             <span className="text-[var(--fg-3)]">
               {locale === 'en' ? 'Pre-discount' : '抵扣已省'}
             </span>
-            <span className="txt-pos sensitive whitespace-nowrap">
+            <span className="txt-pos sensitive">
               {formatExecutionFee(cur, leg.discount_saved_usd, feeDecimals)}
             </span>
           </div>
         )}
-        <div className="flex items-center justify-between gap-2 font-semibold pt-1">
+        <div className="font-semibold pt-1">
           <span className="text-[var(--fg-2)]">{netLabel}</span>
-          <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
+          <span className={`sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
             {feeUnknown ? '—' : formatExecutionFee(cur, -leg.net_fee_usd, feeDecimals)}
           </span>
         </div>

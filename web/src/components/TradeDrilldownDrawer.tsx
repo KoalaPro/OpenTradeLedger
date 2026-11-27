@@ -68,7 +68,7 @@ function CompactLegRow({
           )}
         </span>
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="otl-leg-fee-columns">
         <div>
           <div className="text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
           <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
@@ -85,7 +85,7 @@ function CompactLegRow({
                 : leg.gross_fee_usd === 0 ? t('leg_zero_fee') : cur.money(0, 3)}
           </div>
           {!feeUnknown && leg.discount_saved_usd > 0 && (
-            <div className="txt-pos mt-0.5 sensitive whitespace-nowrap">
+            <div className="txt-pos mt-0.5 sensitive">
               {locale === 'en'
                 ? `Pre-disc ${formatExecutionFee(cur, leg.discount_saved_usd, 3)}`
                 : `抵扣已省 ${formatExecutionFee(cur, leg.discount_saved_usd, 3)}`}

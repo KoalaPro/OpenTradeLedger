@@ -20,6 +20,7 @@ def client(tmp_path, monkeypatch):
     "http://", "http://127.0.0.1:bad", "https://host:0", "http://host:65536",
     "socks5://host:", "http://[::1", "http://a b:80", "https://host/path",
     "http://host?token=private", "ftp://host", "http://a\\b:80", "http://[::1]extra:80",
+    "http://..:8888", "http://proxy%2Ftest:80", False, 0, [], {},
 ])
 def test_bad_proxy_leaves_working_settings_and_routing_intact(client, invalid):
     path = "/api/v1/settings"

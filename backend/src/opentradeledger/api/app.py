@@ -449,7 +449,7 @@ def create_app(
         patch = dict(patch)
         if "outbound_proxy_url" in patch:
             try:
-                patch["outbound_proxy_url"] = _validate_outbound_proxy(str(patch["outbound_proxy_url"] or ""))
+                patch["outbound_proxy_url"] = _validate_outbound_proxy(patch["outbound_proxy_url"])
             except OutboundProxyError as exc:
                 return JSONResponse(status_code=400, content={"detail": str(exc), "detail_zh": exc.message_zh})
         changes = patch.pop("notifications", {})
