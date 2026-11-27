@@ -35,15 +35,35 @@ function modeText(code: string, t: (k: MessageKey) => string): string {
   return known[code] ? t(known[code]) : code
 }
 
-function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: string; leg: TradeLegFee }) {
+function CompactLegRow({
+  title,
+  netLabel,
+  leg,
+  symbol,
+  batches,
+}: {
+  title: string
+  netLabel: string
+  leg: TradeLegFee
+  symbol?: string
+  batches?: TradeExitBatch[]
+}) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
   const feeUnknown = leg.fee_known === false
+  const exitBatches = batches && batches.length > 1 ? batches : null
   return (
     <div className="py-2.5 border-t border-[var(--border)] space-y-1.5 text-[12px]">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-semibold text-[var(--fg-2)]">{title}</span>
+          <span className="font-semibold text-[var(--fg-2)]">
+            {title}
+            {exitBatches
+              ? locale === 'en'
+                ? ` · ${exitBatches.length} Exits`
+                : ` · 分 ${exitBatches.length} 笔`
+              : ''}
+          </span>
           <span className="text-[var(--fg)] truncate">
             · {feeUnknown ? t('leg_fee_unknown') : `${modeText(leg.mode_code, t)} · ${fmtLegRate(leg.fee_bps, locale)}`}
           </span>
@@ -89,6 +109,63 @@ function CompactLegRow({ title, netLabel, leg }: { title: string; netLabel: stri
           </div>
         </div>
       </div>
+
+      {exitBatches && (
+        <div className="pt-2 border-t border-[var(--border)] space-y-1.5">
+          {exitBatches.map((b, idx) => {
+            const bFeeUnknown = b.fee_known === false
+            return (
+              <div
+                key={b.batch_index}
+                className={
+                  idx > 0
+                    ? 'pt-1.5 border-t border-dashed border-[var(--border)] space-y-0.5'
+                    : 'space-y-0.5'
+                }
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-medium text-[var(--fg)]">
+                      {locale === 'en' ? `Exit #${b.batch_index}` : `第 ${b.batch_index} 笔`}
+                    </span>
+                    {(b.qty != null || b.contract_count != null) && symbol && (
+                      <span className="text-[var(--fg-2)] sensitive">
+                        ·{' '}
+                        {fmtContractQty(
+                          { symbol, qty: b.qty, contract_count: b.contract_count },
+                          locale,
+                        )}
+                      </span>
+                    )}
+                    {b.avg_price > 0 && (
+                      <span className="text-[var(--fg-2)]">
+                        @ <span className="font-medium text-[var(--fg)] sensitive">{fmtPrice(b.avg_price)}</span>
+                      </span>
+                    )}
+                  </div>
+                  <span className={`font-medium whitespace-nowrap sensitive ${pnlTone(b.gross_pnl_usd)}`}>
+                    {locale === 'en' ? 'Spread ' : '价差 '}
+                    {cur.signedMoney(b.gross_pnl_usd)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--fg-3)]">
+                  <span>
+                    {b.time_str} ·{' '}
+                    {bFeeUnknown
+                      ? t('leg_fee_unknown')
+                      : `${modeText(b.mode_code, t)} · ${fmtLegRate(b.fee_bps, locale)}`}
+                  </span>
+                  <span className="whitespace-nowrap sensitive">
+                    {bFeeUnknown
+                      ? t('leg_fee_unknown')
+                      : `${t('fee_exit_short')} -${cur.plainMoney(b.gross_fee_usd, 3)} · ${t('fee_net_short')} ${cur.signedMoney(-b.net_fee_usd, 3)}`}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -360,14 +437,10 @@ export function TradeDrilldownDrawer({
                           <span className="font-medium text-[var(--fg)] whitespace-nowrap">
                             {tr.close_time_str}
                           </span>
-                          {tr.exit_batches && tr.exit_batches.length > 1 && (
-                            <span className="px-1.5 py-0.5 rounded text-[11px] font-medium text-[var(--fg-2)] bg-[var(--surface-2)] border border-[var(--border)] whitespace-nowrap">
-                              {locale === 'en'
-                                ? `${tr.exit_batches.length} Exits`
-                                : `分 ${tr.exit_batches.length} 笔`}
-                            </span>
-                          )}
                           <span className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
+                            {tr.exit_batches && tr.exit_batches.length > 1
+                              ? `· ${locale === 'en' ? `${tr.exit_batches.length} Exits` : `分 ${tr.exit_batches.length} 笔`} `
+                              : ''}
                             · {fmtDuration(tr.holding_sec, locale)}
                             {(tr.contract_count != null || tr.qty != null) && (
                               <span className="sensitive"> · {fmtContractQty(tr, locale)}</span>
@@ -413,76 +486,9 @@ export function TradeDrilldownDrawer({
                         title={t('leg_exit')}
                         netLabel={t('leg_exit_net')}
                         leg={tr.exit_leg}
+                        symbol={tr.symbol}
+                        batches={tr.exit_batches}
                       />
-                      {tr.exit_batches && tr.exit_batches.length > 1 && (
-                        <div className="py-2.5 border-t border-[var(--border)] space-y-1.5 text-[12px]">
-                          <div className="flex items-center justify-between gap-2 flex-wrap">
-                            <span className="font-semibold text-[var(--fg-2)]">
-                              {t('exit_batches_title')}（
-                              {locale === 'en'
-                                ? `${tr.exit_batches.length}`
-                                : `共 ${tr.exit_batches.length} 笔`}
-                              ）
-                            </span>
-                            <span className="text-[11px] text-[var(--fg-3)]">{t('exit_batches_note')}</span>
-                          </div>
-                          <div className="space-y-1.5">
-                            {tr.exit_batches.map((b: TradeExitBatch) => {
-                              const bFeeUnknown = b.fee_known === false
-                              return (
-                                <div
-                                  key={b.batch_index}
-                                  className="px-2.5 py-1.5 rounded bg-[var(--surface)] border border-[var(--border)] space-y-0.5"
-                                >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <div className="flex items-center gap-1.5 flex-wrap">
-                                      <span className="font-medium text-[var(--fg)]">
-                                        {locale === 'en' ? `Exit #${b.batch_index}` : `第 ${b.batch_index} 笔`}
-                                      </span>
-                                      {(b.qty != null || b.contract_count != null) && (
-                                        <span className="text-[var(--fg-2)] sensitive">
-                                          ·{' '}
-                                          {fmtContractQty(
-                                            {
-                                              symbol: tr.symbol,
-                                              qty: b.qty,
-                                              contract_count: b.contract_count,
-                                            },
-                                            locale,
-                                          )}
-                                        </span>
-                                      )}
-                                      {b.avg_price > 0 && (
-                                        <span className="text-[var(--fg-2)]">
-                                          @ <span className="sensitive">{fmtPrice(b.avg_price)}</span>
-                                        </span>
-                                      )}
-                                    </div>
-                                    <span
-                                      className={`font-semibold whitespace-nowrap sensitive ${pnlTone(b.net_pnl_usd)}`}
-                                    >
-                                      {cur.signedMoney(b.net_pnl_usd)}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--fg-3)]">
-                                    <span className="truncate">
-                                      {b.time_str} ·{' '}
-                                      {bFeeUnknown
-                                        ? t('leg_fee_unknown')
-                                        : `${modeText(b.mode_code, t)} · ${fmtLegRate(b.fee_bps, locale)}`}
-                                    </span>
-                                    <span className="whitespace-nowrap sensitive">
-                                      {bFeeUnknown
-                                        ? t('leg_fee_unknown')
-                                        : `${t('fee_exit_short')} -${cur.money(b.gross_fee_usd, 3)} · ${t('fee_net_short')} ${cur.signedMoney(-b.net_fee_usd, 3)}`}
-                                    </span>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )}
                       <div className="pt-2.5 border-t border-[var(--border)] space-y-1 text-[12px]">
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
