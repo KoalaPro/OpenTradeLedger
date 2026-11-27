@@ -22,7 +22,7 @@ import httpx
 
 from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, project_live_reduction, usd_fee
 from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
-from opentradeledger.core.venue_primitives import normalize_internal_record_to_public_trade
+from opentradeledger.core.venue_primitives import normalize_internal_record_to_public_trade, sum_fees
 
 from opentradeledger.security.readonly_guard import assert_readonly_request
 
@@ -691,12 +691,12 @@ def normalize_kucoin_closed_trades(
             dedup_pos_map[pk] = p
     unique_positions = list(dedup_pos_map.values())
 
-    rebate_sum = sum(
+    rebate_sum = sum_fees(
         max(0.0, float(tx.get("amount") or 0.0))
         for tx in (tx_history or [])
         if isinstance(tx, dict) and "REBATE" in str(tx.get("type") or "").upper()
     )
-    total_pos_fees = sum(abs(float(p.get("tradeFee") or p.get("fee") or 0.0)) for p in unique_positions)
+    total_pos_fees = sum_fees(abs(float(p.get("tradeFee") or p.get("fee") or 0.0)) for p in unique_positions)
     rebate_ratio = min(0.95, rebate_sum / total_pos_fees) if total_pos_fees > 0 and rebate_sum > 0 else 0.0
 
     records: list[dict[str, Any]] = []
@@ -863,7 +863,7 @@ def normalize_kucoin_closed_trades(
         exit_notional = sum(p["exit_notional"] for p in grp) if all(p["exit_notional"] for p in grp) else 0.0
         entry_px = (entry_notional / eff_coin_qty) if eff_coin_qty > 0 else last_pr["entry_px"]
         exit_px = (exit_notional / eff_coin_qty) if eff_coin_qty > 0 else last_pr["exit_px"]
-        pos_total_fee = sum(p["pos_total_fee"] for p in grp)
+        pos_total_fee = sum_fees(p["pos_total_fee"] for p in grp)
         funding_pnl = sum(p["funding_pnl"] for p in grp)
         gross_pnl = round(sum(p["gross_pnl"] for p in grp), 6)
         book_pnl = round(sum(p["book_pnl"] for p in grp), 6)
@@ -879,10 +879,11 @@ def normalize_kucoin_closed_trades(
         if en_fills or ex_fills:
             en_fill_sz = sum(abs(float(f.get("size") or f.get("qty") or 0.0)) for f in en_fills)
             en_scale = (qty / en_fill_sz) if (qty > 0 and en_fill_sz > qty + 1e-9) else 1.0
-            en_fee = sum((_kucoin_fee(f) or 0.0) for f in en_fills) * en_scale
-            ex_fee = sum((_kucoin_fee(f) or 0.0) for f in ex_fills)
-            if pos_total_fee > 0 and (en_fee + ex_fee) > 0 and all(_kucoin_fee(f) is not None for f in win_fills):
-                scale = pos_total_fee / (en_fee + ex_fee)
+            en_fee = sum_fees((_kucoin_fee(f) or 0.0) for f in en_fills) * en_scale
+            ex_fee = sum_fees((_kucoin_fee(f) or 0.0) for f in ex_fills)
+            priced_fees = sum_fees((en_fee, ex_fee))
+            if pos_total_fee > 0 and priced_fees > 0 and all(_kucoin_fee(f) is not None for f in win_fills):
+                scale = pos_total_fee / priced_fees
                 en_fee *= scale
                 ex_fee *= scale
             en_makers = any(str(f.get("liquidity") or "").lower() == "maker" for f in en_fills)
@@ -906,10 +907,10 @@ def normalize_kucoin_closed_trades(
             entry_known = exit_known = fee_known = pos_total_fee == 0
 
         native_total = all(p["has_total_fee"] for p in grp)
-        total_fee = round(pos_total_fee if native_total and not fee_known else en_fee + ex_fee, 6)
-        en_reb = round(max(0.0, en_fee) * rebate_ratio, 6)
-        ex_reb = round(max(0.0, ex_fee) * rebate_ratio, 6)
-        total_rebate = round(en_reb + ex_reb, 6)
+        total_fee = pos_total_fee if native_total and not fee_known else sum_fees((en_fee, ex_fee))
+        en_reb = max(0.0, en_fee) * rebate_ratio
+        ex_reb = max(0.0, ex_fee) * rebate_ratio
+        total_rebate = sum_fees((en_reb, ex_reb))
 
         gross_known = all(p["has_explicit_gross"] or (p["entry_notional"] and p["exit_notional"]) for p in grp)
         if not has_explicit_net and gross_known:
@@ -955,7 +956,7 @@ def normalize_kucoin_closed_trades(
                 ef_ts = _kucoin_ts_ms(ef.get("createdAt") or ef.get("tradeTime"))
                 best_i = min(range(len(grp)), key=lambda idx_p: (abs(ef_ts - grp[idx_p]["close_ms"]), idx_p))
                 sub_ex_fills[best_i].append(ef)
-            raw_ex_fee_sum = sum((_kucoin_fee(f) or 0.0) for f in ex_fills)
+            raw_ex_fee_sum = sum_fees((_kucoin_fee(f) or 0.0) for f in ex_fills)
             ex_fee_scale_kc = (ex_fee / raw_ex_fee_sum) if raw_ex_fee_sum != 0 else 1.0
             rem_kc_ex_fee = ex_fee
             for b_i, p_it in enumerate(grp):
@@ -964,11 +965,11 @@ def normalize_kucoin_closed_trades(
                 if b_last:
                     b_fee = rem_kc_ex_fee
                 elif p_efs:
-                    b_fee = sum((_kucoin_fee(f) or 0.0) for f in p_efs) * ex_fee_scale_kc
-                    rem_kc_ex_fee -= b_fee
+                    b_fee = sum_fees((_kucoin_fee(f) or 0.0) for f in p_efs) * ex_fee_scale_kc
+                    rem_kc_ex_fee = sum_fees((rem_kc_ex_fee, -b_fee))
                 else:
                     b_fee = (ex_fee * (p_it["exit_notional"] / exit_notional)) if exit_notional > 0 else (ex_fee / len(grp))
-                    rem_kc_ex_fee -= b_fee
+                    rem_kc_ex_fee = sum_fees((rem_kc_ex_fee, -b_fee))
                 b_mk = any(str(f.get("liquidity") or "").lower() == "maker" for f in p_efs)
                 b_tk = any(str(f.get("liquidity") or "").lower() != "maker" for f in p_efs)
                 order_ids = {str(f.get("orderId") or "") for f in p_efs}
@@ -981,8 +982,8 @@ def normalize_kucoin_closed_trades(
                 )
                 b_not = float(p_it["exit_notional"])
                 b_bps = round(b_fee / b_not * 10_000, 2) if (batch_fee_known and b_not > 0) else None
-                b_reb = round(max(0.0, b_fee) * rebate_ratio, 4)
-                b_net_f = round(b_fee - b_reb, 4)
+                b_reb = max(0.0, b_fee) * rebate_ratio
+                b_net_f = sum_fees((b_fee, -b_reb))
                 b_gpnl = float(p_it["gross_pnl"])
                 b_ts = int(p_it["close_ms"])
                 kc_exit_batches.append(
@@ -999,7 +1000,7 @@ def normalize_kucoin_closed_trades(
                         "time_str": _fmt_bj_ms(b_ts),
                         "avg_price": round(float(p_it["exit_px"]), 6),
                         "notional_usd": round(b_not, 2) if b_not > 0 else None,
-                        "gross_fee_usd": round(b_fee, 4),
+                        "gross_fee_usd": b_fee,
                         "discount_saved_usd": 0.0,
                         "discount_asset": "",
                         "rebate_usd": b_reb,
@@ -1029,10 +1030,10 @@ def normalize_kucoin_closed_trades(
                 **({"statement_net_by_day": dated_cash([(p["close_ms"], p["book_pnl"]) for p in grp])}
                    if has_explicit_net and not fee_known else {}),
                 "total_fee_known": native_total or fee_known,
-                "total_fee_usd": round(total_fee, 4),
-                "total_rebate_usd": round(total_rebate, 4),
+                "total_fee_usd": total_fee,
+                "total_rebate_usd": total_rebate,
                 "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(total_fee - total_rebate, 4),
+                "net_fee_usd": sum_fees((total_fee, -total_rebate)),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
                 "is_partial_close": is_partial_kc,
@@ -1044,12 +1045,12 @@ def normalize_kucoin_closed_trades(
                     "time_ms": open_ms,
                     "avg_price": round(entry_px, 6),
                     "notional_usd": round(entry_notional, 2) if entry_notional > 0 else None,
-                    "gross_fee_usd": round(en_fee, 4),
+                    "gross_fee_usd": en_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "",
-                    "rebate_usd": round(en_reb, 4),
+                    "rebate_usd": en_reb,
                     "rebate_pct": round(rebate_ratio * 100.0, 2),
-                    "net_fee_usd": round(en_fee - en_reb, 4),
+                    "net_fee_usd": sum_fees((en_fee, -en_reb)),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -1061,12 +1062,12 @@ def normalize_kucoin_closed_trades(
                     "time_ms": close_ms,
                     "avg_price": round(exit_px, 6),
                     "notional_usd": round(exit_notional, 2) if exit_notional > 0 else None,
-                    "gross_fee_usd": round(ex_fee, 4),
+                    "gross_fee_usd": ex_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "",
-                    "rebate_usd": round(ex_reb, 4),
+                    "rebate_usd": ex_reb,
                     "rebate_pct": round(rebate_ratio * 100.0, 2),
-                    "net_fee_usd": round(ex_fee - ex_reb, 4),
+                    "net_fee_usd": sum_fees((ex_fee, -ex_reb)),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },

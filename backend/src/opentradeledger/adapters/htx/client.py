@@ -19,6 +19,7 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 
 from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, usd_fee
+from opentradeledger.core.venue_primitives import sum_fees
 from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
 
 from opentradeledger.security.readonly_guard import assert_readonly_request
@@ -727,7 +728,7 @@ def normalize_htx_closed_trades(
             dedup_matches[htx_match_unique_key(m_row, fallback_idx=idx_m)] = m_row
     unique_matches = list(dedup_matches.values())
 
-    total_fees_raw = sum(max(0.0, -(usd_fee(m.get("trade_fee"), m.get("fee_asset") or "USDT") or 0.0))
+    total_fees_raw = sum_fees(max(0.0, -(usd_fee(m.get("trade_fee"), m.get("fee_asset") or "USDT") or 0.0))
                          for m in unique_matches)
     rebate_ratio = min(0.95, rebate_sum / total_fees_raw) if total_fees_raw > 0 and rebate_sum > 0 else 0.0
 
@@ -779,8 +780,8 @@ def normalize_htx_closed_trades(
                 funding_pnl += float(fl["amt"])
                 funding_receipts.append((fl["ts"], fl["amt"]))
 
-        total_fee = round(en_fee + ex_fee, 6)
-        total_rebate = round(en_reb + ex_reb, 6)
+        total_fee = sum_fees((en_fee, ex_fee))
+        total_rebate = sum_fees((en_reb, ex_reb))
         book_pnl = round(offset_pl - total_fee + funding_pnl, 6)
         net_pnl = round(book_pnl + total_rebate, 6)
         settled_str = _fmt_bj_ms(close_ms) if total_rebate > 0 else ""
@@ -810,10 +811,10 @@ def normalize_htx_closed_trades(
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_known": net_known,
                 "net_pnl_known": net_known,
-                "total_fee_usd": round(total_fee, 4),
-                "total_rebate_usd": round(total_rebate, 4),
+                "total_fee_usd": total_fee,
+                "total_rebate_usd": total_rebate,
                 "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(total_fee - total_rebate, 4),
+                "net_fee_usd": sum_fees((total_fee, -total_rebate)),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
                 "is_partial_close": is_partial,
@@ -825,12 +826,12 @@ def normalize_htx_closed_trades(
                     "time_ms": open_ms,
                     "avg_price": round(en_px, 6),
                     "notional_usd": round(en_notional, 2),
-                    "gross_fee_usd": round(en_fee, 4),
+                    "gross_fee_usd": en_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "",
-                    "rebate_usd": round(en_reb, 4),
+                    "rebate_usd": en_reb,
                     "rebate_pct": round((en_reb / en_fee) * 100.0, 2) if en_fee > 0 else (100.0 if en_reb > 0 else 0.0),
-                    "net_fee_usd": round(en_fee - en_reb, 4),
+                    "net_fee_usd": sum_fees((en_fee, -en_reb)),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -842,12 +843,12 @@ def normalize_htx_closed_trades(
                     "time_ms": close_ms,
                     "avg_price": round(ex_px, 6),
                     "notional_usd": round(ex_notional, 2),
-                    "gross_fee_usd": round(ex_fee, 4),
+                    "gross_fee_usd": ex_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "",
-                    "rebate_usd": round(ex_reb, 4),
+                    "rebate_usd": ex_reb,
                     "rebate_pct": round((ex_reb / ex_fee) * 100.0, 2) if ex_fee > 0 else (100.0 if ex_reb > 0 else 0.0),
-                    "net_fee_usd": round(ex_fee - ex_reb, 4),
+                    "net_fee_usd": sum_fees((ex_fee, -ex_reb)),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -870,8 +871,8 @@ def normalize_htx_closed_trades(
         en_reb = float(lot["rebate"]) * ratio + (en_fee * rebate_ratio)
         ex_notional = sum(float(x["notional"]) for x in exits)
         ex_px = (ex_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
-        ex_fee = sum(float(x["fee_paid"]) for x in exits)
-        ex_reb = sum(float(x["maker_rebate"]) for x in exits) + (ex_fee * rebate_ratio)
+        ex_fee = sum_fees(float(x["fee_paid"]) for x in exits)
+        ex_reb = sum_fees(float(x["maker_rebate"]) for x in exits) + (ex_fee * rebate_ratio)
         evidence = lot["event_fills"]
         units = {f["qty_unit"] for f in evidence}
         events = build_position_events(evidence, side=trade_side, linear=units == {"base"}) if len(units) == 1 else []
@@ -895,10 +896,10 @@ def normalize_htx_closed_trades(
                 bq = sum(float(y["qty"]) for y in g_e)
                 bnot = sum(float(y["notional"]) for y in g_e)
                 bpx = (bnot / bq) if bq > 0 else float(g_e[-1]["px"])
-                bfee = sum(float(y["fee_paid"]) for y in g_e)
-                breb = sum(float(y["maker_rebate"]) for y in g_e) + (bfee * rebate_ratio)
+                bfee = sum_fees(float(y["fee_paid"]) for y in g_e)
+                breb = sum_fees(float(y["maker_rebate"]) for y in g_e) + (bfee * rebate_ratio)
                 batch_known = all(y["fee_known"] for y in g_e)
-                bnetf = bfee - breb
+                bnetf = sum_fees((bfee, -breb))
                 bgpnl = sum(float(y["offset_pl"]) for y in g_e)
                 bmk = any(bool(y["is_maker"]) for y in g_e)
                 btk = any(not bool(y["is_maker"]) for y in g_e)
@@ -918,11 +919,11 @@ def normalize_htx_closed_trades(
                         "time_str": _fmt_bj_ms(bts),
                         "avg_price": round(bpx, 6),
                         "notional_usd": round(bnot, 2),
-                        "gross_fee_usd": round(bfee, 4),
+                        "gross_fee_usd": bfee,
                         "discount_saved_usd": 0.0,
                         "discount_asset": "",
-                        "rebate_usd": round(breb, 4),
-                        "net_fee_usd": round(bnetf, 4),
+                        "rebate_usd": breb,
+                        "net_fee_usd": bnetf,
                         "gross_pnl_usd": round(bgpnl, 4),
                         "net_pnl_usd": round(bgpnl - bfee + breb, 4) if batch_known else None,
                     }
@@ -1009,8 +1010,8 @@ def normalize_htx_closed_trades(
             lot["event_fills"].append(event_fill(ts, qty, px, True, charged, oid_str, qty_unit=unit, role=role_str))
             lot["qty"] += qty
             lot["notional"] += notional_m
-            lot["fee"] += fee_paid
-            lot["rebate"] += maker_rebate
+            lot["fee"] = sum_fees((lot["fee"], fee_paid))
+            lot["rebate"] = sum_fees((lot["rebate"], maker_rebate))
             if is_maker:
                 lot["maker_notional"] += notional_m
             else:

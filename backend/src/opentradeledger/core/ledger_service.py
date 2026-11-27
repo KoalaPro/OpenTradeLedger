@@ -23,7 +23,7 @@ from opentradeledger.core.account_partition import (
     stamp_bundle_for_account,
     stamp_fee_row_for_account,
 )
-from opentradeledger.core.ai_reviewer import build_zero_trade_texts
+from opentradeledger.core.ai_reviewer import build_zero_trade_texts, reconcile_review_transmission
 from opentradeledger.core.demo_provider import build_demo_dashboard
 from opentradeledger.core.position_lifecycle import exit_counts_by_day, trade_daily_amounts
 from opentradeledger.core.store import LedgerStore
@@ -458,6 +458,8 @@ class LedgerService:
         use_demo = force_demo if force_demo is not None else self.is_demo_active()
         journals = self.store.load_journals(demo_mode=use_demo)
         latest_ai = self.store.load_latest_ai_review(range_key, demo_mode=use_demo)
+        if latest_ai is not None:
+            latest_ai = reconcile_review_transmission(latest_ai)
         if use_demo:
             payload = build_demo_dashboard(
                 range_key=range_key,
@@ -1110,7 +1112,10 @@ class LedgerService:
             has_no_trades_card = any(
                 isinstance(h, dict) and h.get("kind") == "no_trades" for h in (ai_out.get("highlights") or [])
             )
-            if t_cnt == 0 and (saved_tc is None or int(saved_tc) == 0) and not has_no_trades_card:
+            if (
+                ai_out.get("data_transmitted") is False and t_cnt == 0
+                and (saved_tc is None or int(saved_tc) == 0) and not has_no_trades_card
+            ):
                 z_highlights, z_en, z_zh = build_zero_trade_texts(
                     all_time_cnt=len(all_trades_unfiltered),
                     range_label_en=rk_lbl_en,
@@ -1121,6 +1126,7 @@ class LedgerService:
                     "model": "local-actuarial",
                     "execution_mode": "zero_trades_local",
                     "data_transmitted": False,
+                    "transmission_status": "not_sent",
                     "trade_count_snapshot": 0,
                     "highlights": z_highlights,
                     "markdown_commentary": z_en,

@@ -614,10 +614,10 @@ describe('Settings persistence and edit conflict guards', () => {
     fireEvent.change(input, { target: { value: 'bad' } })
     fireEvent.click(screen.getByTestId('save-proxy-btn'))
     await screen.findByText('Invalid proxy address')
-    expect(screen.queryByText('网络代理已生效')).toBeNull()
+    expect(screen.queryByText('网络代理配置已保存')).toBeNull()
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.click(screen.getByTestId('save-proxy-btn'))
-    await screen.findByText('已清除网络代理，恢复直连模式')
+    await screen.findByText('已清除账本代理，恢复系统网络设置')
     await waitFor(() => expect(screen.queryAllByText('Invalid proxy address')).toHaveLength(0))
   })
 

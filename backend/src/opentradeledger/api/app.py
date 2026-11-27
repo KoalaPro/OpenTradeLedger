@@ -17,15 +17,13 @@ from fastapi.staticfiles import StaticFiles
 from opentradeledger import __app_name__, __app_name_zh__, __version__
 from opentradeledger.adapters.registry import AdapterRegistry, build_default_registry
 from opentradeledger.api.http_helpers import (
-    _ORIG_HTTPS_PROXY,
-    _ORIG_HTTP_PROXY,
-    _ORIG_NO_PROXY,
-    _SAFE_LAN_NO_PROXY,
+    OutboundProxyError,
+    _apply_outbound_proxy,
     _import_dotenv_watcher_targets_once,
     _is_https_request,
     _is_trusted_local_or_private_host,
     _set_session_cookie,
-    _validate_and_apply_outbound_proxy,
+    _validate_outbound_proxy,
     build_monogram_svg,
     resolve_client_key,
 )
@@ -108,10 +106,17 @@ def create_app(
 
     store = LedgerStore(data_path)
     _import_dotenv_watcher_targets_once(data_path, store)
+    prefs = store.get_preferences()
+    startup_proxy_warning = None
     try:
-        _validate_and_apply_outbound_proxy(store.get_preferences().outbound_proxy_url)
-    except ValueError:
-        pass
+        proxy = _validate_outbound_proxy(prefs.outbound_proxy_url)
+    except OutboundProxyError as exc:
+        startup_proxy_warning = {"message": str(exc), "message_zh": exc.message_zh}
+        logging.getLogger(__name__).warning("Discarding unusable saved outbound proxy: %s", exc)
+        proxy = ""
+        prefs.outbound_proxy_url = ""
+        store.save_preferences(prefs)
+    _apply_outbound_proxy(proxy)
     health_tracker = VenueHealthTracker(store)
     auth_manager = LocalAuthManager(
         data_path,
@@ -412,6 +417,7 @@ def create_app(
         notifs["bark_push_key_set"] = bool(notifs.get("bark_push_key"))
         notifs["bark_push_key"] = ""
         prefs["notifications"] = notifs
+        prefs["outbound_proxy_warning"] = startup_proxy_warning
         return prefs
 
     def _apply_settings_patch(patch: dict[str, Any]) -> None:
@@ -423,14 +429,6 @@ def create_app(
                 amount = float("nan")
             if isinstance(target, bool) or not math.isfinite(amount) or amount <= 0:
                 raise HTTPException(status_code=422, detail="Target equity must be a positive finite number")
-        if "outbound_proxy_url" in patch:
-            try:
-                patch = {
-                    **patch,
-                    "outbound_proxy_url": _validate_and_apply_outbound_proxy(str(patch.get("outbound_proxy_url") or "")),
-                }
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
         clear_ai_key = (patch.get("clear_ai_api_key") is True) or (
             str(patch.get("ai_api_key") or "").strip() == "__CLEAR__"
         )
@@ -447,8 +445,13 @@ def create_app(
     async def _save_settings(
         patch: dict[str, Any], *, test_ring: bool = False, portfolio_id: str = ""
     ) -> Response:
-        nonlocal bark_edit_generation
+        nonlocal bark_edit_generation, startup_proxy_warning
         patch = dict(patch)
+        if "outbound_proxy_url" in patch:
+            try:
+                patch["outbound_proxy_url"] = _validate_outbound_proxy(str(patch["outbound_proxy_url"] or ""))
+            except OutboundProxyError as exc:
+                return JSONResponse(status_code=400, content={"detail": str(exc), "detail_zh": exc.message_zh})
         changes = patch.pop("notifications", {})
         clear = patch.pop("clear_bark_push_key", False) is True
         if not isinstance(changes, dict):
@@ -499,6 +502,9 @@ def create_app(
             patch["notifications"] = candidate.model_dump()
         if patch:
             _apply_settings_patch(patch)
+            if "outbound_proxy_url" in patch:
+                _apply_outbound_proxy(patch["outbound_proxy_url"])
+                startup_proxy_warning = None
         settings = await get_settings()
         return JSONResponse(content={**receipt, "settings": settings} if test_ring else settings)
 

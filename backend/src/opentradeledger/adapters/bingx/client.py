@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 import httpx
 
 from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, usd_fee
+from opentradeledger.core.venue_primitives import sum_fees
 from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
 
 from opentradeledger.security.readonly_guard import assert_readonly_request
@@ -682,10 +683,10 @@ def normalize_bingx_closed_trades(
         journal_keys: list[str] | None = None,
         position_events: list[dict[str, Any]] | None = None,
     ) -> None:
-        total_fee = round(en_fee + ex_fee, 6)
-        en_reb = round(en_credit + en_fee * rebate_ratio, 6)
-        ex_reb = round(ex_credit + ex_fee * rebate_ratio, 6)
-        total_rebate = round(en_reb + ex_reb, 6)
+        total_fee = sum_fees((en_fee, ex_fee))
+        en_reb = en_credit + en_fee * rebate_ratio
+        ex_reb = ex_credit + ex_fee * rebate_ratio
+        total_rebate = sum_fees((en_reb, ex_reb))
 
         funding_pnl = 0.0
         funding_receipts = []
@@ -725,10 +726,10 @@ def normalize_bingx_closed_trades(
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_known": net_known,
                 "net_pnl_known": net_known,
-                "total_fee_usd": round(total_fee, 4),
-                "total_rebate_usd": round(total_rebate, 4),
+                "total_fee_usd": total_fee,
+                "total_rebate_usd": total_rebate,
                 "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(total_fee - total_rebate, 4),
+                "net_fee_usd": sum_fees((total_fee, -total_rebate)),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
                 "is_partial_close": is_partial,
@@ -740,12 +741,12 @@ def normalize_bingx_closed_trades(
                     "time_ms": open_ms,
                     "avg_price": round(en_px, 6),
                     "notional_usd": round(en_notional, 2),
-                    "gross_fee_usd": round(en_fee, 4),
+                    "gross_fee_usd": en_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "",
-                    "rebate_usd": round(en_reb, 4),
+                    "rebate_usd": en_reb,
                     "rebate_pct": round(rebate_ratio * 100.0, 2),
-                    "net_fee_usd": round(en_fee - en_reb, 4),
+                    "net_fee_usd": sum_fees((en_fee, -en_reb)),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -757,12 +758,12 @@ def normalize_bingx_closed_trades(
                     "time_ms": close_ms,
                     "avg_price": round(ex_px, 6),
                     "notional_usd": round(ex_notional, 2),
-                    "gross_fee_usd": round(ex_fee, 4),
+                    "gross_fee_usd": ex_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "",
-                    "rebate_usd": round(ex_reb, 4),
+                    "rebate_usd": ex_reb,
                     "rebate_pct": round(rebate_ratio * 100.0, 2),
-                    "net_fee_usd": round(ex_fee - ex_reb, 4),
+                    "net_fee_usd": sum_fees((ex_fee, -ex_reb)),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -784,7 +785,7 @@ def normalize_bingx_closed_trades(
         en_fee = float(lot["fee"]) * ratio
         ex_notional = sum(float(x["notional"]) for x in exits)
         ex_px = (ex_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
-        ex_fee = sum(float(x["fee"]) for x in exits)
+        ex_fee = sum_fees(float(x["fee"]) for x in exits)
         events = build_position_events(lot["event_fills"], side=trade_side, linear=True)
         for fill, event in zip(exits, (e for e in events if e["action"] in {"REDUCE", "CLOSE"})):
             if event["gross_pnl_usd"] is not None:
@@ -804,9 +805,9 @@ def normalize_bingx_closed_trades(
                 bq = sum(float(y["qty"]) for y in g_e)
                 bnot = sum(float(y["notional"]) for y in g_e)
                 bpx = (bnot / bq) if bq > 0 else float(g_e[-1]["px"])
-                bfee = sum(float(y["fee"]) for y in g_e)
-                breb = round(sum(y["credit"] for y in g_e) + bfee * rebate_ratio, 4)
-                bnetf = round(bfee - breb, 4)
+                bfee = sum_fees(float(y["fee"]) for y in g_e)
+                breb = sum_fees(y["credit"] for y in g_e) + bfee * rebate_ratio
+                bnetf = sum_fees((bfee, -breb))
                 bgpnl = sum(float(y["realized_pnl"]) for y in g_e)
                 bmk = any(bool(y["is_maker"]) for y in g_e)
                 btk = any(not bool(y["is_maker"]) for y in g_e)
@@ -824,7 +825,7 @@ def normalize_bingx_closed_trades(
                         "time_str": _fmt_bj_ms(bts),
                         "avg_price": round(bpx, 6),
                         "notional_usd": round(bnot, 2),
-                        "gross_fee_usd": round(bfee, 4),
+                        "gross_fee_usd": bfee,
                         "discount_saved_usd": 0.0,
                         "discount_asset": "",
                         "rebate_usd": breb,
@@ -846,7 +847,7 @@ def normalize_bingx_closed_trades(
             en_fee=en_fee,
             ex_fee=ex_fee,
             en_credit=lot["credit"] * ratio,
-            ex_credit=sum(x["credit"] for x in exits),
+            ex_credit=sum_fees(x["credit"] for x in exits),
             en_known=lot["fee_known"],
             net_known=lot["fee_known"] and all(x["fee_known"] for x in exits),
             ex_known=all(x["fee_known"] for x in exits),
@@ -915,8 +916,8 @@ def normalize_bingx_closed_trades(
             lot["event_fills"].append(event_fill(ts, qty, px, True, charged, oid_raw, role=event_role))
             lot["qty"] += qty
             lot["notional"] += px * qty
-            lot["fee"] += fee
-            lot["credit"] += credit
+            lot["fee"] = sum_fees((lot["fee"], fee))
+            lot["credit"] = sum_fees((lot["credit"], credit))
             lot["fee_known"] = lot["fee_known"] and charged is not None
             if is_maker:
                 lot["maker_notional"] += px * qty

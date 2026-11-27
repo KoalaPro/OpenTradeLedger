@@ -473,6 +473,16 @@ def test_hyperliquid_wallet_subaccounts_batch_import_and_maker_rebate_accounting
     assert commit.status_code == 200
     assert len(commit.json()["added_subaccounts"]) == 1
 
+    wrong_wallet = client.post("/api/v1/sync", json={"candidate_credential": {
+        "venue_id": "hyperliquid", "account_id": "hyperliquid", "wallet_address": sub_addr,
+    }})
+    assert wrong_wallet.status_code == 409
+    mismatch = wrong_wallet.json()
+    assert mismatch["error_code"] == "ACCOUNT_UID_MISMATCH"
+    assert "original" in mismatch["detail"] and "public address" in mismatch["detail"]
+    assert "原钱包" in mismatch["detail_zh"] and "公开地址" in mismatch["detail_zh"]
+    assert "key" not in mismatch["detail"].lower() and "Key" not in mismatch["detail_zh"]
+
     dash = client.get("/api/v1/dashboard").json()
     # Master: 3200 perp + 10*25=250 spot = 3450; Sub: 1500 perp => Total = 4950.00!
     assert dash["summary"]["total_equity_usd"] == 4950.00

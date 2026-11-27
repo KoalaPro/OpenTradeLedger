@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import os
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 from fastapi import Request
 from fastapi.responses import Response
 
@@ -15,39 +18,63 @@ from opentradeledger.core.copy_watcher import extract_portfolio_ids
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.security.local_auth import AUTH_COOKIE_NAME
 
-_ORIG_HTTP_PROXY = os.environ.get("HTTP_PROXY")
-_ORIG_HTTPS_PROXY = os.environ.get("HTTPS_PROXY")
-_ORIG_NO_PROXY = os.environ.get("NO_PROXY")
+_HOST_PROXY_ENV = {
+    name: os.environ.get(name)
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
+}
 _SAFE_LAN_NO_PROXY = ",".join(
     ("127.0.0.1", "localhost", "::1", f"{192}.{168}.0.0/16", f"{10}.0.0.0/8", f"{172}.{16}.0.0/12")
 )
 
 
-def _validate_and_apply_outbound_proxy(raw_proxy: str) -> str:
-    cleaned = (raw_proxy or "").strip()
-    if not cleaned:
-        if _ORIG_HTTP_PROXY is None:
-            os.environ.pop("HTTP_PROXY", None)
-        else:
-            os.environ["HTTP_PROXY"] = _ORIG_HTTP_PROXY
-        if _ORIG_HTTPS_PROXY is None:
-            os.environ.pop("HTTPS_PROXY", None)
-        else:
-            os.environ["HTTPS_PROXY"] = _ORIG_HTTPS_PROXY
-        if _ORIG_NO_PROXY is None:
-            os.environ.pop("NO_PROXY", None)
-        else:
-            os.environ["NO_PROXY"] = _ORIG_NO_PROXY
-        return ""
+class OutboundProxyError(ValueError):
+    def __init__(self, message: str, message_zh: str) -> None:
+        super().__init__(message)
+        self.message_zh = message_zh
 
-    low = cleaned.lower()
-    if not low.startswith(("http://", "https://", "socks5://", "socks5h://")):
-        raise ValueError("Outbound proxy URL must start with http://, https://, or socks5://")
-    os.environ["HTTP_PROXY"] = cleaned
-    os.environ["HTTPS_PROXY"] = cleaned
-    existing_no = (_ORIG_NO_PROXY or "").strip()
-    os.environ["NO_PROXY"] = f"{existing_no},{_SAFE_LAN_NO_PROXY}".strip(",") if existing_no else _SAFE_LAN_NO_PROXY
+
+def _validate_outbound_proxy(raw_proxy: str) -> str:
+    cleaned = raw_proxy.strip()
+    if not cleaned:
+        return ""
+    try:
+        parts = urlsplit(cleaned)
+        if (parts.scheme not in {"http", "https", "socks5", "socks5h"}
+                or not parts.hostname or parts.netloc.endswith(":") or parts.port == 0
+                or parts.path not in ("", "/") or "?" in cleaned or "#" in cleaned
+                or "\\" in cleaned or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in cleaned)):
+            raise ValueError
+        # Validate with the parser used by the transport as well (e.g. bracketed IPv6).
+        httpx.Proxy(cleaned)
+    except (ValueError, httpx.InvalidURL) as exc:
+        raise OutboundProxyError(
+            "Invalid proxy address. Enter an HTTP, HTTPS, SOCKS5 or SOCKS5H host with an optional port (1–65535).",
+            "代理地址无效。请填写 HTTP、HTTPS、SOCKS5 或 SOCKS5H 的主机地址，可选端口为 1–65535。",
+        ) from exc
+    if parts.scheme.startswith("socks") and find_spec("socksio") is None:
+        raise OutboundProxyError(
+            "This installation lacks SOCKS support. Update the Docker image or install the project dependencies.",
+            "当前安装缺少 SOCKS 支持。请更新 Docker 镜像，源码部署请安装项目依赖。",
+        )
     return cleaned
+
+
+def _apply_outbound_proxy(cleaned: str) -> None:
+    if not cleaned:
+        for name, original in _HOST_PROXY_ENV.items():
+            if original is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = original
+        return
+
+    # urllib/HTTPX prefer lowercase settings when the host provides both forms.
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        os.environ[name] = cleaned
+    no_proxy = ",".join(dict.fromkeys(filter(None, (
+        _HOST_PROXY_ENV["no_proxy"], _HOST_PROXY_ENV["NO_PROXY"], _SAFE_LAN_NO_PROXY,
+    ))))
+    os.environ["no_proxy"] = os.environ["NO_PROXY"] = no_proxy
 
 
 def _import_dotenv_watcher_targets_once(data_path: Path, store: LedgerStore) -> None:
@@ -144,15 +171,14 @@ def build_monogram_svg(instrument: str) -> str:
 
 
 __all__ = [
-    "_ORIG_HTTPS_PROXY",
-    "_ORIG_HTTP_PROXY",
-    "_ORIG_NO_PROXY",
     "_SAFE_LAN_NO_PROXY",
     "_import_dotenv_watcher_targets_once",
     "_is_https_request",
     "_is_trusted_local_or_private_host",
     "_set_session_cookie",
-    "_validate_and_apply_outbound_proxy",
+    "OutboundProxyError",
+    "_apply_outbound_proxy",
+    "_validate_outbound_proxy",
     "build_monogram_svg",
     "resolve_client_key",
 ]

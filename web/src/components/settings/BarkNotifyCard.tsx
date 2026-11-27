@@ -206,10 +206,17 @@ export function BarkNotifyCard({
           </div>
           <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">
             {isZh
-              ? '若 NAS 直连币安超时，可填局域网代理地址（Docker 容器内请填宿主机局域网 IP，勿填 127.0.0.1），留空直连'
+              ? '若 NAS 直连币安超时，可填局域网代理地址（Docker 容器内请填宿主机局域网 IP，勿填 127.0.0.1），留空使用系统网络设置'
               : 'Optional HTTP/HTTPS/SOCKS5 proxy. In Docker on NAS, use LAN IP rather than 127.0.0.1.'}
           </p>
         </div>
+        {settings.outbound_proxy_warning && (
+          <p role="status" className="text-[12px] text-[var(--fg-2)]">
+            {isZh
+              ? `启动时已清除旧代理并恢复系统网络设置。${settings.outbound_proxy_warning.message_zh}`
+              : `The saved proxy was cleared at startup. System network settings are in use. ${settings.outbound_proxy_warning.message}`}
+          </p>
+        )}
         <div className="flex items-center gap-2">
           <input
             type="text"
@@ -218,8 +225,8 @@ export function BarkNotifyCard({
             onChange={e => setOutboundProxyUrl(e.target.value)}
             placeholder={
               isZh
-                ? '例如 http://192.168.x.x:7890（留空直连）'
-                : 'e.g. http://192.168.x.x:7890 (leave blank for direct)'
+                ? '例如 http://192.168.x.x:7890（可留空）'
+                : 'e.g. http://192.168.x.x:7890 (optional)'
             }
             className="otl-input flex-1 font-mono"
           />
@@ -233,8 +240,8 @@ export function BarkNotifyCard({
                 flashOk(
                   isZh
                     ? outboundProxyUrl.trim()
-                      ? '网络代理已生效'
-                      : '已清除网络代理，恢复直连模式'
+                      ? '网络代理配置已保存'
+                      : '已清除账本代理，恢复系统网络设置'
                     : 'Proxy settings saved',
                   2500,
                 )

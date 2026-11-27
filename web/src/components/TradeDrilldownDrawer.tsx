@@ -84,11 +84,11 @@ function CompactLegRow({
                 ? `${formatExecutionFee(cur, leg.rebate_usd, 3)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
                 : leg.gross_fee_usd === 0 ? t('leg_zero_fee') : cur.money(0, 3)}
           </div>
-          {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
+          {!feeUnknown && leg.discount_saved_usd > 0 && (
             <div className="txt-pos mt-0.5 sensitive whitespace-nowrap">
               {locale === 'en'
-                ? `Pre-disc +${cur.money(leg.discount_saved_usd, 3)}`
-                : `抵扣已省 +${cur.money(leg.discount_saved_usd, 3)}`}
+                ? `Pre-disc ${formatExecutionFee(cur, leg.discount_saved_usd, 3)}`
+                : `抵扣已省 ${formatExecutionFee(cur, leg.discount_saved_usd, 3)}`}
             </div>
           )}
         </div>
@@ -453,7 +453,7 @@ export function TradeDrilldownDrawer({
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
                           <span className="txt-pos sensitive">
-                            {tr.total_fee_known === false ? t('lifecycle_unknown') : `+${cur.money(tr.total_rebate_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}`}
+                            {tr.total_fee_known === false ? t('lifecycle_unknown') : formatExecutionFee(cur, tr.total_rebate_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}
                           </span>
                         </div>
                         {Boolean(tr.settlement_adjustment_usd) && (
@@ -463,13 +463,13 @@ export function TradeDrilldownDrawer({
                           </div>
                         )}
                         <PartialSettlement trade={tr} />
-                        {tr.total_fee_known !== false && tr.total_discount_saved_usd > 0.0001 && (
+                        {tr.total_fee_known !== false && tr.total_discount_saved_usd > 0 && (
                           <div className="flex justify-between text-[var(--fg-3)]">
                             <span>
                               {locale === 'en' ? 'Pre-deduction discount saved' : '扣费前平台币抵扣已省'}
                             </span>
                             <span className="txt-pos sensitive">
-                              +{cur.money(tr.total_discount_saved_usd, 3)}
+                              {formatExecutionFee(cur, tr.total_discount_saved_usd, 3)}
                             </span>
                           </div>
                         )}

@@ -367,15 +367,15 @@ def _build_easicoin_closed_records(
             "taker_notional_usd": f2(entry_taker_notional, 2),
             "time_sec": int(t_open),
             "time_bj": fmt_bj(t_open, "%m-%d %H:%M:%S") if t_open > 0 else "—",
-            "gross_fee_usd": f2(entry_gross_fee, 4),
-            "maker_fee_usd": f2(entry_maker_fee, 4),
-            "taker_fee_usd": f2(entry_taker_fee, 4),
+            "gross_fee_usd": float(entry_gross_fee),
+            "maker_fee_usd": float(entry_maker_fee),
+            "taker_fee_usd": float(entry_taker_fee),
             "maker_rebate_usd": 0.0,
             "taker_rebate_usd": 0.0,
             "fee_bps": f2(entry_bps, 2),
             "settled_rebate_usd": 0.0,
             "pending_rebate_usd": 0.0,
-            "net_fee_usd": f2(entry_gross_fee, 4),
+            "net_fee_usd": float(entry_gross_fee),
             "rebate_pct": 0.0,
             "rebate_status": "NONE",
             "rebate_settled_bj": "",
@@ -391,15 +391,15 @@ def _build_easicoin_closed_records(
             "taker_notional_usd": f2(exit_taker_notional, 2),
             "time_sec": int(t_close),
             "time_bj": fmt_bj(t_close, "%m-%d %H:%M:%S") if t_close > 0 else "—",
-            "gross_fee_usd": f2(exit_gross_fee, 4),
-            "maker_fee_usd": f2(exit_maker_fee, 4),
-            "taker_fee_usd": f2(exit_taker_fee, 4),
+            "gross_fee_usd": float(exit_gross_fee),
+            "maker_fee_usd": float(exit_maker_fee),
+            "taker_fee_usd": float(exit_taker_fee),
             "maker_rebate_usd": 0.0,
             "taker_rebate_usd": 0.0,
             "fee_bps": f2(exit_bps, 2),
             "settled_rebate_usd": 0.0,
             "pending_rebate_usd": 0.0,
-            "net_fee_usd": f2(exit_gross_fee, 4),
+            "net_fee_usd": float(exit_gross_fee),
             "rebate_pct": 0.0,
             "rebate_status": "NONE",
             "rebate_settled_bj": "",
@@ -440,10 +440,10 @@ def _build_easicoin_closed_records(
                 "exit_leg": exit_leg,
                 "gross_pnl_usd": f2(gross_pnl, 4),
                 "funding_pnl_usd": f2(funding_pnl, 4),
-                "total_fee_usd": f2(total_fee, 4),
+                "total_fee_usd": float(total_fee),
                 "settled_rebate_usd": 0.0,
                 "pending_rebate_usd": 0.0,
-                "net_fee_usd": f2(total_fee, 4),
+                "net_fee_usd": float(total_fee),
                 "effective_rebate_pct": 0.0,
                 "rebate_state": "SETTLED",
                 "gate_book_pnl_usd": f2(closed_pnl, 4),
@@ -569,11 +569,11 @@ def _build_easicoin_closed_records(
             "taker_notional_usd": f2(en_t_not, 2),
             "time_sec": open_s,
             "time_bj": fmt_bj(open_s, "%m-%d %H:%M:%S") if open_s > 0 else "—",
-            "gross_fee_usd": f2(tot_en_fee, 4),
-            "maker_fee_usd": f2(tot_en_mf, 4),
-            "taker_fee_usd": f2(tot_en_fee - tot_en_mf, 4),
+            "gross_fee_usd": float(tot_en_fee),
+            "maker_fee_usd": float(tot_en_mf),
+            "taker_fee_usd": float(tot_en_fee - tot_en_mf),
             "fee_bps": f2(en_bps_g, 2),
-            "net_fee_usd": f2(tot_en_fee, 4),
+            "net_fee_usd": float(tot_en_fee),
         }
         merged_ex_leg = {
             **last_rec["exit_leg"],
@@ -587,11 +587,11 @@ def _build_easicoin_closed_records(
             "taker_notional_usd": f2(ex_t_not, 2),
             "time_sec": close_s,
             "time_bj": fmt_bj(close_s, "%m-%d %H:%M:%S") if close_s > 0 else "—",
-            "gross_fee_usd": f2(tot_ex_fee, 4),
-            "maker_fee_usd": f2(tot_ex_mf, 4),
-            "taker_fee_usd": f2(tot_ex_fee - tot_ex_mf, 4),
+            "gross_fee_usd": float(tot_ex_fee),
+            "maker_fee_usd": float(tot_ex_mf),
+            "taker_fee_usd": float(tot_ex_fee - tot_ex_mf),
             "fee_bps": f2(ex_bps_g, 2),
-            "net_fee_usd": f2(tot_ex_fee, 4),
+            "net_fee_usd": float(tot_ex_fee),
         }
         ec_raw_batches: list[dict[str, Any]] = []
         for b_i, sub_r in enumerate(grp):
@@ -626,8 +626,8 @@ def _build_easicoin_closed_records(
                 "gross_pnl_usd": f2(tot_gpnl, 4),
                 "funding_pnl_usd": f2(tot_fpnl, 4),
                 "settlement_adjustment_usd": sum(r["settlement_adjustment_usd"] for r in grp),
-                "total_fee_usd": f2(tot_fee_g, 4),
-                "net_fee_usd": f2(tot_fee_g, 4),
+                "total_fee_usd": float(tot_fee_g),
+                "net_fee_usd": float(tot_fee_g),
                 "gate_book_pnl_usd": f2(tot_cpnl, 4),
                 "realized_net_pnl_usd": f2(tot_cpnl, 4),
                 "expected_net_pnl_usd": f2(tot_cpnl, 4),
@@ -835,11 +835,11 @@ def _reconcile_easicoin_rebates_and_principal(
             mf_share = (leg_mf / leg_fee) if leg_fee > 0 else Decimal("0")
             l_m_reb = eff_leg_reb * mf_share
             l_t_reb = eff_leg_reb - l_m_reb
-            leg_obj["settled_rebate_usd"] = f2(s_reb, 4)
-            leg_obj["pending_rebate_usd"] = f2(p_reb, 4)
-            leg_obj["maker_rebate_usd"] = f2(l_m_reb, 4)
-            leg_obj["taker_rebate_usd"] = f2(l_t_reb, 4)
-            leg_obj["net_fee_usd"] = f2(leg_fee - eff_leg_reb, 4)
+            leg_obj["settled_rebate_usd"] = float(s_reb)
+            leg_obj["pending_rebate_usd"] = float(p_reb)
+            leg_obj["maker_rebate_usd"] = float(l_m_reb)
+            leg_obj["taker_rebate_usd"] = float(l_t_reb)
+            leg_obj["net_fee_usd"] = float(leg_fee - eff_leg_reb)
             leg_obj["rebate_pct"] = f2((eff_leg_reb / leg_fee * Decimal("100")), 2) if leg_fee > 0 else 0.0
             leg_obj["rebate_status"] = l_status
             leg_obj["rebate_settled_bj"] = settled_bj_label if s_reb > 0 else ""
@@ -858,9 +858,9 @@ def _reconcile_easicoin_rebates_and_principal(
                 bf_dec = dec(b_obj.get("gross_fee_usd"))
                 bs_dec = bf_dec * s_ratio_ec
                 bp_dec = bf_dec * p_ratio_ec
-                b_obj["settled_rebate_usd"] = f2(bs_dec, 4)
-                b_obj["pending_rebate_usd"] = f2(bp_dec, 4)
-                b_obj["net_fee_usd"] = f2(bf_dec - bs_dec - bp_dec, 4)
+                b_obj["settled_rebate_usd"] = float(bs_dec)
+                b_obj["pending_rebate_usd"] = float(bp_dec)
+                b_obj["net_fee_usd"] = float(bf_dec - bs_dec - bp_dec)
 
         rec_eff = rec_settled + rec_pending
         if rec_pending > 0 and rec_settled > 0:
@@ -870,9 +870,9 @@ def _reconcile_easicoin_rebates_and_principal(
         else:
             r_state = "SETTLED"
 
-        rec["settled_rebate_usd"] = f2(rec_settled, 4)
-        rec["pending_rebate_usd"] = f2(rec_pending, 4)
-        rec["net_fee_usd"] = f2(raw_total_fee - rec_eff, 4)
+        rec["settled_rebate_usd"] = float(rec_settled)
+        rec["pending_rebate_usd"] = float(rec_pending)
+        rec["net_fee_usd"] = float(raw_total_fee - rec_eff)
         rec["effective_rebate_pct"] = f2((rec_eff / raw_total_fee * Decimal("100")), 2) if raw_total_fee > 0 else 0.0
         rec["rebate_state"] = r_state
         rec["realized_net_pnl_usd"] = f2(raw_closed_pnl + rec_settled, 4)

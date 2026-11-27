@@ -219,6 +219,7 @@ describe('v1.3.6 Follow-up 4 Audit Fixes', () => {
         model: 'local-actuarial',
         execution_mode: 'remote_failed_fallback',
         data_transmitted: true,
+        transmission_status: 'sent',
         range_key: 'all',
         range_label_zh: '全部历史',
         trade_count_snapshot: 1,
@@ -245,6 +246,26 @@ describe('v1.3.6 Follow-up 4 Audit Fixes', () => {
     expect(page503.textContent).not.toContain('未调用 AI')
     expect(screen.getByTestId('ai-config-status-badge').textContent).toContain('AI 接口异常')
     expect(screen.getByTestId('ai-transmission-badge').textContent).toContain('已向 AI 接口发送脱敏请求')
+  })
+
+  it.each([
+    ['not_sent', false, '本次未外发任何数据'],
+    ['unknown', null, '无法确认 AI 接口是否收到'],
+  ] as const)('uses %s consistently for fallback and payload disclosure', (status, transmitted, message) => {
+    const data = makeDashboard({
+      ai_review: {
+        generated_at: '2026-11-27', generated_ms: 1, model: 'local-actuarial',
+        execution_mode: 'remote_failed_fallback', transmission_status: status,
+        data_transmitted: transmitted, trade_count_snapshot: 1, equity_snapshot_usd: 100,
+        highlights: [], markdown_commentary: '', markdown_commentary_zh: '',
+      },
+    })
+    render(<I18nProvider locale="zh-CN"><FeesAiPage data={data} generating={false} onGenerate={vi.fn()} /></I18nProvider>)
+    expect(screen.getByTestId('ai-transmission-badge').textContent).toContain(message)
+    fireEvent.click(screen.getByTestId('toggle-ai-payload-btn'))
+    expect(screen.getByTestId('toggle-ai-payload-btn').textContent).toContain(message)
+    expect(screen.getByTestId('fees-ai-page').textContent).not.toContain('本次实际外发')
+    if (status === 'unknown') expect(document.body.textContent).not.toContain('未外发任何数据')
   })
 
   it('uses configured 3s / 10s intervals in PublicCopyWatcherPanel add toast instead of hardcoded 10s / 30s', async () => {

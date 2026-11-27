@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import isfinite
 from typing import Any
 
-from opentradeledger.core.venue_primitives import USD_CASH_ASSETS
+from opentradeledger.core.venue_primitives import USD_CASH_ASSETS, sum_fees
 
 
 def finite_number(value: Any) -> float | None:
@@ -106,15 +106,15 @@ def build_fill_leg(
             fee_known = False
             continue
         cost, credit = max(0.0, -fee) * eff_scale, max(0.0, fee) * eff_scale
-        fees += cost
-        credits += credit
+        fees = sum_fees((fees, cost))
+        credits = sum_fees((credits, credit))
         if ccy == "OKB":
-            discount += cost * 0.25
+            discount = sum_fees((discount, cost * 0.25))
         if notional and role in {"MAKER", "TAKER"}:
             sample = role_samples.setdefault(role, {"notional": 0.0, "paid": 0.0, "credit": 0.0})
             sample["notional"] += notional
-            sample["paid"] += cost
-            sample["credit"] += credit
+            sample["paid"] = sum_fees((sample["paid"], cost))
+            sample["credit"] = sum_fees((sample["credit"], credit))
 
     role = next(iter(roles)) if len(roles) == 1 else "UNKNOWN"
     notional = sum(n for n in notionals if n is not None) if notionals and all(notionals) else None

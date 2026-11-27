@@ -37,6 +37,12 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
 
+      - name: Include the SOCKS transport for OTA installs on older base images
+        run: |
+          echo 'socksio==1.0.0 --hash=sha256:95dc1f15f9b34e8d7b16f06d74b8ccf48f609af32ab33c608d08761c5dcbb1f3' |
+            python3 -m pip download --only-binary=:all: --no-deps --require-hashes -r /dev/stdin \
+              --dest backend/src/opentradeledger/_ota_wheels
+
       - name: Build OTA package & publish GitHub Release with SHA-256 assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

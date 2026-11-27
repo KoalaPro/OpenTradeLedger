@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { FloatingToastViewport } from '../components/FloatingToast'
 import { VenueBadge } from '../components/VenueBadge'
@@ -42,7 +42,9 @@ interface SettingsPageProps {
   dashboardWarnings?: DashboardWarningItem[]
   demoMode: boolean
   authStatus?: AuthStatusPayload
-  onAuthChanged?: (next: AuthStatusPayload) => void
+  onAuthChanged?: (next: AuthStatusPayload, receipt: string) => void
+  passwordReceipt?: string
+  onPasswordReceiptShown?: () => void
   onLockNow?: () => Promise<void>
   versionStatus?: VersionCheckPayload | null
   onCheckVersion?: (force?: boolean) => Promise<VersionCheckPayload | null>
@@ -65,6 +67,8 @@ export function SettingsPage({
   demoMode,
   authStatus,
   onAuthChanged,
+  passwordReceipt,
+  onPasswordReceiptShown,
   onLockNow,
   versionStatus,
   onCheckVersion,
@@ -90,7 +94,7 @@ export function SettingsPage({
     demoMode &&
     !adapters.some(adapter => normalizeAdapterAccounts(adapter).some(a => a.configured))
 
-  const flashOk = (msg: string, ms = 3200) => {
+  const flashOk = useCallback((msg: string, ms = 3200) => {
     if (statusTimerRef.current !== null) {
       window.clearTimeout(statusTimerRef.current)
     }
@@ -100,7 +104,14 @@ export function SettingsPage({
       setStatusMsg('')
       statusTimerRef.current = null
     }, ms)
-  }
+  }, [])
+
+  useEffect(() => {
+    if (passwordReceipt) {
+      flashOk(passwordReceipt)
+      onPasswordReceiptShown?.()
+    }
+  }, [passwordReceipt, flashOk, onPasswordReceiptShown])
 
   useEffect(() => {
     return () => {

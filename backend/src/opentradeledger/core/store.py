@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -13,8 +14,11 @@ from typing import Any, Mapping, Sequence
 from opentradeledger.config import UserPreferences
 from opentradeledger.core.account_partition import AccountScopedStore, is_secondary_account_id, parse_adapter_id
 from opentradeledger.core.legacy_store import GateManualStore
-from opentradeledger.core.notifier import parse_bark_input
+from opentradeledger.core.notifier import bark_destination, parse_bark_input
 from opentradeledger.security.vault import CredentialVault
+
+
+PRIVATE_CLOSE_ALERTS_KEY = "bark_booked_closes"
 
 
 def _chmod_private(path: Path) -> None:
@@ -124,6 +128,24 @@ class VenueDataScope:
                 """,
                 (self.venue_id, key, raw, now),
             )
+
+    @contextmanager
+    def edit_kv_dict(self, key: str) -> Iterator[dict[str, Any]]:
+        """Atomically edit one partition's JSON object. Never hold this across a network call."""
+        with self._store._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value_json FROM otl_venue_kv WHERE venue_id = ? AND key = ?", (self.venue_id, key)
+            ).fetchone()
+            original = row["value_json"] if row else "{}"
+            value = json.loads(original)
+            yield value
+            raw = json.dumps(value, ensure_ascii=False)
+            if raw != original:
+                conn.execute(
+                    "INSERT OR REPLACE INTO otl_venue_kv (venue_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+                    (self.venue_id, key, raw, int(time.time())),
+                )
 
     def bind_account_uid(self, uid: str) -> bool:
         """Claim an unbound partition without overwriting a concurrent first binding."""
@@ -460,6 +482,12 @@ class LedgerStore:
                 ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, updated_ms = excluded.updated_ms
                 """,
                 (payload_str, now_ms),
+            )
+            # Discard private alerts and their cursor as soon as the destination changes,
+            # even when a device is cleared and rebound between two exchange syncs.
+            conn.execute(
+                "DELETE FROM otl_venue_kv WHERE key = ? AND json_extract(value_json, '$.destination') != ?",
+                (PRIVATE_CLOSE_ALERTS_KEY, bark_destination(prefs.notifications)),
             )
         self._harden_db_permissions()
         return prefs

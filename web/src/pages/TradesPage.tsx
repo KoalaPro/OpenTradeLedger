@@ -98,7 +98,7 @@ function LegFeeCard({
                 : leg.gross_fee_usd === 0 ? t('leg_zero_fee') : cur.money(0, feeDecimals)}
           </span>
         </div>
-        {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
+        {!feeUnknown && leg.discount_saved_usd > 0 && (
           <div className="flex items-center justify-between gap-2">
             <span className="text-[var(--fg-3)]">
               {locale === 'en' ? 'Pre-discount' : '抵扣已省'}
@@ -845,7 +845,7 @@ export function TradesPage({
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
                     <span className="txt-pos sensitive">
-                      {selected.total_fee_known === false ? t('lifecycle_unknown') : `+${cur.money(selected.total_rebate_usd, feeDec)}`}
+                      {selected.total_fee_known === false ? t('lifecycle_unknown') : formatExecutionFee(cur, selected.total_rebate_usd, feeDec)}
                     </span>
                   </div>
                   {Boolean(selected.settlement_adjustment_usd) && (
@@ -861,7 +861,7 @@ export function TradesPage({
                     </span>
                   </div>
                   <PartialSettlement trade={selected} />
-                  {selected.total_fee_known !== false && selected.total_discount_saved_usd > 0.0001 && (
+                  {selected.total_fee_known !== false && selected.total_discount_saved_usd > 0 && (
                     <div className="flex justify-between text-[12px] text-[var(--fg-3)]">
                       <span>
                         {locale === 'en'
@@ -869,7 +869,7 @@ export function TradesPage({
                           : '注：扣费前平台币抵扣已另省（不重复计入返佣）'}
                       </span>
                       <span className="txt-pos sensitive">
-                        +{cur.money(selected.total_discount_saved_usd, feeDec)}
+                        {formatExecutionFee(cur, selected.total_discount_saved_usd, feeDec)}
                       </span>
                     </div>
                   )}

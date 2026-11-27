@@ -6,7 +6,7 @@ import type { AuthStatusPayload } from '../../lib/types'
 
 interface AccessPasswordCardProps {
   authStatus?: AuthStatusPayload
-  onAuthChanged?: (next: AuthStatusPayload) => void
+  onAuthChanged?: (next: AuthStatusPayload, receipt: string) => void
   onLockNow?: () => Promise<void>
   flashOk: (msg: string, ms?: number) => void
   setErrorMsg: (msg: string) => void
@@ -43,19 +43,14 @@ export function AccessPasswordCard({
     setErrorMsg('')
     try {
       const res = await api.authChangePassword(curPwd, np, true)
-      onAuthChanged?.(res)
       setCurPwd('')
       setNewPwd('')
       setConfirmNewPwd('')
-      flashOk(
-        authEnabled
-          ? isZh
-            ? '访问密码已修改（其他旧会话已自动失效）'
-            : 'Password updated (older sessions invalidated)'
-          : isZh
-            ? '已开启本地访问密码保护'
-            : 'Local access password enabled',
-      )
+      const receipt = authEnabled
+        ? (isZh ? '访问密码已修改（其他旧会话已自动失效）' : 'Password updated (older sessions invalidated)')
+        : (isZh ? '已开启本地访问密码保护' : 'Local access password enabled')
+      if (onAuthChanged) onAuthChanged(res, receipt)
+      else flashOk(receipt)
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to update password')
     } finally {
@@ -73,11 +68,12 @@ export function AccessPasswordCard({
     setErrorMsg('')
     try {
       const res = await api.authDisablePassword(curPwd)
-      onAuthChanged?.(res)
       setCurPwd('')
       setNewPwd('')
       setConfirmNewPwd('')
-      flashOk(isZh ? '已关闭本地访问密码，当前为本机免密模式' : 'Password lock disabled')
+      const receipt = isZh ? '已关闭本地访问密码，当前为本机免密模式' : 'Password lock disabled'
+      if (onAuthChanged) onAuthChanged(res, receipt)
+      else flashOk(receipt)
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed to disable password')
     } finally {

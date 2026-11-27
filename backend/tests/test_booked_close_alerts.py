@@ -1,4 +1,6 @@
 """Private account Bark notifications follow the settled trade rows visible in the ledger."""
+import asyncio
+from collections import Counter
 from unittest.mock import AsyncMock
 from urllib.parse import unquote
 
@@ -46,7 +48,7 @@ async def test_private_alerts_only_for_new_booked_exits(tmp_path, monkeypatch, v
         async with httpx.AsyncClient(transport=httpx.MockTransport(bark_handler)) as bark:
             return await dispatch_notification(settings, client=bark, **kwargs)
 
-    monkeypatch.setattr("opentradeledger.core.sync_manager.dispatch_notification", capture)
+    monkeypatch.setattr("opentradeledger.core.booked_close_alerts.dispatch_notification", capture)
     # Existing round trip, then opening, zero-PnL scale-out, additional entry and two exits.
     history = [(1, 100, 0), (-1, 105, 5), (3, 100, 0), (-1, 100, 0), (1, 100, 0), (-1, 101, 1), (-2, 102, 4)]
     for n, expected_total in [(2, 0), (3, 0), (4, 1), (4, 1), (5, 1), (7, 2), (7, 2)]:
@@ -114,10 +116,10 @@ async def test_private_alert_needs_evidence_and_same_device_throughout_sync(tmp_
         async with httpx.AsyncClient(transport=httpx.MockTransport(reject)) as client:
             return await dispatch_notification(settings, client=client, **kwargs)
 
-    monkeypatch.setattr("opentradeledger.core.sync_manager.dispatch_notification", send)
+    monkeypatch.setattr("opentradeledger.core.booked_close_alerts.dispatch_notification", send)
     for _ in range(2):
         assert (await manager.sync_all(force_all=True))["venues"]["bingx"]["ok"]
-    assert len(requests) == (1 if issue == "rejected" else 0)
+    assert len(requests) == (2 if issue == "rejected" else 0)
 
 
 @pytest.mark.asyncio
@@ -162,7 +164,7 @@ async def test_private_sync_health_alerts_and_recovery(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("venue", ["gate", "bitget", "mexc", "okx", "easicoin"])
 def test_split_exit_orders_are_counted_once_across_statement_updates(tmp_path, venue):
-    from opentradeledger.core.sync_manager import _booked_exits, _new_booked_exits
+    from opentradeledger.core.booked_close_alerts import _booked_exits, _new_booked_exits
     from test_native_position_costs import BASE, add_position
     from test_scaleout_cycle_evidence import _record_native_fills
 
@@ -189,3 +191,138 @@ def test_split_exit_orders_are_counted_once_across_statement_updates(tmp_path, v
     assert _new_booked_exits({}, previous) == 1
     assert _new_booked_exits(previous, latest) == 1
     assert _new_booked_exits(latest, receipts()) == 0
+
+
+@pytest.fixture
+def close_feed(tmp_path, monkeypatch):
+    """Use the real BingX ledger and Bark protocol with controlled external responses."""
+    store = LedgerStore(tmp_path)
+    vault = CredentialVault(tmp_path)
+    registry = build_default_registry()
+    service = LedgerService(store, vault, registry)
+    adapter = registry.get("bingx")
+    history = [(5, 100, 0), (-1, 105, 5), (-1, 110, 10), (-1, 98, -2), (-2, 101, 2)]
+    accounts = ["bingx", "bingx__2"]
+    lengths = {account: 2 for account in accounts}
+    for account in accounts:
+        vault.upsert(ExchangeCredentialRecord(venue_id=account, adapter_id="bingx", remote_uid=account,
+                                              account_role="master", api_key="fixture", api_secret="fixture"))
+    service.update_preferences({"notifications": {"bark_push_key": "device-a"}})
+    accepted = []
+    attempted = []
+    controls = {"code": 503, "pause": False, "crash": False}
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def fetch(account):
+        if controls["crash"]:
+            # Exchange rows committed before the interrupted sync could queue its alert.
+            store.upsert_plugin_snapshot(account, _snapshot("bingx", history[:lengths[account]]))
+            raise asyncio.CancelledError()
+        return _snapshot("bingx", history[:lengths[account]])
+
+    def create_client(cred):
+        client = AsyncMock()
+        async def full_snapshot(*args, **kwargs):
+            return await fetch(cred.venue_id)
+        client.fetch_full_snapshot.side_effect = full_snapshot
+        return client
+
+    async def bark(request):
+        path = unquote(request.url.path)
+        attempted.append(path)
+        if controls["pause"]:
+            entered.set()
+            await release.wait()
+        if controls["code"] == 200:
+            accepted.append(path)
+        return httpx.Response(200, json={"code": controls["code"]})
+
+    async def send(settings, **kwargs):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(bark)) as client:
+            return await dispatch_notification(settings, client=client, **kwargs)
+
+    monkeypatch.setattr(adapter, "create_client", create_client)
+    monkeypatch.setattr("opentradeledger.core.booked_close_alerts.dispatch_notification", send)
+
+    def fresh():
+        reopened = LedgerStore(tmp_path)
+        return SyncManager(store=reopened, vault=vault, registry=registry,
+                           ledger_service=LedgerService(reopened, vault, registry))
+
+    return fresh, service, lengths, controls, attempted, accepted, entered, release
+
+
+@pytest.mark.asyncio
+async def test_private_bark_retries_two_batches_per_account_after_restart(close_feed):
+    fresh, _, lengths, controls, attempted, accepted, _, _ = close_feed
+    manager = fresh()
+    for size in (2, 3, 5):
+        lengths.update(dict.fromkeys(lengths, size))
+        result = await manager.sync_all(force_all=True)
+        assert all(row["ok"] for row in result["venues"].values()), result
+    assert not accepted and attempted
+    controls["code"] = 200
+    await fresh().sync_all(force_all=True)
+    await fresh().sync_all(force_all=True)
+    assert Counter((path.split("/")[2], path.split("新增 ")[1][0]) for path in accepted) == {
+        ("OpenTradeLedger · BINGX 新平仓入账", "1"): 1, ("OpenTradeLedger · BINGX 新平仓入账", "2"): 1,
+        ("OpenTradeLedger · BINGX__2 新平仓入账", "1"): 1, ("OpenTradeLedger · BINGX__2 新平仓入账", "2"): 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_private_close_outbox_single_inflight_attempt_and_device_rebinding(close_feed):
+    fresh, service, lengths, controls, attempted, accepted, entered, release = close_feed
+    manager = fresh()
+    await manager.sync_all(force_all=True)
+    lengths["bingx"] = 3
+    await manager.sync_all(force_all=True)
+    assert len(attempted) == 1 and not accepted
+    controls.update(code=200, pause=True)
+    retry = asyncio.create_task(fresh().sync_all(force_all=True))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(fresh().sync_all(force_all=True), 1)
+        assert len(attempted) == 2
+    finally:
+        release.set()
+        await retry
+    assert len(accepted) == 1
+    controls.update(code=503, pause=False)
+    lengths["bingx"] = 4
+    await manager.sync_all(force_all=True)
+    assert len(attempted) == 3
+    service.update_preferences({"notifications": {"bark_push_key": "device-b"}})
+    controls["code"] = 200
+    lengths["bingx"] = 5
+    await fresh().sync_all(force_all=True)
+    await fresh().sync_all(force_all=True)
+    assert len(attempted) == 4 and [p.split("/")[1] for p in accepted] == ["device-a", "device-b"]
+    assert "新增 1 笔" in accepted[-1]
+
+
+@pytest.mark.asyncio
+async def test_private_exit_survives_interruption_after_exchange_rows_committed(close_feed):
+    fresh, _, lengths, controls, _, accepted, _, _ = close_feed
+    await fresh().sync_all(force_all=True)
+    lengths["bingx"] = 3
+    controls.update(code=200, crash=True)
+    with pytest.raises(asyncio.CancelledError):
+        await fresh().sync_all(force_all=True)
+    controls["crash"] = False
+    await fresh().sync_all(force_all=True)
+    await fresh().sync_all(force_all=True)
+    assert len(accepted) == 1 and "新增 1 笔" in accepted[0]
+
+
+@pytest.mark.asyncio
+async def test_booked_alert_retries_while_exchange_poll_is_in_backoff(close_feed):
+    fresh, _, lengths, controls, _, accepted, _, _ = close_feed
+    manager = fresh()
+    await manager.sync_all(force_all=True)
+    lengths["bingx"] = 3
+    await manager.sync_all(force_all=True)
+    controls["code"] = 200
+    result = await fresh().sync_all()
+    assert result["venues"]["bingx"]["mode"] == "skipped_idle_backoff"
+    assert len(accepted) == 1 and "新增 1 笔" in accepted[0]

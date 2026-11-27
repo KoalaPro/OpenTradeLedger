@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import re
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -446,6 +447,35 @@ def build_zero_trade_texts(
     return highlights, commentary_en, commentary_zh
 
 
+def reconcile_review_transmission(review: dict[str, Any]) -> dict[str, Any]:
+    """Older fallback reports marked every attempt as sent, even before connecting."""
+    if "transmission_status" in review:
+        return review
+    mode = review.get("execution_mode")
+    error = review.get("ai_error") or review.get("ai_error_zh") or ""
+    if mode == "remote_llm":
+        sent = True
+    elif mode in {"local_only", "zero_trades_local"}:
+        sent = False
+    elif re.match(
+        r"(?:Sanitized request was sent to AI endpoint, which returned HTTP |AI endpoint returned HTTP |"
+        r"本次已向所配 AI 接口发送脱敏汇总请求，但模型返回异常（HTTP |AI 模型接口返回异常（HTTP )[1-5]\d\d[:：]",
+        error,
+    ):
+        sent = True
+    elif mode == "remote_failed_fallback" or (error and "without an API Key" not in error and "尚未配置 API Key" not in error):
+        sent = None
+    elif review.get("model") in {"local-actuarial", "demo-local-actuarial"} or review.get("trade_count_snapshot") == 0:
+        sent = False
+    else:
+        sent = True if review.get("model") else None
+    return {**review, **_transmission_fields(sent)}
+
+
+def _transmission_fields(sent: bool | None) -> dict[str, Any]:
+    return {"data_transmitted": sent, "transmission_status": {True: "sent", False: "not_sent", None: "unknown"}[sent]}
+
+
 async def generate_ai_review(
     dashboard: dict[str, Any],
     prefs: UserPreferences,
@@ -465,7 +495,7 @@ async def generate_ai_review(
     commentary = ""
     model_used = "local-actuarial"
     execution_mode = "local_only"
-    data_transmitted = False
+    data_transmitted: bool | None = False
     ai_error = ""
     ai_error_zh = ""
 
@@ -499,7 +529,7 @@ async def generate_ai_review(
             "generated_ms": now_ms,
             "model": "local-actuarial",
             "execution_mode": "zero_trades_local",
-            "data_transmitted": False,
+            **_transmission_fields(False),
             "range_key": rk_norm,
             "range_label": range_label_en,
             "range_label_zh": range_label_zh,
@@ -518,7 +548,6 @@ async def generate_ai_review(
         }
 
     if base and (api_key or is_local_ai_host(base)):
-        data_transmitted = True
         lang_hint = "简体中文" if prefs.locale == "zh-CN" else "English"
         prompt = (
             "You are a disciplined quantitative trading & fee-optimization risk coach.\n"
@@ -539,13 +568,37 @@ async def generate_ai_review(
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        async def post(http_c: httpx.AsyncClient, path: str, body: dict[str, Any]) -> httpx.Response:
+            nonlocal data_transmitted
+            request = http_c.build_request("POST", f"{base}/{path}", headers=headers, json=body)
+            try:
+                response = await http_c.send(request, stream=True)
+            except httpx.HTTPStatusError:
+                # A response hook may raise before send() returns the response.
+                data_transmitted = True
+                raise
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
+                    httpx.ProxyError, httpx.UnsupportedProtocol, httpx.InvalidURL):
+                # No ledger body reached the endpoint on this attempt.
+                raise
+            except Exception:
+                # A write may be partial or the reply may have been lost.
+                if data_transmitted is not True:
+                    data_transmitted = None
+                raise
+            data_transmitted = True
+            try:
+                await response.aread()
+            finally:
+                await response.aclose()
+            return response
+
         async def _call_gateway(http_c: httpx.AsyncClient) -> str:
             nonlocal ai_error, ai_error_zh
             # 1. Standard OpenAI Chat Completions API
-            chat_resp = await http_c.post(
-                f"{base}/chat/completions",
-                headers=headers,
-                json={
+            chat_resp = await post(
+                http_c, "chat/completions",
+                {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3,
@@ -560,10 +613,9 @@ async def generate_ai_review(
                         return txt
             # 2. Fallback to OpenAI Responses API (`/responses`)
             if chat_resp.status_code in (400, 404, 405):
-                resp_api = await http_c.post(
-                    f"{base}/responses",
-                    headers=headers,
-                    json={"model": model, "input": prompt},
+                resp_api = await post(
+                    http_c, "responses",
+                    {"model": model, "input": prompt},
                 )
                 if resp_api.status_code < 400:
                     txt = _extract_responses_text(resp_api.json())
@@ -596,8 +648,8 @@ async def generate_ai_review(
             execution_mode = "remote_failed_fallback"
             err_txt = str(exc).strip() or type(exc).__name__
             err_txt = err_txt[:180]
-            ai_error = f"Sanitized request attempted to AI endpoint failed ({err_txt}) — fell back to local actuarial rules."
-            ai_error_zh = f"本次已尝试向所配 AI 接口发起脱敏汇总请求，但连接失败（{err_txt}）；下方报告已自动回退为本地精算结果。"
+            ai_error = f"AI review failed ({err_txt}). The report was generated locally."
+            ai_error_zh = f"AI 复盘失败（{err_txt}），已使用本地精算规则生成报告。"
     elif base and not api_key:
         ai_error = "AI Base URL is configured without an API Key — generated locally without sending data."
         ai_error_zh = "已填写 AI 接口地址但尚未配置 API Key，本次未外发数据，已直接使用本地精算规则生成。"
@@ -637,7 +689,7 @@ async def generate_ai_review(
         "generated_ms": now_ms,
         "model": model_used,
         "execution_mode": execution_mode,
-        "data_transmitted": data_transmitted,
+        **_transmission_fields(data_transmitted),
         "range_key": rk_norm,
         "range_label": range_label_en,
         "range_label_zh": range_label_zh,

@@ -335,6 +335,76 @@ async def test_ai_review_transmission_provenance_across_unconfigured_zero_503_an
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("failure", "status", "transmitted"), [
+    ("setup", "not_sent", False),
+    ("connect", "not_sent", False),
+    ("write", "unknown", None),
+    ("read", "unknown", None),
+    ("status_hook", "sent", True),
+    ("response_then_connect", "sent", True),
+    ("malformed_json", "sent", True),
+])
+async def test_ai_failure_reports_only_evidenced_delivery(monkeypatch, failure, status, transmitted):
+    dashboard = {"summary": {"trade_count": 1}, "trades": [{"symbol": "BTC", "side": "LONG", "exit_leg": {"role": "MAKER"}}]}
+    prefs = UserPreferences(ai_base_url="http://localhost/v1")
+
+    def handle(req):
+        if failure == "response_then_connect" and req.url.path.endswith("chat/completions"):
+            return httpx.Response(404)
+        if failure == "status_hook":
+            return httpx.Response(503)
+        if failure == "malformed_json":
+            return httpx.Response(200, text="invalid json")
+        errors = {"write": httpx.WriteTimeout, "read": httpx.ReadTimeout}
+        raise errors.get(failure, httpx.ConnectError)("test transport failure", request=req)
+
+    async def raise_for_status(response):
+        response.raise_for_status()
+
+    if failure == "setup":
+        def fail_init(**kwargs):
+            raise ValueError("invalid client configuration")
+        monkeypatch.setattr(httpx, "AsyncClient", fail_init)
+        report = await generate_ai_review(dashboard, prefs)
+    else:
+        hooks = {"response": [raise_for_status]} if failure == "status_hook" else {}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle), event_hooks=hooks) as client:
+            report = await generate_ai_review(dashboard, prefs, client=client)
+    assert report["execution_mode"] == "remote_failed_fallback"
+    assert report["data_transmitted"] is transmitted
+    assert report["transmission_status"] == status
+
+
+@pytest.mark.parametrize(("mode", "error", "status", "transmitted"), [
+    ("remote_failed_fallback", "Sanitized request attempted to AI endpoint failed (All connection attempts failed) — fell back to local actuarial rules.", "unknown", None),
+    ("remote_failed_fallback", "Sanitized request was sent to AI endpoint, which returned HTTP 503: unavailable — fell back to local actuarial rules.", "sent", True),
+    (None, "AI endpoint returned HTTP 404: unsupported (fell back to local actuarial review)", "sent", True),
+])
+def test_old_fallback_reports_reconcile_delivery_on_reload(tmp_path, mode, error, status, transmitted):
+    store = LedgerStore(tmp_path)
+    service = LedgerService(store, CredentialVault(tmp_path), build_default_registry(), default_demo_mode=True)
+    store.save_ai_review({
+        "model": "local-actuarial", "execution_mode": mode,
+        "trade_count_snapshot": 12, "data_transmitted": True, "ai_error": error,
+    }, 100.0, demo_mode=True)
+    report = service.get_dashboard(force_demo=True)["ai_review"]
+    assert report["data_transmitted"] is transmitted
+    assert report["transmission_status"] == status
+
+
+def test_empty_live_period_does_not_rewrite_old_uncertain_delivery(tmp_path):
+    store = LedgerStore(tmp_path)
+    service = LedgerService(store, CredentialVault(tmp_path), build_default_registry(), default_demo_mode=False)
+    store.save_ai_review({
+        "model": "local-actuarial", "execution_mode": "remote_failed_fallback", "range_key": "all",
+        "ai_error": "AI request failed (read timed out) — fell back to local actuarial review",
+    }, 0.0)
+    report = service.get_dashboard(force_demo=False)["ai_review"]
+    assert report["execution_mode"] == "remote_failed_fallback"
+    assert report["data_transmitted"] is None
+
+
+@pytest.mark.asyncio
 async def test_empty_httpx_readtimeout_classified_as_network_and_debounced_before_bark_alert(tmp_path: Path) -> None:
     """EasiCoin live issue: empty `httpx.ReadTimeout('')` must classify as NETWORK_UNREACHABLE and debounce single-tick timeouts."""
     diag = humanize_exchange_error("easicoin", httpx.ReadTimeout(""))

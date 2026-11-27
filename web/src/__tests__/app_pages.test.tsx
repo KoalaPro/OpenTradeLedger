@@ -561,6 +561,26 @@ describe('ledger access and settings races', () => {
     render(<App />)
   }
 
+  it('shows the password change receipt after reloading private settings', async () => {
+    let loads = 0
+    serve(async path => {
+      if (path === '/api/v1/auth/change-password') return Response.json({ authenticated: true, enabled: true, ok: true })
+      if (path === '/api/v1/settings') {
+        loads++
+        return Response.json(mockSettings)
+      }
+    })
+    fireEvent.click(await screen.findByTestId('nav-settings'))
+    fireEvent.change(await screen.findByTestId('sec-current-pwd'), { target: { value: 'old password' } })
+    fireEvent.change(screen.getByTestId('sec-new-pwd'), { target: { value: 'new password' } })
+    const initialLoads = loads
+    fireEvent.click(screen.getByTestId('sec-save-pwd-btn'))
+    await waitFor(() => expect(loads).toBeGreaterThan(initialLoads))
+    await screen.findByTestId('sec-current-pwd')
+    expect((await screen.findByTestId('settings-ok-banner')).textContent).toContain('访问密码已修改（其他旧会话已自动失效）')
+    expect((screen.getByTestId('sec-current-pwd') as HTMLInputElement).value).toBe('')
+  })
+
   it('refreshes another device after onboarding and sync without starting an exchange sync', async () => {
     vi.useFakeTimers()
     let account = 'empty'

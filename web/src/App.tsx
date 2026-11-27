@@ -164,6 +164,8 @@ export default function App() {
   })
   const enabledTabs = enabledExtensionTabs(settings.modules)
   const { page, extTab, redirectToOverview } = parseHashRoute(hash, enabledTabs)
+  const [passwordReceipt, setPasswordReceipt] = useState('')
+  const clearPasswordReceipt = useCallback(() => setPasswordReceipt(''), [])
   const [privacyMode, setPrivacyMode] = useState(true)
   const [preferencesReady, setPreferencesReady] = useState(false)
   const initializedPrivacyRef = useRef(false)
@@ -321,6 +323,10 @@ export default function App() {
   const session = useLedgerSession(invalidateDashboard)
   const { authStatus, authChecked, allowed, generation } = session
   const isAuthLocked = Boolean(authStatus.require_setup || authStatus.authenticated === false)
+
+  useEffect(() => {
+    if (isAuthLocked || page !== 'settings') clearPasswordReceipt()
+  }, [isAuthLocked, page, clearPasswordReceipt])
 
   const loadDashboardOnly = useCallback(async () => {
     if (!allowed.current) return false
@@ -987,7 +993,12 @@ export default function App() {
                             data?.demo_mode,
                         )}
                         authStatus={authStatus}
-                        onAuthChanged={session.changed}
+                        passwordReceipt={passwordReceipt}
+                        onPasswordReceiptShown={clearPasswordReceipt}
+                        onAuthChanged={(next, receipt) => {
+                          session.changed(next)
+                          setPasswordReceipt(receipt)
+                        }}
                         onLockNow={session.lock}
                         versionStatus={versionStatus}
                         onCheckVersion={handleCheckVersion}

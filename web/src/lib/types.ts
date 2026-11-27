@@ -387,7 +387,8 @@ export interface DashboardData {
     generated_ms: number
     model: string
     execution_mode?: 'zero_trades_local' | 'local_only' | 'remote_failed_fallback' | 'remote_llm'
-    data_transmitted?: boolean
+    transmission_status?: 'not_sent' | 'sent' | 'unknown'
+    data_transmitted?: boolean | null
     range_key?: string
     range_label?: string
     range_label_zh?: string
@@ -622,6 +623,7 @@ export interface UserSettings {
   ai_api_key_set?: boolean
   ai_model: string
   outbound_proxy_url?: string
+  outbound_proxy_warning?: { message: string; message_zh: string } | null
   watcher_interval_sec?: number
   watcher_trade_interval_sec?: number
   watcher_cooldown_sec?: number

@@ -87,39 +87,33 @@ export function FeesAiPage({
             ? '全部历史'
             : `${rk} 月度`
 
-  const resolveExecutionMode = (
-    review: DashboardData['ai_review'],
-  ): { mode: 'zero_trades_local' | 'local_only' | 'remote_failed_fallback' | 'remote_llm'; transmitted: boolean } => {
-    if (!review) return { mode: 'local_only', transmitted: false }
-    if (review.execution_mode) {
-      return {
-        mode: review.execution_mode,
-        transmitted:
-          typeof review.data_transmitted === 'boolean'
-            ? review.data_transmitted
-            : review.execution_mode === 'remote_llm' || review.execution_mode === 'remote_failed_fallback',
-      }
-    }
+  const resolveExecutionMode = (review: DashboardData['ai_review']) => {
+    if (!review) return 'local_only'
+    if (review.execution_mode) return review.execution_mode
     const errTxt = `${review.ai_error || ''} ${review.ai_error_zh || ''}`.trim()
     if (errTxt && !errTxt.includes('without an API Key') && !errTxt.includes('尚未配置 API Key')) {
-      return { mode: 'remote_failed_fallback', transmitted: true }
+      return 'remote_failed_fallback'
     }
-    if (
-      review.trade_count_snapshot === 0 ||
-      review.highlights?.some(h => h.kind === 'no_trades')
-    ) {
-      return { mode: 'zero_trades_local', transmitted: false }
+    if (review.trade_count_snapshot === 0 || review.highlights?.some(h => h.kind === 'no_trades')) {
+      return 'zero_trades_local'
     }
-    if (review.model === 'local-actuarial' || review.model === 'demo-local-actuarial') {
-      return { mode: 'local_only', transmitted: false }
-    }
-    return { mode: 'remote_llm', transmitted: true }
+    if (review.model === 'local-actuarial' || review.model === 'demo-local-actuarial') return 'local_only'
+    return 'remote_llm'
   }
 
-  const aiProvenance = resolveExecutionMode(ai)
+  const mode = resolveExecutionMode(ai)
+  const delivery = ai?.transmission_status ??
+    (mode === 'remote_llm' ? 'sent' : mode === 'remote_failed_fallback' ? 'unknown' : 'not_sent')
+  const unknownDelivery = isZh ? '无法确认 AI 接口是否收到脱敏请求' : 'Delivery to the AI endpoint could not be confirmed'
+  const deliveryBadge = {
+    unknown: unknownDelivery,
+    not_sent: isZh ? '本次未外发任何数据' : 'No data sent externally',
+    sent: mode === 'remote_llm'
+      ? (isZh ? `本次已外发脱敏汇总 → ${ai?.model}` : `Sanitized summary sent → ${ai?.model}`)
+      : (isZh ? '本次已向 AI 接口发送脱敏请求' : 'Sanitized request sent to AI'),
+  }[delivery]
 
   const formatModelAttribution = (review: NonNullable<DashboardData['ai_review']>) => {
-    const { mode } = resolveExecutionMode(review)
     if (review.model === 'demo-local-actuarial') {
       return isZh ? '演示精算规则（纯本地示例）' : 'Demo Actuarial Rules (Local Sample)'
     }
@@ -241,7 +235,7 @@ export function FeesAiPage({
                   className={
                     !aiConfigured
                       ? 'text-[var(--fg-2)]'
-                      : aiProvenance.mode === 'remote_failed_fallback'
+                      : mode === 'remote_failed_fallback'
                         ? 'text-[var(--warn)] font-medium'
                         : 'text-[var(--ok)] font-medium'
                   }
@@ -250,7 +244,7 @@ export function FeesAiPage({
                     ? isZh
                       ? '尚未配置 AI 模型'
                       : 'AI Not Configured'
-                    : aiProvenance.mode === 'remote_failed_fallback'
+                    : mode === 'remote_failed_fallback'
                       ? isZh
                         ? `AI 接口异常 · ${settings.ai_model || 'gpt-4o-mini'}`
                         : `AI Endpoint Error · ${settings.ai_model || 'gpt-4o-mini'}`
@@ -275,25 +269,16 @@ export function FeesAiPage({
                 <span
                   data-testid="ai-transmission-badge"
                   className={
-                    aiProvenance.mode === 'remote_failed_fallback'
+                    mode === 'remote_failed_fallback'
                       ? 'text-[var(--warn)]'
-                      : aiProvenance.transmitted
+                      : delivery === 'sent'
                         ? 'text-[var(--fg-2)]'
                         : 'text-[var(--fg-3)]'
                   }
                 >
                   ·{' '}
-                  {aiProvenance.mode === 'remote_llm'
-                    ? isZh
-                      ? `本次已外发脱敏汇总 → ${ai.model}`
-                      : `Sanitized summary sent → ${ai.model}`
-                    : aiProvenance.mode === 'remote_failed_fallback'
-                      ? isZh
-                        ? '本次已向 AI 接口发送脱敏请求（接口异常，已回退本地精算）'
-                        : 'Sanitized request sent to AI · Endpoint failed, local fallback'
-                      : isZh
-                        ? '纯本地生成 · 本次未外发任何数据'
-                        : 'Local only · No data sent externally'}
+                  {deliveryBadge}
+                  {mode === 'remote_failed_fallback' && (isZh ? ' · 已回退本地精算' : ' · Local fallback')}
                 </span>
               )}
               {ai && (
@@ -401,7 +386,7 @@ export function FeesAiPage({
 
             {/* Sanitized Payload Transparency Disclosure */}
             <div className="pt-4 border-t border-[var(--border)]">
-              {aiProvenance.mode === 'zero_trades_local' ? (
+              {mode === 'zero_trades_local' ? (
                 <div className="inline-flex items-center gap-1.5 text-[12px] text-[var(--fg-3)]">
                   <ShieldCheck size={14} style={{ color: 'var(--ok)' }} className="shrink-0" />
                   <span>
@@ -421,13 +406,11 @@ export function FeesAiPage({
                   >
                     <ShieldCheck size={14} style={{ color: 'var(--ok)' }} className="shrink-0" />
                     <span>
-                      {aiProvenance.transmitted
-                        ? locale === 'en'
-                          ? 'Inspect sanitized data sent to AI endpoint on this run (Zero API keys / UIDs)'
-                          : '查看本次已发送给 AI 接口的脱敏数据明细（绝不含 API Key / UID / 钱包地址）'
-                        : locale === 'en'
-                          ? 'Preview sanitized data scope if AI is enabled (Local run · no data sent)'
-                          : '查看启用 AI 时的脱敏数据范围预览（本次纯本地生成，未外发任何数据）'}
+                      {delivery === 'unknown'
+                        ? (isZh ? `查看脱敏数据范围（${unknownDelivery}）` : `Preview sanitized data scope (${unknownDelivery})`)
+                        : delivery === 'sent'
+                          ? (isZh ? '查看本次已发送给 AI 接口的脱敏数据明细（绝不含 API Key / UID / 钱包地址）' : 'Inspect sanitized data sent to AI endpoint on this run (Zero API keys / UIDs)')
+                          : (isZh ? '查看脱敏数据范围预览（本次未外发任何数据）' : 'Preview sanitized data scope (No data sent externally)')}
                     </span>
                     <ChevronDown
                       size={13}
@@ -440,13 +423,9 @@ export function FeesAiPage({
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[var(--fg-2)]">
                         <div>
                           <b className="text-[var(--fg)]">
-                            {aiProvenance.transmitted
-                              ? locale === 'en'
-                                ? 'Transmitted Metrics (4 Sanitized Groups)'
-                                : '本次实际外发的 4 大类脱敏汇总数据：'
-                              : locale === 'en'
-                                ? 'Sanitized Scope Preview (Not Sent on This Local Run)'
-                                : '脱敏汇总范围预览（本次未外发任何数据）：'}
+                            {delivery === 'sent'
+                              ? (isZh ? '本次实际外发的 4 大类脱敏汇总数据：' : 'Transmitted Metrics (4 Sanitized Groups)')
+                              : (isZh ? '脱敏汇总范围预览' : 'Sanitized Scope Preview')}
                           </b>
                           <ul className="mt-1 pl-4 space-y-0.5 list-disc">
                             <li>

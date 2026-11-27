@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 import httpx
 
 from opentradeledger.config import NotificationSettings
-from opentradeledger.core.notifier import bark_configured, dispatch_notification, parse_bark_input
+from opentradeledger.core.notifier import bark_configured, bark_destination, dispatch_notification
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 
 if TYPE_CHECKING:
@@ -128,11 +128,6 @@ class LeadTradeActivity:
     recent_orders: tuple[LeadOrderRecord, ...]
     orders: tuple[LeadOrderRecord, ...]
     uncertain_symbols: tuple[str, ...]
-
-
-def _bark_destination(settings: NotificationSettings) -> str:
-    server, key = parse_bark_input(settings.bark_server_url, settings.bark_push_key)
-    return hashlib.sha256(f"{server}/{key}".encode()).hexdigest() if key else ""
 
 
 def _order_keys(orders: Sequence[LeadOrderRecord]) -> dict[str, LeadOrderRecord]:
@@ -868,7 +863,7 @@ class CopyWatcherService:
 
     def get_status(self, *, demo_mode: bool = False) -> dict[str, Any]:
         slot_s, trade_s, cool_s = self._effective_timings()
-        destination = _bark_destination(self.store.get_preferences().notifications)
+        destination = bark_destination(self.store.get_preferences().notifications)
         has_bark = bool(destination)
         if demo_mode:
             return build_demo_copy_watcher_status(
@@ -1220,7 +1215,7 @@ class CopyWatcherService:
         if not (row.get("slot_pending") if slot else message in row.get("pending_trades", [])):
             return
         notifications = self.store.get_preferences().notifications
-        if row.get("pending_destination") != _bark_destination(notifications):
+        if row.get("pending_destination") != bark_destination(notifications):
             return
         result = await dispatch_notification(notifications, **message, client=self._injected_client)
         if not result["ok"]:
@@ -1270,7 +1265,7 @@ class CopyWatcherService:
                     revision=row.get("revision", 0) + 1,
                 )
                 self._bind_pending(
-                    row, _bark_destination(self.store.get_preferences().notifications), wall_ms, cooldown_sec
+                    row, bark_destination(self.store.get_preferences().notifications), wall_ms, cooldown_sec
                 )
                 self._save_state(state)
                 for msg in list(row.get("pending_trades", [])):
@@ -1297,7 +1292,7 @@ class CopyWatcherService:
         if current is None:
             return None
         enabled = current.get("enabled", True)
-        destination = _bark_destination(self.store.get_preferences().notifications)
+        destination = bark_destination(self.store.get_preferences().notifications)
         has_bark = bool(destination)
         row = self._snapshot(
             snap, act, state["snapshots"].get(pid, {}), wall_ms, history_error=history_error

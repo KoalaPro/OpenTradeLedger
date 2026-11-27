@@ -122,6 +122,7 @@ class AccountIdentityError(RuntimeError):
         code: str,
         *,
         masked_uid: str = "",
+        wallet_address: bool = False,
         existing_label: str = "",
         exchange_name: str = "",
         exchange_name_zh: str = "",
@@ -156,6 +157,15 @@ class AccountIdentityError(RuntimeError):
             )
             self.reason_zh = (
                 f"这组只读密钥或钱包地址已在 {ex_zh} 下接入{lbl_part_zh}，请勿重复添加。"
+            )
+        elif code == "ACCOUNT_UID_MISMATCH" and wallet_address:
+            self.reason = (
+                f"This public address{uid_part_en} belongs to a different {ex_en} wallet. "
+                "Enter the original wallet’s public address, or choose ‘Add Account’ to connect this wallet separately."
+            )
+            self.reason_zh = (
+                f"这个公开地址{uid_part_zh}属于另一个 {ex_zh} 钱包。"
+                "请输入原钱包的公开地址。如需接入新钱包，请点击「加账号」。"
             )
         elif code == "ACCOUNT_UID_MISMATCH":
             self.reason = (

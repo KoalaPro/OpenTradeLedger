@@ -25,7 +25,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN pip install --no-cache-dir \
     "fastapi>=0.115.0" \
     "uvicorn>=0.30.0" \
-    "httpx>=0.27.0" \
+    "httpx[socks]>=0.28.0" \
     "cryptography>=42.0.0" \
     "pydantic>=2.7.0" && mkdir -p /app/data
 

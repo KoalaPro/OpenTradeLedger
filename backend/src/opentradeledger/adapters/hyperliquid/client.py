@@ -16,6 +16,7 @@ from typing import Any, Callable, Optional
 import httpx
 
 from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, usd_fee
+from opentradeledger.core.venue_primitives import sum_fees
 from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
 
 from opentradeledger.core.account_partition import AccountIdentityError, normalize_evm_address
@@ -748,9 +749,9 @@ def normalize_hyperliquid_closed_trades(
                 funding_pnl += float(fl["usdc"])
                 funding_receipts.append((fl["time"], fl["usdc"]))
 
-        total_fee = round(entry_gross_fee + exit_gross_fee, 6)
-        total_rebate = round(entry_rebate + exit_rebate, 6)
-        net_fee = round(total_fee - total_rebate, 6)
+        total_fee = sum_fees((entry_gross_fee, exit_gross_fee))
+        total_rebate = sum_fees((entry_rebate, exit_rebate))
+        net_fee = sum_fees((total_fee, -total_rebate))
         book_pnl = round(closed_pnl - total_fee + funding_pnl, 6)
         net_pnl = round(book_pnl + total_rebate, 6)
 
@@ -783,10 +784,10 @@ def normalize_hyperliquid_closed_trades(
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_known": net_known,
                 "net_pnl_known": net_known,
-                "total_fee_usd": round(total_fee, 4),
-                "total_rebate_usd": round(total_rebate, 4),
+                "total_fee_usd": total_fee,
+                "total_rebate_usd": total_rebate,
                 "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(net_fee, 4),
+                "net_fee_usd": net_fee,
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
                 "is_partial_close": is_partial,
@@ -798,14 +799,14 @@ def normalize_hyperliquid_closed_trades(
                     "time_ms": open_ms,
                     "avg_price": round(entry_px, 6),
                     "notional_usd": round(entry_notional, 2),
-                    "gross_fee_usd": round(entry_gross_fee, 4),
+                    "gross_fee_usd": entry_gross_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "",
-                    "rebate_usd": round(entry_rebate, 4),
+                    "rebate_usd": entry_rebate,
                     "rebate_pct": 100.0 if entry_rebate > 0 and entry_gross_fee == 0 else (
                         round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else 0.0
                     ),
-                    "net_fee_usd": round(entry_gross_fee - entry_rebate, 4),
+                    "net_fee_usd": sum_fees((entry_gross_fee, -entry_rebate)),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -817,14 +818,14 @@ def normalize_hyperliquid_closed_trades(
                     "time_ms": close_ms,
                     "avg_price": round(exit_px, 6),
                     "notional_usd": round(exit_notional, 2),
-                    "gross_fee_usd": round(exit_gross_fee, 4),
+                    "gross_fee_usd": exit_gross_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "",
-                    "rebate_usd": round(exit_rebate, 4),
+                    "rebate_usd": exit_rebate,
                     "rebate_pct": 100.0 if exit_rebate > 0 and exit_gross_fee == 0 else (
                         round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else 0.0
                     ),
-                    "net_fee_usd": round(exit_gross_fee - exit_rebate, 4),
+                    "net_fee_usd": sum_fees((exit_gross_fee, -exit_rebate)),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -847,8 +848,8 @@ def normalize_hyperliquid_closed_trades(
         entry_rebate = float(lot["rebate"]) * alloc_ratio
         exit_notional = sum(float(x["notional"]) for x in exits)
         exit_px = (exit_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
-        exit_gross_fee = sum(float(x["fee_paid"]) for x in exits)
-        exit_rebate = sum(float(x["maker_rebate"]) for x in exits)
+        exit_gross_fee = sum_fees(float(x["fee_paid"]) for x in exits)
+        exit_rebate = sum_fees(float(x["maker_rebate"]) for x in exits)
         events = (
             build_position_events(lot["event_fills"], side=str(exits[-1]["trade_side"]), linear=True)
             if lot["from_flat"] else []
@@ -871,10 +872,10 @@ def normalize_hyperliquid_closed_trades(
                 bq = sum(float(y["sz"]) for y in g_e)
                 bnot = sum(float(y["notional"]) for y in g_e)
                 bpx = (bnot / bq) if bq > 0 else float(g_e[-1]["px"])
-                bfee = sum(float(y["fee_paid"]) for y in g_e)
-                breb = sum(float(y["maker_rebate"]) for y in g_e)
+                bfee = sum_fees(float(y["fee_paid"]) for y in g_e)
+                breb = sum_fees(float(y["maker_rebate"]) for y in g_e)
                 batch_known = all(y["fee_known"] for y in g_e)
-                bnetf = bfee - breb
+                bnetf = sum_fees((bfee, -breb))
                 bgpnl = sum(float(y["closed_pnl"]) for y in g_e)
                 bmk = any(bool(y["is_maker"]) for y in g_e)
                 btk = any(not bool(y["is_maker"]) for y in g_e)
@@ -892,11 +893,11 @@ def normalize_hyperliquid_closed_trades(
                         "time_str": _fmt_bj_ms(bts),
                         "avg_price": round(bpx, 6),
                         "notional_usd": round(bnot, 2),
-                        "gross_fee_usd": round(bfee, 4),
+                        "gross_fee_usd": bfee,
                         "discount_saved_usd": 0.0,
                         "discount_asset": "",
-                        "rebate_usd": round(breb, 4),
-                        "net_fee_usd": round(bnetf, 4),
+                        "rebate_usd": breb,
+                        "net_fee_usd": bnetf,
                         "gross_pnl_usd": round(bgpnl, 4),
                         "net_pnl_usd": round(bgpnl - bfee + breb, 4) if batch_known else None,
                     }
@@ -979,8 +980,8 @@ def normalize_hyperliquid_closed_trades(
             lot["event_fills"].append(event_fill(ts, sz, px, True, charged, oid_str, role=event_role))
             lot["qty"] += sz
             lot["notional"] += px * sz
-            lot["gross_fee"] += fee_paid
-            lot["rebate"] += maker_rebate
+            lot["gross_fee"] = sum_fees((lot["gross_fee"], fee_paid))
+            lot["rebate"] = sum_fees((lot["rebate"], maker_rebate))
             if not crossed:
                 lot["maker_notional"] += px * sz
             else:

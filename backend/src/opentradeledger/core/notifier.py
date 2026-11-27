@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -49,6 +50,12 @@ def parse_bark_input(raw_server: str, raw_key: str) -> tuple[str, str]:
 
     final_server = (srv or DEFAULT_BARK_SERVER_URL).rstrip("/")
     return final_server, key
+
+
+def bark_destination(settings: NotificationSettings) -> str:
+    """Identify the selected server/device without persisting the push key."""
+    server, key = parse_bark_input(settings.bark_server_url, settings.bark_push_key)
+    return hashlib.sha256(f"{server}/{key}".encode()).hexdigest() if key else ""
 
 
 def bark_configured(settings: NotificationSettings) -> bool:

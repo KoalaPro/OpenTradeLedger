@@ -31,7 +31,7 @@ from opentradeledger.adapters.okx.contracts import (
 )
 from opentradeledger.core.open_reductions import open_reduction_key, open_reduction_record
 from opentradeledger.core.position_batch_pnl import position_fill_accounting, reported_amount
-from opentradeledger.core.venue_primitives import USD_CASH_ASSETS
+from opentradeledger.core.venue_primitives import USD_CASH_ASSETS, sum_fees
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError, assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
@@ -761,8 +761,8 @@ def normalize_okx_closed_trades(
         entry = build_fill_leg(entry_fills, spec, inst, open_ms, open_px, okb_usd_price, scale=entry_scale)
         exit_leg = build_fill_leg(exit_fills, spec, inst, close_ms, close_px, okb_usd_price)
         legs = (entry, exit_leg)
-        total_fee = sum(leg["gross_fee_usd"] for leg in legs)
-        embedded_rebate = sum(leg["fill_rebate_usd"] for leg in legs)
+        total_fee = sum_fees(leg["gross_fee_usd"] for leg in legs)
+        embedded_rebate = sum_fees(leg["fill_rebate_usd"] for leg in legs)
         settlement = str(pos.get("ccy") or spec.get("settleCcy") or inst.split("-")[1]).upper()
 
         def pos_usd(key: str) -> float:
@@ -784,9 +784,9 @@ def normalize_okx_closed_trades(
                 )
             else:
                 observed = embedded_rebate - total_fee
-            remainder = position_fee - observed
-            total_fee += max(0.0, -remainder)
-            embedded_rebate += max(0.0, remainder)
+            remainder = sum_fees((position_fee, -observed))
+            total_fee = sum_fees((total_fee, max(0.0, -remainder)))
+            embedded_rebate = sum_fees((embedded_rebate, max(0.0, remainder)))
 
         matched_reb_amt = 0.0
         settled_ts = 0
@@ -796,7 +796,7 @@ def normalize_okx_closed_trades(
             bts = int(rb.get("ts") or 0)
             if open_ms - 5_000 <= bts <= close_ms + 86_400_000:
                 consumed_bill_ids.add(rb["_bid"])
-                matched_reb_amt += float(rb["_amt"])
+                matched_reb_amt = sum_fees((matched_reb_amt, float(rb["_amt"])))
                 settled_ts = max(settled_ts, bts)
 
         external_rebate = matched_reb_amt or total_fee * max(0.0, min(1.0, rebate_ratio))
@@ -804,8 +804,8 @@ def normalize_okx_closed_trades(
         for leg in legs:
             paid = leg["gross_fee_usd"]
             rebate = leg["fill_rebate_usd"] + paid * ratio
-            leg["rebate_usd"] = round(rebate, 6)
-            leg["net_fee_usd"] = round(paid - rebate, 6)
+            leg["rebate_usd"] = rebate
+            leg["net_fee_usd"] = sum_fees((paid, -rebate))
             leg["rebate_pct"] = round(rebate / paid * 100, 2) if paid else 0.0
             leg["rebate_status"] = ("PENDING" if paid * ratio and not matched_reb_amt
                                     else "SETTLED" if rebate else "NONE")
@@ -818,7 +818,7 @@ def normalize_okx_closed_trades(
         funding_pnl = pos_usd("fundingFee")
         realized = (pos_usd("realizedPnl") if finite_number(pos.get("realizedPnl")) is not None else
                     gross_pnl - total_fee + embedded_rebate + funding_pnl + pos_usd("liqPenalty") + pos_usd("settledPnl"))
-        total_rebate = embedded_rebate + external_rebate
+        total_rebate = sum_fees((embedded_rebate, external_rebate))
         # The UI's pre-rebate book amount plus all rebates must bridge to net.
         book_pnl = realized - embedded_rebate
         net_pnl = realized + external_rebate
@@ -850,7 +850,7 @@ def normalize_okx_closed_trades(
                 b_leg = build_fill_leg(g_fills, spec, inst, b_ts, b_px, okb_usd_price)
                 b_paid = float(b_leg["gross_fee_usd"])
                 b_reb = float(b_leg["fill_rebate_usd"]) + b_paid * ratio
-                b_net_f = b_paid - b_reb
+                b_net_f = sum_fees((b_paid, -b_reb))
                 b_gpnl = order_pnl.get(str(g_fills[0].get("ordId") or g_fills[0].get("clOrdId") or ""))
                 okx_exit_batches.append(
                     {
@@ -866,11 +866,11 @@ def normalize_okx_closed_trades(
                         "time_str": _fmt_bj_ms(b_ts),
                         "avg_price": round(b_px, 6),
                         "notional_usd": round(b_leg["notional_usd"], 2) if b_leg["notional_usd"] is not None else None,
-                        "gross_fee_usd": round(b_paid, 4),
-                        "discount_saved_usd": round(float(b_leg["discount_saved_usd"]), 4),
+                        "gross_fee_usd": b_paid,
+                        "discount_saved_usd": float(b_leg["discount_saved_usd"]),
                         "discount_asset": b_leg["discount_asset"],
-                        "rebate_usd": round(b_reb, 4),
-                        "net_fee_usd": round(b_net_f, 4),
+                        "rebate_usd": b_reb,
+                        "net_fee_usd": b_net_f,
                         "gross_pnl_usd": round(float(b_gpnl), 4) if b_gpnl is not None else None,
                         "net_pnl_usd": round(float(b_gpnl) - b_net_f, 4) if b_gpnl is not None and b_leg["fee_known"] else None,
                     }
@@ -901,10 +901,10 @@ def normalize_okx_closed_trades(
                 "gross_pnl_usd": round(gross_pnl, 4),
                 "funding_pnl_usd": round(funding_pnl, 4),
                 "book_pnl_usd": round(book_pnl, 4),
-                "total_fee_usd": round(total_fee, 4),
-                "total_rebate_usd": round(total_rebate, 4),
-                "total_discount_saved_usd": round(sum(leg["discount_saved_usd"] for leg in legs), 4),
-                "net_fee_usd": round(total_fee - total_rebate, 4),
+                "total_fee_usd": total_fee,
+                "total_rebate_usd": total_rebate,
+                "total_discount_saved_usd": sum_fees(leg["discount_saved_usd"] for leg in legs),
+                "net_fee_usd": sum_fees((total_fee, -total_rebate)),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": rebate_status,
                 "is_partial_close": is_partial,

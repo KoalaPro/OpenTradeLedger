@@ -21,7 +21,7 @@ import httpx
 
 from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, project_live_reduction, usd_fee
 from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
-from opentradeledger.core.venue_primitives import normalize_internal_record_to_public_trade
+from opentradeledger.core.venue_primitives import normalize_internal_record_to_public_trade, sum_fees
 
 from opentradeledger.adapters.balance_validation import InvalidWalletSnapshot, finite_amount, optional_amounts, wallet_rows
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError, assert_readonly_request
@@ -833,8 +833,8 @@ def normalize_bybit_closed_trades(
                       for e, share in matched_entry_slices]
         entry_known = bool(entry_fees) and all(fee is not None for fee, _ in entry_fees)
         exit_known = bool(exit_fees) and all(fee is not None for fee in exit_fees)
-        entry_gross_fee = sum(fee * share for fee, share in entry_fees if fee is not None)
-        exit_gross_fee = sum(fee for fee in exit_fees if fee is not None)
+        entry_gross_fee = sum_fees(fee * share for fee, share in entry_fees if fee is not None)
+        exit_gross_fee = sum_fees(fee for fee in exit_fees if fee is not None)
         if row.get("openFee") not in (None, ""):
             entry_gross_fee = float(row["openFee"])
             entry_known = True
@@ -913,9 +913,9 @@ def normalize_bybit_closed_trades(
             for draft in grp:
                 matched = exits_by_order.get(draft["order_id"], [])
                 if matched and all(e["allocated_entry_fee_usd"] is not None for e in matched) and not draft["has_open_fee"]:
-                    draft["entry_gross_fee"] = sum(e["allocated_entry_fee_usd"] for e in matched)
-        entry_gross_fee = sum(d["entry_gross_fee"] for d in grp)
-        exit_gross_fee = sum(d["exit_gross_fee"] for d in grp)
+                    draft["entry_gross_fee"] = sum_fees(e["allocated_entry_fee_usd"] for e in matched)
+        entry_gross_fee = sum_fees(d["entry_gross_fee"] for d in grp)
+        exit_gross_fee = sum_fees(d["exit_gross_fee"] for d in grp)
 
         entry_known = all(d["entry_known"] for d in grp)
         exit_known = all(d["exit_known"] for d in grp)
@@ -948,7 +948,7 @@ def normalize_bybit_closed_trades(
                 funding_pnl += float(fl["_val"])
                 funding_receipts.append((fts, fl["_val"]))
 
-        total_fee = round(entry_gross_fee + exit_gross_fee, 6)
+        total_fee = sum_fees((entry_gross_fee, exit_gross_fee))
 
         # Match explicit REBATE logs on this symbol first; fall back to observed_rebate_ratio
         rebate_receipts = []
@@ -960,26 +960,26 @@ def normalize_bybit_closed_trades(
             rts = int(rb.get("transactionTime") or 0)
             if open_ms - 5_000 <= rts <= close_ms + 86_400_000:
                 consumed_reb_ids.add(rb["_id"])
-                matched_reb_amt += float(rb["_val"])
+                matched_reb_amt = sum_fees((matched_reb_amt, float(rb["_val"])))
                 rebate_receipts.append((rts, rb["_val"]))
                 settled_ts = max(settled_ts, rts)
 
         chargeable_fees = max(0.0, entry_gross_fee) + max(0.0, exit_gross_fee)
         if matched_reb_amt > 0 and chargeable_fees > 0:
             eff_ratio = min(0.95, matched_reb_amt / chargeable_fees)
-            entry_rebate = round(matched_reb_amt * max(0.0, entry_gross_fee) / chargeable_fees, 6)
-            exit_rebate = round(matched_reb_amt - entry_rebate, 6)
+            entry_rebate = matched_reb_amt * max(0.0, entry_gross_fee) / chargeable_fees
+            exit_rebate = sum_fees((matched_reb_amt, -entry_rebate))
             settled_str = _fmt_bj_ms(settled_ts)
         else:
             eff_ratio = max(0.0, min(1.0, rebate_ratio))
-            entry_rebate = round(max(0.0, entry_gross_fee) * eff_ratio, 6)
-            exit_rebate = round(max(0.0, exit_gross_fee) * eff_ratio, 6)
+            entry_rebate = max(0.0, entry_gross_fee) * eff_ratio
+            exit_rebate = max(0.0, exit_gross_fee) * eff_ratio
             settled_str = ""
 
-        entry_net_fee = round(entry_gross_fee - entry_rebate, 6)
-        exit_net_fee = round(exit_gross_fee - exit_rebate, 6)
+        entry_net_fee = sum_fees((entry_gross_fee, -entry_rebate))
+        exit_net_fee = sum_fees((exit_gross_fee, -exit_rebate))
 
-        total_rebate = round(entry_rebate + exit_rebate, 6)
+        total_rebate = sum_fees((entry_rebate, exit_rebate))
         for draft in grp:
             if draft["closed_pnl"] is not None and draft["entry_known"] and draft["exit_known"]:
                 draft["gross_pnl"] = draft["closed_pnl"] + draft["entry_gross_fee"] + draft["exit_gross_fee"]
@@ -1004,8 +1004,8 @@ def normalize_bybit_closed_trades(
                 b_exs = d_it["exit_execs"]
                 b_fee = float(d_it["exit_gross_fee"])
                 b_mnt = any(str(e.get("feeCurrency") or "").upper() == "MNT" for e in b_exs)
-                b_reb = round(max(0.0, b_fee) * ex_reb_rate, 4)
-                b_net_f = round(b_fee - b_reb, 4)
+                b_reb = max(0.0, b_fee) * ex_reb_rate
+                b_net_f = sum_fees((b_fee, -b_reb))
                 b_mk = any(bool(e.get("isMaker")) for e in b_exs)
                 b_tk = any(not bool(e.get("isMaker")) for e in b_exs)
                 b_role = "MAKER" if (b_mk and not b_tk) else "TAKER"
@@ -1028,7 +1028,7 @@ def normalize_bybit_closed_trades(
                         "time_str": _fmt_bj_ms(b_ts),
                         "avg_price": round(float(d_it["exit_px"]), 6),
                         "notional_usd": round(b_not, 2),
-                        "gross_fee_usd": round(b_fee, 4),
+                        "gross_fee_usd": b_fee,
                         "discount_saved_usd": 0.0,
                         "discount_asset": "MNT" if b_mnt else "",
                         "rebate_usd": b_reb,
@@ -1058,14 +1058,14 @@ def normalize_bybit_closed_trades(
                 "rebates_by_day": dated_cash(rebate_receipts),
                 "funding_by_day": dated_cash(funding_receipts),
                 "book_pnl_usd": round(book_pnl, 4),
-                "total_fee_usd": round(total_fee, 4),
+                "total_fee_usd": total_fee,
                 "net_pnl_known": net_known,
                 **({"statement_net_by_day": dated_cash([(d["close_ms"], d["closed_pnl"]) for d in grp])}
                    if net_known and not (entry_known and exit_known) else {}),
                 "total_fee_known": entry_known and exit_known,
-                "total_rebate_usd": round(total_rebate, 4),
+                "total_rebate_usd": total_rebate,
                 "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(entry_net_fee + exit_net_fee, 4),
+                "net_fee_usd": sum_fees((entry_net_fee, exit_net_fee)),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
                 "is_partial_close": is_partial_bb,
@@ -1077,12 +1077,12 @@ def normalize_bybit_closed_trades(
                     "time_ms": open_ms,
                     "avg_price": round(entry_px, 6),
                     "notional_usd": round(entry_notional, 2),
-                    "gross_fee_usd": round(entry_gross_fee, 4),
+                    "gross_fee_usd": entry_gross_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "MNT" if entry_mnt else "",
-                    "rebate_usd": round(entry_rebate, 4),
+                    "rebate_usd": entry_rebate,
                     "rebate_pct": round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else round(eff_ratio * 100.0, 2),
-                    "net_fee_usd": round(entry_net_fee, 4),
+                    "net_fee_usd": entry_net_fee,
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -1094,12 +1094,12 @@ def normalize_bybit_closed_trades(
                     "time_ms": close_ms,
                     "avg_price": round(exit_px, 6),
                     "notional_usd": round(exit_notional, 2),
-                    "gross_fee_usd": round(exit_gross_fee, 4),
+                    "gross_fee_usd": exit_gross_fee,
                     "discount_saved_usd": 0.0,
                     "discount_asset": "MNT" if exit_mnt else "",
-                    "rebate_usd": round(exit_rebate, 4),
+                    "rebate_usd": exit_rebate,
                     "rebate_pct": round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else round(eff_ratio * 100.0, 2),
-                    "net_fee_usd": round(exit_net_fee, 4),
+                    "net_fee_usd": exit_net_fee,
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },

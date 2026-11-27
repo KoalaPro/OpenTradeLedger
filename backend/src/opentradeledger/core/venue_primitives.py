@@ -9,7 +9,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from math import isfinite
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 TZ_BEIJING = timezone(timedelta(hours=8))
 
@@ -114,6 +114,11 @@ def dec(val: Any, default: str = "0") -> Decimal:
         return d if d.is_finite() else Decimal(default)
     except (InvalidOperation, ValueError):
         return Decimal(default)
+
+
+def sum_fees(amounts: Iterable[float]) -> float:
+    """Add priced execution costs in decimal before serializing the public amount."""
+    return float(sum((Decimal(str(amount)) for amount in amounts), Decimal(0)))
 
 
 def f2(val: Decimal | float | int | str, digits: int = 4) -> float:
@@ -253,7 +258,7 @@ def merge_legacy_journal_entries(
 
 def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: int) -> dict[str, Any]:
     gross_fee = float(raw.get("gross_fee_usd") or 0.0)
-    disc_saved = round(float(raw.get("bnb_discount_saved_usd") or raw.get("discount_saved_usd") or 0.0), 4)
+    disc_saved = float(raw.get("bnb_discount_saved_usd") or raw.get("discount_saved_usd") or 0.0)
     if "rebate_usd" in raw and "settled_rebate_usd" not in raw:
         rebate = float(raw.get("rebate_usd") or 0.0)
     else:
@@ -379,7 +384,7 @@ def normalize_internal_record_to_public_trade(
     settled_reb = float(r.get("settled_rebate_usd") or 0.0)
     pending_reb = float(r.get("pending_rebate_usd") or 0.0)
     total_reb = float(dec(settled_reb) + dec(pending_reb))
-    total_disc = round(float(r.get("bnb_discount_saved_usd") or r.get("total_discount_saved_usd") or 0.0), 4)
+    total_disc = float(r.get("bnb_discount_saved_usd") or r.get("total_discount_saved_usd") or 0.0)
     total_fee = float(r.get("total_fee_usd") or 0.0)
     if total_fee > 0 and entry_leg["gross_fee_usd"] <= 0 and exit_leg["gross_fee_usd"] <= 0:
         for unsplit_leg in (entry_leg, exit_leg):
@@ -434,7 +439,7 @@ def normalize_internal_record_to_public_trade(
         "pending_rebate_usd": pending_reb,
         "total_rebate_usd": total_reb,
         "total_discount_saved_usd": total_disc,
-        "bnb_fee_qty": round(float(r.get("bnb_fee_qty") or 0.0), 6),
+        "bnb_fee_qty": float(r.get("bnb_fee_qty") or 0.0),
         "net_fee_usd": net_fee,
         "realized_net_pnl_usd": round(float(r.get("realized_net_pnl_usd") if r.get("realized_net_pnl_usd") is not None else (r.get("net_pnl_usd") or 0.0)), 4),
         "net_pnl_usd": round(float(r.get("expected_net_pnl_usd") if r.get("expected_net_pnl_usd") is not None else (r.get("net_pnl_usd") or 0.0)), 4),

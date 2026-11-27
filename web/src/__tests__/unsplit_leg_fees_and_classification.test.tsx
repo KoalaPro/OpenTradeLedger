@@ -491,6 +491,13 @@ describe('Position lifecycle detail', () => {
     expect(exit.textContent).toContain('(72%)')
   })
 
+  it('keeps parent rebates and token discounts at execution precision in settlement details', () => {
+    render(page([{ ...trade, total_rebate_usd: 0.082409646, total_discount_saved_usd: 0.00000754 }]))
+    const settlement = within(screen.getByTestId('trade-settlement'))
+    expect(settlement.getByText('+0.082409646 U')).toBeTruthy()
+    expect(settlement.getByText('+0.00000754 U')).toBeTruthy()
+  })
+
   it('shows the actual inventory before each exit, both fees, time and the correct net in full-width horizontal timeline', () => {
     render(page([trade]))
     const strip = screen.getByTestId('scaleout-timeline-strip')
