@@ -46,6 +46,7 @@ class TradeExitBatch(BaseModel):
     discount_saved_usd: float = 0.0
     discount_asset: str = ""
     rebate_usd: float = 0.0
+    rebate_pct: float = 0.0
     net_fee_usd: float = 0.0
     gross_pnl_usd: float = 0.0
     net_pnl_usd: float = 0.0

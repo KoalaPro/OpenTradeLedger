@@ -171,23 +171,47 @@ def _classify_leg_mode(
     order_map: Mapping[str, Mapping[str, Any]],
     *,
     is_exit: bool,
+    pos_side: str = "",
+    entry_ref_price: Decimal = Decimal("0"),
 ) -> tuple[str, str]:
     if not fills:
         return "UNKNOWN", "账本汇总"
     roles = {str(f.get("role") or "").lower() for f in fills if dec(f.get("size")) != 0 or dec(f.get("fee")) > 0}
-    has_auto_stop = False
+    has_auto_order = False
+    ord_pnl_sum = Decimal("0")
+    has_ord_pnl = False
+    seen_oids: set[str] = set()
+    w_px = Decimal("0")
+    w_sz = Decimal("0")
     for f in fills:
         txt = str(f.get("text") or "").strip().lower()
         oid = str(f.get("order_id") or "").strip()
         ord_obj = order_map.get(oid) or {}
         ord_txt = str(ord_obj.get("text") or "").strip().lower()
         if txt.startswith("ao-") or ord_txt.startswith("ao-"):
-            has_auto_stop = True
-            break
+            has_auto_order = True
+        if oid and oid not in seen_oids and ord_obj.get("pnl") is not None:
+            seen_oids.add(oid)
+            ord_pnl_sum += dec(ord_obj.get("pnl"))
+            has_ord_pnl = True
+        sz = abs(dec(f.get("size")))
+        px = dec(f.get("price"))
+        if sz > 0 and px > 0:
+            w_sz += sz
+            w_px += sz * px
     if roles == {"maker"}:
         return "LIMIT_MAKER", "限价挂单"
     if roles == {"taker"}:
-        if is_exit and has_auto_stop:
+        if is_exit and has_auto_order:
+            avg_fill_px = (w_px / w_sz) if w_sz > 0 else Decimal("0")
+            side_l = pos_side.strip().lower()
+            is_tp = False
+            if has_ord_pnl and ord_pnl_sum != 0:
+                is_tp = ord_pnl_sum > 0
+            elif entry_ref_price > 0 and avg_fill_px > 0 and side_l in {"long", "short"}:
+                is_tp = (avg_fill_px > entry_ref_price) if side_l == "long" else (avg_fill_px < entry_ref_price)
+            if is_tp:
+                return "TP_MARKET_TAKER", "止盈市价"
             return "STOP_MARKET_TAKER", "止损市价"
         return "MARKET_TAKER", "市价吃单"
     if "maker" in roles and "taker" in roles:
@@ -208,9 +232,17 @@ def _summarize_leg(
     mult: Decimal,
     now_sec: float,
     override_qty_base: Decimal | None = None,
+    pos_side: str = "",
+    entry_ref_price: Decimal = Decimal("0"),
 ) -> dict[str, Any]:
     raw_fills = [f for _, f, _ in fills]
-    mode_code, mode_zh = _classify_leg_mode(raw_fills, order_map, is_exit=is_exit)
+    mode_code, mode_zh = _classify_leg_mode(
+        raw_fills,
+        order_map,
+        is_exit=is_exit,
+        pos_side=pos_side,
+        entry_ref_price=entry_ref_price,
+    )
 
     total_contracts = Decimal("0")
     weighted_px = Decimal("0")
@@ -624,6 +656,8 @@ def build_gate_venue_ledger(
             mult=mult_v,
             now_sec=now_s,
             override_qty_base=override_leg_qty,
+            pos_side=pos_side,
+            entry_ref_price=dec(entry_leg["avg_price"]) or en_px_fb,
         )
         fills_fee_sum = dec(entry_leg["gross_fee_usd"]) + dec(exit_leg["gross_fee_usd"])
         total_fee = b_fee if b_fee > 0 else fills_fee_sum
@@ -787,6 +821,8 @@ def build_gate_venue_ledger(
                     mult=mult,
                     now_sec=now_s,
                     override_qty_base=b_qty if b_qty > 0 else None,
+                    pos_side=side,
+                    entry_ref_price=en_avg_ref,
                 )
                 b_px = dec(b_leg["avg_price"]) if dec(b_leg["avg_price"]) > 0 else exit_px_fb
                 if b_last:

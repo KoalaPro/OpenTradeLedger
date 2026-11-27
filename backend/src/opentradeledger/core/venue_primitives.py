@@ -344,6 +344,11 @@ def normalize_exit_batch_to_public(
         npnl = round(float(raw["net_pnl_usd"]), 4)
     else:
         npnl = round(gpnl - float(leg["net_fee_usd"]), 4)
+    reb_pct = (
+        leg["rebate_pct"]
+        if leg["rebate_pct"] > 0
+        else (round((leg["rebate_usd"] / leg["gross_fee_usd"]) * 100.0, 1) if leg["gross_fee_usd"] > 0 else 0.0)
+    )
     return {
         "batch_index": int(raw.get("batch_index") or batch_index),
         "qty": qty_val,
@@ -360,6 +365,7 @@ def normalize_exit_batch_to_public(
         "discount_saved_usd": leg["discount_saved_usd"],
         "discount_asset": leg["discount_asset"],
         "rebate_usd": leg["rebate_usd"],
+        "rebate_pct": reb_pct,
         "net_fee_usd": leg["net_fee_usd"],
         "gross_pnl_usd": gpnl,
         "net_pnl_usd": npnl,

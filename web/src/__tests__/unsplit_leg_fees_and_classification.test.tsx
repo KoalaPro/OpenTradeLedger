@@ -291,12 +291,12 @@ describe('Consolidated partial take-profit trade UI', () => {
       funding_pnl_usd: -0.1274,
       book_pnl_usd: 61.2546,
       total_fee_usd: 3.4106,
-      total_rebate_usd: 2.6356,
+      total_rebate_usd: 2.6036,
       total_discount_saved_usd: 0,
-      net_fee_usd: 0.775,
-      net_pnl_usd: 63.8902,
-      effective_relief_pct: 77.3,
-      rebate_status: 'PENDING',
+      net_fee_usd: 0.807,
+      net_pnl_usd: 63.8582,
+      effective_relief_pct: 76.3,
+      rebate_status: 'SETTLED',
       entry_leg: {
         role: 'MAKER',
         mode_code: 'LIMIT_MAKER',
@@ -312,7 +312,7 @@ describe('Consolidated partial take-profit trade UI', () => {
         rebate_usd: 0.9844,
         rebate_pct: 80,
         net_fee_usd: 0.2461,
-        rebate_status: 'PENDING',
+        rebate_status: 'SETTLED',
         settled_at: '',
       },
       exit_leg: {
@@ -327,10 +327,10 @@ describe('Consolidated partial take-profit trade UI', () => {
         gross_fee_usd: 2.1802,
         discount_saved_usd: 0,
         discount_asset: '',
-        rebate_usd: 1.6512,
-        rebate_pct: 75.7,
-        net_fee_usd: 0.529,
-        rebate_status: 'PENDING',
+        rebate_usd: 1.6192,
+        rebate_pct: 74.3,
+        net_fee_usd: 0.561,
+        rebate_status: 'SETTLED',
         settled_at: '',
       },
       exit_batches: [
@@ -349,6 +349,7 @@ describe('Consolidated partial take-profit trade UI', () => {
           discount_saved_usd: 0,
           discount_asset: '',
           rebate_usd: 0.4951,
+          rebate_pct: 80,
           net_fee_usd: 0.1238,
           gross_pnl_usd: 18.42,
           net_pnl_usd: 18.2962,
@@ -357,7 +358,7 @@ describe('Consolidated partial take-profit trade UI', () => {
           batch_index: 2,
           qty: 1.842,
           role: 'TAKER',
-          mode_code: 'STOP_MARKET',
+          mode_code: 'TP_MARKET',
           fee_known: true,
           fee_bps: 5.0,
           time_ms: 1795708860000,
@@ -367,10 +368,11 @@ describe('Consolidated partial take-profit trade UI', () => {
           gross_fee_usd: 1.5613,
           discount_saved_usd: 0,
           discount_asset: '',
-          rebate_usd: 1.1561,
-          net_fee_usd: 0.4052,
+          rebate_usd: 1.1241,
+          rebate_pct: 72,
+          net_fee_usd: 0.4372,
           gross_pnl_usd: 46.3727,
-          net_pnl_usd: 45.9675,
+          net_pnl_usd: 45.9355,
         },
       ],
       tags: [],
@@ -392,35 +394,40 @@ describe('Consolidated partial take-profit trade UI', () => {
       </I18nProvider>,
     )
 
-    const entryCard = screen.getByTestId('entry-leg-fee-card')
-    const exitCard = screen.getByTestId('exit-leg-fee-card')
-    expect(entryCard.textContent).toContain('-1.231')
-    expect(exitCard.textContent).toContain('出场手续费')
-    expect(exitCard.textContent).toContain('分 2 笔')
-    expect(exitCard.textContent).toContain('混合成交')
-    expect(exitCard.textContent).not.toContain('MIXED')
-    expect(exitCard.textContent).toContain('-2.180')
-
-    // Left table keeps a single clean row ("分 2 笔") with no cluttered sub-rows
+    // Left table keeps 1 clean row with inline circled batch trace + 4-decimal fees
     const parentRow = screen.getByTestId('trade-row-fut_ETH_USDT_1795705714_1795708860_long')
     expect(parentRow.textContent).toContain('分 2 笔')
+    expect(parentRow.textContent).toContain('①')
+    expect(parentRow.textContent).toContain('1,680.00')
+    expect(parentRow.textContent).toContain('+18.42')
+    expect(parentRow.textContent).toContain('②')
+    expect(parentRow.textContent).toContain('1,695.18')
+    expect(parentRow.textContent).toContain('+46.37')
+    expect(parentRow.textContent).toContain('进 -1.2305 · 出 -2.1802（-0.6189 / -1.5613）')
     const tbody = parentRow.closest('tbody')!
     expect(within(tbody).getAllByRole('row')).toHaveLength(1)
-    expect(screen.queryByTestId('exit-batches-section')).toBeNull()
 
-    // Right exit leg card renders inline hairline batches whose fees & spread sum cleanly
-    const exitBatches = within(exitCard).getByTestId('exit-leg-batches')
-    expect(exitBatches.textContent).toContain('第 1 笔')
-    expect(exitBatches.textContent).toContain('1,680.00')
-    expect(exitBatches.textContent).toContain('限价挂单')
-    expect(exitBatches.textContent).toContain('-0.619')
-    expect(exitBatches.textContent).toContain('+18.42 U')
-    expect(exitBatches.textContent).toContain('第 2 笔')
-    expect(exitBatches.textContent).toContain('1,695.18')
-    expect(exitBatches.textContent).toContain('止损市价')
-    expect(exitBatches.textContent).toContain('-1.561')
-    expect(exitBatches.textContent).toContain('+46.37 U')
-    expect(within(exitBatches).getByText('1,680.00').className).toContain('sensitive')
-    expect(within(exitBatches).getByText(/18\.42 U/).className).toContain('sensitive')
+    // Right panel switches to Scheme A full-width execution ledger (Entry -> Exit #1 -> Exit #2)
+    const ledger = screen.getByTestId('multi-batch-ledger')
+    const entryRow = screen.getByTestId('entry-leg-fee-card')
+    const batch1Row = screen.getByTestId('exit-batch-row-1')
+    const batch2Row = screen.getByTestId('exit-batch-row-2')
+    expect(entryRow.textContent).toContain('开仓进场')
+    expect(entryRow.textContent).toContain('先扣 -1.2305')
+    expect(entryRow.textContent).toContain('+0.9844 (80%)')
+    expect(entryRow.textContent).toContain('-0.2461 U')
+    expect(batch1Row.textContent).toContain('平仓第 1 笔')
+    expect(batch1Row.textContent).toContain('限价挂单')
+    expect(batch1Row.textContent).toContain('先扣 -0.6189')
+    expect(batch1Row.textContent).toContain('+0.4951 (80%)')
+    expect(batch1Row.textContent).toContain('价差 +18.42 U')
+    expect(batch2Row.textContent).toContain('平仓第 2 笔')
+    expect(batch2Row.textContent).toContain('止盈市价')
+    expect(batch2Row.textContent).not.toContain('止损市价')
+    expect(batch2Row.textContent).toContain('先扣 -1.5613')
+    expect(batch2Row.textContent).toContain('+1.1241 (72%)')
+    expect(batch2Row.textContent).toContain('价差 +46.37 U')
+    expect(within(ledger).getByText('1,680.00').className).toContain('sensitive')
+    expect(screen.getByTestId('trade-detail-panel').textContent).toContain('-3.4106 U')
   })
 })

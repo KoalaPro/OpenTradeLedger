@@ -116,11 +116,47 @@ def test_gate_partial_take_profit_consolidates_into_single_order_and_single_entr
     assert batches[0]["gross_pnl_usd"] == pytest.approx(18.42, abs=1e-4)
     assert batches[1]["qty"] == pytest.approx(1.842)
     assert batches[1]["avg_price"] == pytest.approx(1695.1752, abs=1e-3)
-    assert batches[1]["mode_code"] == "STOP_MARKET"
+    assert batches[1]["mode_code"] == "TP_MARKET"
     assert batches[1]["gross_fee_usd"] == pytest.approx(1.5613, abs=1e-4)
     assert batches[1]["gross_pnl_usd"] == pytest.approx(46.3727, abs=1e-4)
     assert sum(b["gross_fee_usd"] for b in batches) == pytest.approx(tr["exit_leg"]["gross_fee_usd"], abs=1e-3)
     assert sum(b["gross_pnl_usd"] for b in batches) == pytest.approx(tr["gross_pnl_usd"], abs=1e-3)
+
+    # Verify losing Gate auto-order (`ao-...` below long entry) still classifies as STOP_MARKET
+    g_scope.upsert_records(
+        "futures_closes",
+        [
+            {
+                "contract": "ETH_USDT",
+                "side": "long",
+                "first_open_time": 1795800000,
+                "time": 1795801000,
+                "accum_size": "100",
+                "max_size": "100",
+                "long_price": "1700",
+                "short_price": "1680",
+                "pnl_pnl": "-20.0",
+                "pnl_fee": "-1.18",
+                "pnl_fund": "0",
+                "pnl": "-21.18",
+                "order_id": 63894869999999999,
+            }
+        ],
+        key_fn=lambda r: f"{r['contract']}_{r['first_open_time']}_{r['time']}_{r['side']}",
+        ts_fn=lambda r: float(r["time"]),
+    )
+    g_scope.upsert_records(
+        "futures_trades",
+        [
+            {"id": "999001", "order_id": "63894869999999998", "contract": "ETH_USDT", "size": "100", "close_size": "0", "price": "1700", "fee": "0.34", "role": "maker", "create_time": 1795800000.1, "text": "app"},
+            {"id": "999002", "order_id": "63894869999999999", "contract": "ETH_USDT", "size": "-100", "close_size": "-100", "price": "1680", "fee": "0.84", "role": "taker", "create_time": 1795801000.1, "text": "ao-999"},
+        ],
+        key_fn=lambda r: str(r["id"]),
+        ts_fn=lambda r: float(r["create_time"]),
+    )
+    dash2 = svc.get_dashboard()
+    sl_trade = next(t for t in dash2["trades"] if t["trade_id"] == "fut_ETH_USDT_1795800000_1795801000_long")
+    assert sl_trade["exit_leg"]["mode_code"] == "STOP_MARKET"
 
     gate_fee = next(r for r in dash["fee_matrix"] if r["venue_id"] == "gate")
     assert gate_fee["trade_count"] == 1

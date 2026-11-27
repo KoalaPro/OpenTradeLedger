@@ -91,6 +91,7 @@ export interface TradeExitBatch {
   discount_saved_usd: number
   discount_asset: string
   rebate_usd: number
+  rebate_pct?: number
   net_fee_usd: number
   gross_pnl_usd: number
   net_pnl_usd: number
