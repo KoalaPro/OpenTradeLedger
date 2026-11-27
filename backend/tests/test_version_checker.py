@@ -144,3 +144,18 @@ def test_version_check_api_endpoint(tmp_path: Path) -> None:
         put_res = client.put("/api/v1/settings", json={"update_check_enabled": False})
         assert put_res.status_code == 200
         assert put_res.json()["update_check_enabled"] is False
+
+
+def test_socks_handshake_failure_returns_stale_version_and_proxy_diagnosis(tmp_path):
+    from socksio.exceptions import ProtocolError
+
+    def incomplete_handshake(request):
+        raise ProtocolError("Malformed reply")
+
+    app = create_app(data_dir=tmp_path, demo_mode=True, enable_background_sync=False)
+    app.state.version_service.transport = httpx.MockTransport(incomplete_handshake)
+    with TestClient(app) as client:
+        response = client.get("/api/v1/version-check?refresh=true")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["stale"] and "代理" in data["error_zh"]

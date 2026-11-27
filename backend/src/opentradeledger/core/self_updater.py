@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 import httpx
 
+from opentradeledger.core.network_errors import HTTP_CLIENT_ERRORS
 from opentradeledger.core.version_checker import (
     VersionCheckService,
     is_newer_version,
@@ -349,7 +350,7 @@ class SelfUpdateService:
                 last_err = f"HTTP {resp.status_code}"
             except SelfUpdateError:
                 raise
-            except httpx.HTTPError as exc:
+            except HTTP_CLIENT_ERRORS as exc:
                 last_err = exc.__class__.__name__
                 continue
 
@@ -370,7 +371,7 @@ class SelfUpdateService:
                 resp = await client.get(sha_url, headers={"User-Agent": "OpenTradeLedger-SelfUpdater"})
             if resp.status_code == 200:
                 return extract_ota_sha256_from_text(resp.text)
-        except httpx.HTTPError:
+        except HTTP_CLIENT_ERRORS:
             return ""
         return ""
 

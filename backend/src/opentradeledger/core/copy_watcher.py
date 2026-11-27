@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import httpx
 
 from opentradeledger.config import NotificationSettings
+from opentradeledger.core.network_errors import HTTP_CLIENT_ERRORS
 from opentradeledger.core.notifier import bark_configured, bark_destination, dispatch_notification
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError
 
@@ -252,7 +253,7 @@ class PublicCopyWatcherClient:
         self._assert_no_auth_headers()
         try:
             return await self._client.request("GET", url, params=params)
-        except httpx.HTTPError as exc:
+        except HTTP_CLIENT_ERRORS as exc:
             err_detail = f"{type(exc).__name__}: {exc}".rstrip(": ")
             raise CopyWatcherError(f"Network error probing Binance public page ({err_detail})") from exc
 
@@ -270,7 +271,7 @@ class PublicCopyWatcherClient:
                 json=dict(json_body),
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
             )
-        except httpx.HTTPError as exc:
+        except HTTP_CLIENT_ERRORS as exc:
             err_detail = f"{type(exc).__name__}: {exc}".rstrip(": ")
             raise CopyWatcherError(f"Network error querying Binance public history ({err_detail})") from exc
 

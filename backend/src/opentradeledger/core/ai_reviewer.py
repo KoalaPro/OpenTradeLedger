@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from opentradeledger.config import UserPreferences
+from opentradeledger.core.network_errors import SocksProtocolError
 
 _BLOCKED_METADATA_HOSTS = {
     "169.254.169.254",
@@ -578,7 +579,7 @@ async def generate_ai_review(
                 data_transmitted = True
                 raise
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
-                    httpx.ProxyError, httpx.UnsupportedProtocol, httpx.InvalidURL):
+                    httpx.ProxyError, httpx.UnsupportedProtocol, httpx.InvalidURL, SocksProtocolError):
                 # No ledger body reached the endpoint on this attempt.
                 raise
             except Exception:

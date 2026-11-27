@@ -338,6 +338,7 @@ async def test_ai_review_transmission_provenance_across_unconfigured_zero_503_an
 @pytest.mark.parametrize(("failure", "status", "transmitted"), [
     ("setup", "not_sent", False),
     ("connect", "not_sent", False),
+    ("socks_handshake", "not_sent", False),
     ("write", "unknown", None),
     ("read", "unknown", None),
     ("status_hook", "sent", True),
@@ -355,6 +356,9 @@ async def test_ai_failure_reports_only_evidenced_delivery(monkeypatch, failure, 
             return httpx.Response(503)
         if failure == "malformed_json":
             return httpx.Response(200, text="invalid json")
+        if failure == "socks_handshake":
+            from socksio.exceptions import ProtocolError
+            raise ProtocolError("Malformed reply")
         errors = {"write": httpx.WriteTimeout, "read": httpx.ReadTimeout}
         raise errors.get(failure, httpx.ConnectError)("test transport failure", request=req)
 

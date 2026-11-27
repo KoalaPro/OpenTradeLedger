@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from opentradeledger import __version__
+from opentradeledger.core.network_errors import HTTP_CLIENT_ERRORS, SocksProtocolError
 from opentradeledger.core.store import LedgerStore
 
 logger = logging.getLogger("opentradeledger.version_checker")
@@ -162,10 +163,12 @@ class VersionCheckService:
                 ) as client:
                     resp = await client.get(self.api_latest_url, headers=headers)
                 break
-            except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            except HTTP_CLIENT_ERRORS as exc:
                 last_exc = exc
                 continue
         if resp is None:
+            if isinstance(last_exc, (SocksProtocolError, httpx.ProxyError)):
+                return None, "Proxy handshake failed while connecting to GitHub", "代理握手失败，未能连接 GitHub。请检查代理服务后重试。"
             if isinstance(last_exc, httpx.TimeoutException):
                 return None, "GitHub API request timed out", "连接 GitHub 超时，请稍后重试"
             exc_name = last_exc.__class__.__name__ if last_exc else "HTTPError"
