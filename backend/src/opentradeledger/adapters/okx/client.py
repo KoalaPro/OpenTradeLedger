@@ -708,6 +708,60 @@ def normalize_okx_closed_trades(
         rebate_status = ("PENDING" if external_rebate and not matched_reb_amt
                          else "SETTLED" if total_rebate else "NONE")
 
+        okx_exit_batches: list[dict[str, Any]] = []
+        if len(distinct_exit_oids) > 1:
+            ex_by_oid: dict[str, list[dict[str, Any]]] = {}
+            for f_idx, ef in enumerate(exit_fills):
+                oid_k = str(ef.get("ordId") or ef.get("clOrdId") or f"fill_{f_idx}").strip()
+                ex_by_oid.setdefault(oid_k, []).append(ef)
+            ordered_ex_grps = sorted(
+                ex_by_oid.values(),
+                key=lambda g_f: max(int(x.get("fillTime") or x.get("ts") or close_ms) for x in g_f),
+            )
+            tot_ex_c = sum(positive_number(x.get("fillSz")) for x in exit_fills)
+            rem_okx_gpnl = gross_pnl
+            for b_i, g_fills in enumerate(ordered_ex_grps):
+                b_last = b_i == len(ordered_ex_grps) - 1
+                b_ts = max(int(x.get("fillTime") or x.get("ts") or close_ms) for x in g_fills)
+                b_c = sum(positive_number(x.get("fillSz")) for x in g_fills)
+                b_px_w = sum(positive_number(x.get("fillSz")) * positive_number(x.get("fillPx")) for x in g_fills)
+                b_px = (b_px_w / b_c) if b_c > 0 else close_px
+                b_q = contract_quantity(spec, b_c, b_px)
+                b_leg = build_fill_leg(g_fills, spec, inst, b_ts, b_px, okb_usd_price)
+                b_paid = float(b_leg["gross_fee_usd"])
+                b_reb = float(b_leg["fill_rebate_usd"]) + b_paid * ratio
+                b_net_f = b_paid - b_reb
+                if b_last:
+                    b_gpnl = rem_okx_gpnl
+                elif b_q is not None and open_px > 0 and b_px > 0 and settlement in ("USDT", "USDC", "USD"):
+                    b_gpnl = ((b_px - open_px) * b_q) if side == "LONG" else ((open_px - b_px) * b_q)
+                    rem_okx_gpnl -= b_gpnl
+                else:
+                    b_gpnl = gross_pnl * (b_c / tot_ex_c) if tot_ex_c > 0 else 0.0
+                    rem_okx_gpnl -= b_gpnl
+                okx_exit_batches.append(
+                    {
+                        "batch_index": b_i + 1,
+                        "qty": round(b_q, 8) if b_q is not None else None,
+                        "contract_count": b_c if b_c > 0 else None,
+                        "role": b_leg["role"],
+                        "mode_code": b_leg["mode_code"],
+                        "fee_known": b_leg["fee_known"],
+                        "fee_bps": b_leg["fee_bps"],
+                        "time_ms": b_ts,
+                        "time_str": _fmt_bj_ms(b_ts),
+                        "avg_price": round(b_px, 6),
+                        "notional_usd": round(b_leg["notional_usd"], 2) if b_leg["notional_usd"] is not None else None,
+                        "gross_fee_usd": round(b_paid, 4),
+                        "discount_saved_usd": round(float(b_leg["discount_saved_usd"]), 4),
+                        "discount_asset": b_leg["discount_asset"],
+                        "rebate_usd": round(b_reb, 4),
+                        "net_fee_usd": round(b_net_f, 4),
+                        "gross_pnl_usd": round(b_gpnl, 4),
+                        "net_pnl_usd": round(b_gpnl - b_net_f, 4),
+                    }
+                )
+
         sym = inst.replace("-SWAP", "").replace("-", "_")
         records.append(
             {
@@ -734,6 +788,7 @@ def normalize_okx_closed_trades(
                 "is_partial_close": is_partial,
                 "entry_leg": entry,
                 "exit_leg": exit_leg,
+                "exit_batches": okx_exit_batches,
                 **({"_legacy_trade_ids": list(pos["_legacy_trade_ids"])} if pos.get("_legacy_trade_ids") else {}),
             }
         )

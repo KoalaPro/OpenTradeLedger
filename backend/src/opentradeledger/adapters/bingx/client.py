@@ -662,6 +662,7 @@ def normalize_bingx_closed_trades(
         realized_pnl: float,
         oid_id: str,
         is_partial: bool,
+        exit_batches: list[dict[str, Any]] | None = None,
     ) -> None:
         total_fee = round(en_fee + ex_fee, 6)
         en_reb = round(en_fee * rebate_ratio, 6)
@@ -739,6 +740,7 @@ def normalize_bingx_closed_trades(
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
+                "exit_batches": list(exit_batches or []),
             }
         )
 
@@ -761,6 +763,45 @@ def normalize_bingx_closed_trades(
         distinct_oids = {str(x["oid_raw"]) for x in exits if x.get("oid_raw")}
         distinct_ts = {int(x["ts"]) for x in exits}
         is_partial = (not full_close) or len(distinct_oids) > 1 or (len(exits) > 1 and len(distinct_ts) > 1)
+        bx_batches: list[dict[str, Any]] = []
+        bx_by_oid: dict[str, list[dict[str, Any]]] = {}
+        for idx_e, x_e in enumerate(exits):
+            ok_e = str(x_e.get("oid_raw") or "").strip() or f"ts_{x_e['ts']}_{idx_e}"
+            bx_by_oid.setdefault(ok_e, []).append(x_e)
+        if len(bx_by_oid) > 1 and (len(distinct_oids) > 1 or len(distinct_ts) > 1):
+            ordered_bx = sorted(bx_by_oid.values(), key=lambda g_e: max(int(y["ts"]) for y in g_e))
+            for b_i, g_e in enumerate(ordered_bx):
+                bq = sum(float(y["qty"]) for y in g_e)
+                bnot = sum(float(y["notional"]) for y in g_e)
+                bpx = (bnot / bq) if bq > 0 else float(g_e[-1]["px"])
+                bfee = sum(float(y["fee"]) for y in g_e)
+                breb = round(bfee * rebate_ratio, 4)
+                bnetf = round(max(0.0, bfee - breb), 4)
+                bgpnl = sum(float(y["realized_pnl"]) for y in g_e)
+                bmk = any(bool(y["is_maker"]) for y in g_e)
+                btk = any(not bool(y["is_maker"]) for y in g_e)
+                bts = max(int(y["ts"]) for y in g_e)
+                bx_batches.append(
+                    {
+                        "batch_index": b_i + 1,
+                        "qty": round(bq, 8),
+                        "role": "MAKER" if (bmk and not btk) else "TAKER",
+                        "mode_code": "MIXED" if (bmk and btk) else ("LIMIT_MAKER" if bmk else "MARKET_TAKER"),
+                        "fee_known": True,
+                        "fee_bps": round(bfee / bnot * 10_000, 2) if bnot > 0 else 0.0,
+                        "time_ms": bts,
+                        "time_str": _fmt_bj_ms(bts),
+                        "avg_price": round(bpx, 6),
+                        "notional_usd": round(bnot, 2),
+                        "gross_fee_usd": round(bfee, 4),
+                        "discount_saved_usd": 0.0,
+                        "discount_asset": "",
+                        "rebate_usd": breb,
+                        "net_fee_usd": bnetf,
+                        "gross_pnl_usd": round(bgpnl, 4),
+                        "net_pnl_usd": round(bgpnl - bnetf, 4),
+                    }
+                )
         _emit_bingx_record(
             sym=sym,
             trade_side=trade_side,
@@ -781,6 +822,7 @@ def normalize_bingx_closed_trades(
             realized_pnl=rpnl_sum,
             oid_id=str(exits[-1]["oid_id"]),
             is_partial=is_partial,
+            exit_batches=bx_batches,
         )
 
     for idx, f in enumerate(sorted_fills):

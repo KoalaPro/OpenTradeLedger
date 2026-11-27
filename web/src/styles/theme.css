@@ -922,6 +922,21 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   .otl-table tbody tr.selected:not([data-glider-row]) {
     box-shadow: inset 2.5px 0 0 var(--accent);
   }
+
+  .otl-table tbody tr.otl-batch-subrow td {
+    padding-top: 7px;
+    padding-bottom: 7px;
+    background-color: var(--surface-2);
+    border-bottom-style: dashed;
+  }
+
+  .otl-table tbody tr.otl-batch-subrow.last-batch td {
+    border-bottom-style: solid;
+  }
+
+  .otl-table tbody tr.otl-batch-subrow.parent-selected td {
+    background-color: color-mix(in srgb, var(--accent-soft) 55%, var(--surface-2));
+  }
 }
 
 /* ── Light-Theme Tactile Surface & Contrast Enhancements (Unlayered so Utilities Never Override) ── */

@@ -362,6 +362,7 @@ def _build_bitget_closed_records(
                 "t_open": t_open,
                 "t_close": t_close,
                 "is_partial_close": is_partial_bg,
+                "close_groups": close_groups if is_partial_bg else [],
                 "en_fills": en_fills,
                 "ex_fills": ex_fills,
                 "en_px": open_px,
@@ -585,6 +586,52 @@ def _build_bitget_closed_records(
             share_leg=Decimal("1"),
             sl_info=ex_sl,
         )
+        bg_exit_batches: list[dict[str, Any]] = []
+        raw_c_groups = sorted(
+            dr.get("close_groups") or (),
+            key=lambda pair: max(x["ts_ms"] for x in pair[1]),
+        )
+        if len(raw_c_groups) > 1:
+            ex_tot_q_bg = sum((x["qty"] for _, fl in raw_c_groups for x in fl), Decimal("0")) or dr["qty_closed"]
+            ex_sr_rate = (ex_sr / dr["ex_fee"]) if dr["ex_fee"] > 0 else Decimal("0")
+            rem_bg_gpnl = dr["pnl_gross"]
+            for b_i, (_, b_flist) in enumerate(raw_c_groups):
+                b_last = b_i == len(raw_c_groups) - 1
+                b_q = sum((x["qty"] for x in b_flist), Decimal("0"))
+                b_not = sum((x["notional"] for x in b_flist), Decimal("0"))
+                b_px = (b_not / b_q) if b_q > 0 else dr["ex_px"]
+                b_fee = sum((x["fee_usd"] for x in b_flist), Decimal("0"))
+                b_bgb_q = sum((x["bgb_qty"] for x in b_flist), Decimal("0"))
+                b_bgb_sav = sum((x["bgb_saved"] for x in b_flist), Decimal("0"))
+                b_ts = norm_sec(max(x["ts_ms"] for x in b_flist))
+                b_sl = {"reb": b_fee * ex_sr_rate, "reb_ts": ex_sl.get("reb_ts") or 0}
+                b_leg_dict, _, _ = _finalize_bg_leg(
+                    b_flist,
+                    is_exit=True,
+                    qty_leg=b_q,
+                    px_leg=b_px,
+                    not_leg=b_not,
+                    fee_leg=b_fee,
+                    ts_leg=b_ts,
+                    bgb_q_leg=b_bgb_q,
+                    bgb_sav_leg=b_bgb_sav,
+                    share_leg=Decimal("1"),
+                    sl_info=b_sl,
+                )
+                if b_last:
+                    b_gpnl = rem_bg_gpnl
+                else:
+                    raw_epnl = sum((x["exec_pnl"] for x in b_flist), Decimal("0"))
+                    b_gpnl = raw_epnl if raw_epnl != 0 else (dr["pnl_gross"] * (b_q / ex_tot_q_bg) if ex_tot_q_bg > 0 else Decimal("0"))
+                    rem_bg_gpnl -= b_gpnl
+                bg_exit_batches.append(
+                    {
+                        **b_leg_dict,
+                        "batch_index": b_i + 1,
+                        "qty": f2(b_q, 6),
+                        "gross_pnl_usd": f2(b_gpnl, 4),
+                    }
+                )
         tot_fee = dr["en_fee"] + dr["ex_fee"]
         s_reb = en_sr + ex_sr
         p_reb = en_pr + ex_pr
@@ -618,6 +665,7 @@ def _build_bitget_closed_records(
                 "holding_zh": format_duration_zh(hold_s),
                 "entry_leg": en_leg,
                 "exit_leg": ex_leg,
+                "exit_batches": bg_exit_batches,
                 "gross_pnl_usd": f2(dr["pnl_gross"], 4),
                 "funding_pnl_usd": f2(dr["fund_pnl"], 4),
                 "total_fee_usd": f2(tot_fee, 4),

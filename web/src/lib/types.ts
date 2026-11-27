@@ -75,6 +75,27 @@ export interface TradeLegFee {
   settled_at: string
 }
 
+export interface TradeExitBatch {
+  batch_index: number
+  qty: number | null
+  contract_count?: number
+  role: 'MAKER' | 'TAKER' | 'UNKNOWN'
+  mode_code: string
+  fee_known?: boolean
+  fee_bps: number | null
+  time_ms: number
+  time_str: string
+  avg_price: number
+  notional_usd: number | null
+  gross_fee_usd: number
+  discount_saved_usd: number
+  discount_asset: string
+  rebate_usd: number
+  net_fee_usd: number
+  gross_pnl_usd: number
+  net_pnl_usd: number
+}
+
 export interface ClosedTrade {
   trade_id: string
   venue_id: string
@@ -104,6 +125,7 @@ export interface ClosedTrade {
   rebate_status: 'SETTLED' | 'PENDING' | 'NONE'
   entry_leg: TradeLegFee
   exit_leg: TradeLegFee
+  exit_batches?: TradeExitBatch[]
   tags: string[]
   note: string
 }

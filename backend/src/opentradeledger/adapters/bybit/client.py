@@ -895,6 +895,49 @@ def normalize_bybit_closed_trades(
         net_pnl = round(book_pnl + total_rebate, 6)
         is_partial_bb = len(grp) > 1 or any(d["qty"] < d["row_qty"] for d in grp)
 
+        bb_exit_batches: list[dict[str, Any]] = []
+        if len(grp) > 1:
+            ex_reb_rate = (exit_rebate / exit_gross_fee) if exit_gross_fee > 0 else eff_ratio
+            rem_bb_gpnl = gross_pnl
+            for b_i, d_it in enumerate(grp):
+                b_last = b_i == len(grp) - 1
+                b_exs = d_it["exit_execs"]
+                b_fee = float(d_it["exit_gross_fee"])
+                b_mnt = any(str(e.get("feeCurrency") or "").upper() == "MNT" for e in b_exs)
+                b_disc = round(b_fee * (0.25 / 0.75), 4) if b_mnt and b_fee > 0 else 0.0
+                b_reb = round(b_fee * ex_reb_rate, 4)
+                b_net_f = round(max(0.0, b_fee - b_reb), 4)
+                b_mk = any(bool(e.get("isMaker")) for e in b_exs)
+                b_tk = any(not bool(e.get("isMaker")) for e in b_exs)
+                b_role = "MAKER" if (b_mk and not b_tk) else "TAKER"
+                b_mode = "MIXED" if (b_mk and b_tk) else ("LIMIT_MAKER" if b_mk else "MARKET_TAKER")
+                b_not = float(d_it["exit_notional"])
+                b_bps = round(b_fee / b_not * 10_000, 2) if b_not > 0 else 0.0
+                b_gpnl = rem_bb_gpnl if b_last else (float(d_it["closed_pnl"]) + float(d_it["entry_gross_fee"]) + b_fee)
+                rem_bb_gpnl -= b_gpnl
+                b_ts = int(d_it["close_ms"])
+                bb_exit_batches.append(
+                    {
+                        "batch_index": b_i + 1,
+                        "qty": round(float(d_it["qty"]), 6),
+                        "role": b_role,
+                        "mode_code": b_mode,
+                        "fee_known": True,
+                        "fee_bps": b_bps,
+                        "time_ms": b_ts,
+                        "time_str": _fmt_bj_ms(b_ts),
+                        "avg_price": round(float(d_it["exit_px"]), 6),
+                        "notional_usd": round(b_not, 2),
+                        "gross_fee_usd": round(b_fee, 4),
+                        "discount_saved_usd": b_disc,
+                        "discount_asset": "MNT" if b_mnt else "",
+                        "rebate_usd": b_reb,
+                        "net_fee_usd": b_net_f,
+                        "gross_pnl_usd": round(b_gpnl, 4),
+                        "net_pnl_usd": round(b_gpnl - b_net_f, 4),
+                    }
+                )
+
         sym = _normalize_bybit_symbol(raw_sym)
         records.append(
             {
@@ -949,6 +992,7 @@ def normalize_bybit_closed_trades(
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
+                "exit_batches": bb_exit_batches,
             }
         )
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)

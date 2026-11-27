@@ -63,6 +63,8 @@ export const en: Record<MessageKey, string> = {
   side_long: 'Long',
   side_short: 'Short',
   partial_badge: 'Partial',
+  exit_batches_title: 'Partial Exit Batches',
+  exit_batches_note: 'Per-exit fees & spread only (entry fee counted once on parent)',
   all_venues: 'All Venues',
   all_symbols: 'All Symbols',
   view_detailed: 'Detailed',

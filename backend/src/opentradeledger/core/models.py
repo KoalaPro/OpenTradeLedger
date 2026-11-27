@@ -28,6 +28,29 @@ class TradeLegFee(BaseModel):
     settled_at: str = ""
 
 
+class TradeExitBatch(BaseModel):
+    """Per-batch exit breakdown nested under a single consolidated ClosedTrade."""
+
+    batch_index: int = 1
+    qty: float | None = 0.0
+    contract_count: float | None = None
+    role: Literal["MAKER", "TAKER", "UNKNOWN"] = "TAKER"
+    mode_code: str = "MARKET_TAKER"
+    fee_known: bool = True
+    fee_bps: float | None = 0.0
+    time_ms: int = 0
+    time_str: str = ""
+    avg_price: float = 0.0
+    notional_usd: float | None = 0.0
+    gross_fee_usd: float = 0.0
+    discount_saved_usd: float = 0.0
+    discount_asset: str = ""
+    rebate_usd: float = 0.0
+    net_fee_usd: float = 0.0
+    gross_pnl_usd: float = 0.0
+    net_pnl_usd: float = 0.0
+
+
 class ClosedTrade(BaseModel):
     trade_id: str
     venue_id: str
@@ -56,6 +79,7 @@ class ClosedTrade(BaseModel):
     rebate_status: Literal["SETTLED", "PENDING", "NONE"] = "SETTLED"
     entry_leg: TradeLegFee
     exit_leg: TradeLegFee
+    exit_batches: list[TradeExitBatch] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     note: str = ""
 

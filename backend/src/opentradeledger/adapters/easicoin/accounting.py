@@ -514,6 +514,16 @@ def _build_easicoin_closed_records(
             "fee_bps": f2(ex_bps_g, 2),
             "net_fee_usd": f2(tot_ex_fee, 4),
         }
+        ec_raw_batches: list[dict[str, Any]] = []
+        for b_i, sub_r in enumerate(grp):
+            ec_raw_batches.append(
+                {
+                    **sub_r["exit_leg"],
+                    "batch_index": b_i + 1,
+                    "qty": sub_r["qty_base"],
+                    "gross_pnl_usd": sub_r["gross_pnl_usd"],
+                }
+            )
         consolidated.append(
             {
                 **last_rec,
@@ -531,6 +541,7 @@ def _build_easicoin_closed_records(
                 "holding_zh": format_duration_zh(hold_s),
                 "entry_leg": merged_en_leg,
                 "exit_leg": merged_ex_leg,
+                "exit_batches": ec_raw_batches,
                 "gross_pnl_usd": f2(tot_gpnl, 4),
                 "funding_pnl_usd": f2(tot_fpnl, 4),
                 "total_fee_usd": f2(tot_fee_g, 4),
@@ -733,6 +744,21 @@ def _reconcile_easicoin_rebates_and_principal(
 
             rec_settled += s_reb
             rec_pending += p_reb
+
+        ex_leg_obj = rec["exit_leg"]
+        ex_g_dec = dec(ex_leg_obj.get("gross_fee_usd"))
+        ex_s_dec = dec(ex_leg_obj.get("settled_rebate_usd"))
+        ex_p_dec = dec(ex_leg_obj.get("pending_rebate_usd"))
+        if ex_g_dec > 0 and rec.get("exit_batches"):
+            s_ratio_ec = ex_s_dec / ex_g_dec
+            p_ratio_ec = ex_p_dec / ex_g_dec
+            for b_obj in rec["exit_batches"]:
+                bf_dec = dec(b_obj.get("gross_fee_usd"))
+                bs_dec = bf_dec * s_ratio_ec
+                bp_dec = bf_dec * p_ratio_ec
+                b_obj["settled_rebate_usd"] = f2(bs_dec, 4)
+                b_obj["pending_rebate_usd"] = f2(bp_dec, 4)
+                b_obj["net_fee_usd"] = f2(max(Decimal("0"), bf_dec - bs_dec - bp_dec), 4)
 
         rec_eff = rec_settled + rec_pending
         if rec_pending > 0 and rec_settled > 0:

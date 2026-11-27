@@ -868,6 +868,64 @@ def normalize_kucoin_closed_trades(
         pos_id = last_pr["position_id"] or last_pr["close_id"]
         settled_str = _fmt_bj_ms(close_ms) if total_rebate > 0 else ""
 
+        kc_exit_batches: list[dict[str, Any]] = []
+        if len(grp) > 1:
+            sub_ex_fills: list[list[dict[str, Any]]] = [[] for _ in grp]
+            for ef in ex_fills:
+                ef_ts = _kucoin_ts_ms(ef.get("createdAt") or ef.get("tradeTime"))
+                best_i = min(range(len(grp)), key=lambda idx_p: (abs(ef_ts - grp[idx_p]["close_ms"]), idx_p))
+                sub_ex_fills[best_i].append(ef)
+            raw_ex_fee_sum = sum(abs(float(f.get("fee") or 0.0)) for f in ex_fills)
+            ex_fee_scale_kc = (ex_fee / raw_ex_fee_sum) if raw_ex_fee_sum > 0 else 1.0
+            rem_kc_ex_fee = ex_fee
+            for b_i, p_it in enumerate(grp):
+                b_last = b_i == len(grp) - 1
+                p_efs = sub_ex_fills[b_i]
+                if b_last:
+                    b_fee = max(0.0, rem_kc_ex_fee)
+                elif p_efs:
+                    b_fee = sum(abs(float(f.get("fee") or 0.0)) for f in p_efs) * ex_fee_scale_kc
+                    rem_kc_ex_fee -= b_fee
+                else:
+                    b_fee = (ex_fee * (p_it["exit_notional"] / exit_notional)) if exit_notional > 0 else (ex_fee / len(grp))
+                    rem_kc_ex_fee -= b_fee
+                b_mk = any(str(f.get("liquidity") or "").lower() == "maker" for f in p_efs)
+                b_tk = any(str(f.get("liquidity") or "").lower() != "maker" for f in p_efs)
+                b_role = ("MAKER" if (b_mk and not b_tk) else "TAKER") if fee_known else "UNKNOWN"
+                b_mode = (
+                    ("MIXED" if (b_mk and b_tk) else ("LIMIT_MAKER" if b_mk else "MARKET_TAKER"))
+                    if (fee_known and p_efs)
+                    else (ex_mode if fee_known else "UNKNOWN")
+                )
+                b_not = float(p_it["exit_notional"])
+                b_bps = round(b_fee / b_not * 10_000, 2) if (fee_known and b_not > 0) else None
+                b_reb = round(b_fee * rebate_ratio, 4)
+                b_net_f = round(max(0.0, b_fee - b_reb), 4)
+                b_gpnl = float(p_it["gross_pnl"])
+                b_ts = int(p_it["close_ms"])
+                kc_exit_batches.append(
+                    {
+                        "batch_index": b_i + 1,
+                        "qty": round(float(p_it["eff_coin_qty"]), 8),
+                        **({"contract_count": float(p_it["qty"])} if mult != 1.0 else {}),
+                        "role": b_role,
+                        "mode_code": b_mode,
+                        "fee_known": fee_known,
+                        "fee_bps": b_bps,
+                        "time_ms": b_ts,
+                        "time_str": _fmt_bj_ms(b_ts),
+                        "avg_price": round(float(p_it["exit_px"]), 6),
+                        "notional_usd": round(b_not, 2) if b_not > 0 else None,
+                        "gross_fee_usd": round(b_fee, 4),
+                        "discount_saved_usd": 0.0,
+                        "discount_asset": "",
+                        "rebate_usd": b_reb,
+                        "net_fee_usd": b_net_f,
+                        "gross_pnl_usd": round(b_gpnl, 4),
+                        "net_pnl_usd": round(b_gpnl - b_net_f, 4),
+                    }
+                )
+
         records.append(
             {
                 "trade_id": f"kucoin_{pos_id}_{close_ms}",
@@ -924,6 +982,7 @@ def normalize_kucoin_closed_trades(
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
+                "exit_batches": kc_exit_batches,
             }
         )
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)

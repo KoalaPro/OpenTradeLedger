@@ -759,6 +759,7 @@ def normalize_htx_closed_trades(
         offset_pl: float,
         mid_id: str,
         is_partial: bool,
+        exit_batches: list[dict[str, Any]] | None = None,
     ) -> None:
         funding_pnl = 0.0
         for fl in funding_by_sym.get(sym, []):
@@ -834,6 +835,7 @@ def normalize_htx_closed_trades(
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
+                "exit_batches": list(exit_batches or []),
             }
         )
 
@@ -860,6 +862,47 @@ def normalize_htx_closed_trades(
         distinct_oids = {str(x["oid"]) for x in exits if x.get("oid")}
         distinct_ts = {int(x["ts"]) for x in exits}
         is_partial = (not full_close) or len(distinct_oids) > 1 or (len(exits) > 1 and len(distinct_ts) > 1)
+        htx_batches: list[dict[str, Any]] = []
+        htx_by_oid: dict[str, list[dict[str, Any]]] = {}
+        for idx_e, x_e in enumerate(exits):
+            ok_e = str(x_e.get("oid") or "").strip() or f"ts_{x_e['ts']}_{idx_e}"
+            htx_by_oid.setdefault(ok_e, []).append(x_e)
+        if len(htx_by_oid) > 1 and (len(distinct_oids) > 1 or len(distinct_ts) > 1):
+            ordered_htx = sorted(htx_by_oid.values(), key=lambda g_e: max(int(y["ts"]) for y in g_e))
+            for b_i, g_e in enumerate(ordered_htx):
+                bq = sum(float(y["qty"]) for y in g_e)
+                bnot = sum(float(y["notional"]) for y in g_e)
+                bpx = (bnot / bq) if bq > 0 else float(g_e[-1]["px"])
+                bfee = sum(float(y["fee_paid"]) for y in g_e)
+                breb = sum(float(y["maker_rebate"]) for y in g_e) + (bfee * rebate_ratio)
+                bnetf = max(0.0, bfee - breb)
+                bgpnl = sum(float(y["offset_pl"]) for y in g_e)
+                bmk = any(bool(y["is_maker"]) for y in g_e)
+                btk = any(not bool(y["is_maker"]) for y in g_e)
+                bts = max(int(y["ts"]) for y in g_e)
+                bvol = sum(float(y["vol"]) for y in g_e) if all(y["has_turnover"] for y in g_e) else None
+                htx_batches.append(
+                    {
+                        "batch_index": b_i + 1,
+                        "qty": round(bq, 6),
+                        **({"contract_count": bvol} if bvol is not None else {}),
+                        "role": "MAKER" if (bmk and not btk) else "TAKER",
+                        "mode_code": "MIXED" if (bmk and btk) else ("LIMIT_MAKER" if bmk else "MARKET_TAKER"),
+                        "fee_known": True,
+                        "fee_bps": round(bfee / bnot * 10_000, 2) if bnot > 0 else 0.0,
+                        "time_ms": bts,
+                        "time_str": _fmt_bj_ms(bts),
+                        "avg_price": round(bpx, 6),
+                        "notional_usd": round(bnot, 2),
+                        "gross_fee_usd": round(bfee, 4),
+                        "discount_saved_usd": 0.0,
+                        "discount_asset": "",
+                        "rebate_usd": round(breb, 4),
+                        "net_fee_usd": round(bnetf, 4),
+                        "gross_pnl_usd": round(bgpnl, 4),
+                        "net_pnl_usd": round(bgpnl - bfee + breb, 4),
+                    }
+                )
         _emit_htx_record(
             sym=sym,
             trade_side=trade_side,
@@ -883,6 +926,7 @@ def normalize_htx_closed_trades(
             offset_pl=offset_pl_sum,
             mid_id=str(exits[-1]["mid_id"]),
             is_partial=is_partial,
+            exit_batches=htx_batches,
         )
 
     for idx, m in enumerate(sorted_matches):

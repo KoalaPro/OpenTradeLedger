@@ -330,6 +330,42 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
     }
 
 
+def normalize_exit_batch_to_public(
+    raw: Mapping[str, Any],
+    batch_index: int,
+    default_time_ms: int,
+) -> dict[str, Any]:
+    leg = normalize_internal_leg_to_public(raw, default_time_ms)
+    raw_qty = raw.get("qty") if raw.get("qty") is not None else raw.get("qty_base")
+    qty_val = float(raw_qty) if raw_qty is not None else None
+    c_cnt = float(raw["contract_count"]) if raw.get("contract_count") is not None else None
+    gpnl = round(float(raw.get("gross_pnl_usd") or 0.0), 4)
+    if raw.get("net_pnl_usd") is not None:
+        npnl = round(float(raw["net_pnl_usd"]), 4)
+    else:
+        npnl = round(gpnl - float(leg["net_fee_usd"]), 4)
+    return {
+        "batch_index": int(raw.get("batch_index") or batch_index),
+        "qty": qty_val,
+        **({"contract_count": c_cnt} if c_cnt is not None else {}),
+        "role": leg["role"],
+        "mode_code": leg["mode_code"],
+        "fee_known": leg["fee_known"],
+        "fee_bps": leg["fee_bps"] if raw.get("fee_bps", leg["fee_bps"]) is not None else None,
+        "time_ms": leg["time_ms"],
+        "time_str": leg["time_str"],
+        "avg_price": leg["avg_price"],
+        "notional_usd": leg["notional_usd"] if raw.get("notional_usd", leg["notional_usd"]) is not None else None,
+        "gross_fee_usd": leg["gross_fee_usd"],
+        "discount_saved_usd": leg["discount_saved_usd"],
+        "discount_asset": leg["discount_asset"],
+        "rebate_usd": leg["rebate_usd"],
+        "net_fee_usd": leg["net_fee_usd"],
+        "gross_pnl_usd": gpnl,
+        "net_pnl_usd": npnl,
+    }
+
+
 def normalize_internal_record_to_public_trade(
     r: Mapping[str, Any],
     *,
@@ -403,6 +439,10 @@ def normalize_internal_record_to_public_trade(
         "rebate_status": "PENDING" if reb_state not in ("SETTLED", "NONE") else "SETTLED",
         "entry_leg": entry_leg,
         "exit_leg": exit_leg,
+        "exit_batches": [
+            normalize_exit_batch_to_public(b, idx + 1, close_ms)
+            for idx, b in enumerate(r.get("exit_batches") or ())
+        ],
         "tags": list(r.get("tags") or []),
         "note": str(r.get("note") or ""),
     }

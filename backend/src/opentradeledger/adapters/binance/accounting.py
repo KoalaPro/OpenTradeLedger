@@ -483,6 +483,28 @@ def _build_binance_closed_records(
 
         en_leg = _build_bn_leg(entry_items, is_exit=False)
         ex_leg = _build_bn_leg(exit_items, is_exit=True)
+        bn_exit_batches: list[dict[str, Any]] = []
+        bn_by_oid: dict[str, list[dict[str, Any]]] = {}
+        for idx_x, x_it in enumerate(exit_items):
+            oid_k = str(x_it.get("order_id") or "").strip() or f"fill_{x_it['ts_ms']}_{idx_x}"
+            bn_by_oid.setdefault(oid_k, []).append(x_it)
+        if len(bn_by_oid) > 1:
+            ordered_bn_grps = sorted(
+                bn_by_oid.values(),
+                key=lambda g_it: max(int(y["ts_ms"]) for y in g_it),
+            )
+            for b_i, g_items in enumerate(ordered_bn_grps):
+                b_leg_bn = _build_bn_leg(g_items, is_exit=True)
+                b_q_bn = sum((y["qty"] for y in g_items), Decimal("0"))
+                b_gpnl_bn = sum((y["rpnl"] for y in g_items), Decimal("0"))
+                bn_exit_batches.append(
+                    {
+                        **b_leg_bn,
+                        "batch_index": b_i + 1,
+                        "qty": f2(b_q_bn, 6),
+                        "gross_pnl_usd": f2(b_gpnl_bn, 4),
+                    }
+                )
 
         all_it = entry_items + exit_items
         for it in all_it:
@@ -548,6 +570,7 @@ def _build_binance_closed_records(
                 "holding_zh": format_duration_zh(hold_s),
                 "entry_leg": en_leg,
                 "exit_leg": ex_leg,
+                "exit_batches": bn_exit_batches,
                 "gross_pnl_usd": f2(gross_pnl, 4),
                 "funding_pnl_usd": f2(fund_usd, 4),
                 "total_fee_usd": f2(tot_fee, 4),

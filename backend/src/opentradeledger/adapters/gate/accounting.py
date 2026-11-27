@@ -588,6 +588,7 @@ def build_gate_venue_ledger(
         qty_b: Decimal,
         en_fills_w: Sequence[tuple[str, Mapping[str, Any], Decimal]],
         ex_fills_w: Sequence[tuple[str, Mapping[str, Any], Decimal]],
+        ex_batches: Sequence[dict[str, Any]] = (),
         en_px_fb: Decimal,
         ex_px_fb: Decimal,
         g_pnl: Decimal,
@@ -670,6 +671,7 @@ def build_gate_venue_ledger(
                 "holding_zh": format_duration_zh(hold_sec),
                 "entry_leg": entry_leg,
                 "exit_leg": exit_leg,
+                "exit_batches": list(ex_batches),
                 "gross_pnl_usd": f2(g_pnl, 4),
                 "funding_pnl_usd": f2(f_pnl, 4),
                 "total_fee_usd": f2(total_fee, 4),
@@ -751,6 +753,55 @@ def build_gate_venue_ledger(
         en_w = [(e[2], e[6], e[7]) for e in seq_events if e[0] == "ENTRY"]
         ex_w = [(e[2], e[6], e[7]) for e in seq_events if e[0] == "EXIT"]
         is_partial = len(distinct_exit_oids) > 1
+        gate_exit_batches: list[dict[str, Any]] = []
+        if is_partial:
+            en_tot_c = sum((e[4] for e in seq_events if e[0] == "ENTRY"), Decimal("0"))
+            en_avg_ref = (
+                (sum((e[4] * e[5] for e in seq_events if e[0] == "ENTRY"), Decimal("0")) / en_tot_c)
+                if en_tot_c > 0
+                else entry_px_fb
+            )
+            by_oid_events: dict[str, list[tuple[str, float, str, str, Decimal, Decimal, Mapping[str, Any], Decimal]]] = {}
+            for ev in seq_events:
+                if ev[0] == "EXIT":
+                    by_oid_events.setdefault(ev[3], []).append(ev)
+            ordered_oid_groups = sorted(
+                by_oid_events.values(),
+                key=lambda grp: (max(x[1] for x in grp), grp[0][2]),
+            )
+            rem_batch_gpnl = gross_pnl_tot
+            for b_i, b_evs in enumerate(ordered_oid_groups):
+                b_last = b_i == len(ordered_oid_groups) - 1
+                b_contracts = sum((x[4] for x in b_evs), Decimal("0"))
+                b_qty = b_contracts * mult
+                b_w = [(x[2], x[6], x[7]) for x in b_evs]
+                b_leg = _summarize_leg(
+                    b_w,
+                    is_exit=True,
+                    fallback_avg_price=exit_px_fb,
+                    fallback_qty_base=b_qty,
+                    paired_rebates=paired_rebates,
+                    order_map=order_map,
+                    maker_rate=maker_reb_rate,
+                    taker_rate=taker_reb_rate,
+                    mult=mult,
+                    now_sec=now_s,
+                    override_qty_base=b_qty if b_qty > 0 else None,
+                )
+                b_px = dec(b_leg["avg_price"]) if dec(b_leg["avg_price"]) > 0 else exit_px_fb
+                if b_last:
+                    b_gpnl = rem_batch_gpnl
+                else:
+                    b_gpnl = ((b_px - en_avg_ref) * b_qty) if side == "long" else ((en_avg_ref - b_px) * b_qty)
+                    rem_batch_gpnl -= b_gpnl
+                gate_exit_batches.append(
+                    {
+                        **b_leg,
+                        "batch_index": b_i + 1,
+                        "qty": f2(b_qty, 6),
+                        "gross_pnl_usd": f2(b_gpnl, 4),
+                    }
+                )
         legacy_suffixes = tuple(f"_{side}_{oid}" for oid in distinct_exit_oids if oid)
         legacy_rks = (
             [
@@ -775,6 +826,7 @@ def build_gate_venue_ledger(
             qty_b=qty_base_total,
             en_fills_w=en_w,
             ex_fills_w=ex_w,
+            ex_batches=gate_exit_batches,
             en_px_fb=entry_px_fb,
             ex_px_fb=exit_px_fb,
             g_pnl=gross_pnl_tot,

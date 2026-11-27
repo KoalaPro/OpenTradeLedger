@@ -333,6 +333,46 @@ describe('Consolidated partial take-profit trade UI', () => {
         rebate_status: 'PENDING',
         settled_at: '',
       },
+      exit_batches: [
+        {
+          batch_index: 1,
+          qty: 1.842,
+          role: 'MAKER',
+          mode_code: 'LIMIT_MAKER',
+          fee_known: true,
+          fee_bps: 2.0,
+          time_ms: 1795706198000,
+          time_str: '11-26 23:16:38',
+          avg_price: 1680,
+          notional_usd: 3094.56,
+          gross_fee_usd: 0.6189,
+          discount_saved_usd: 0,
+          discount_asset: '',
+          rebate_usd: 0.4951,
+          net_fee_usd: 0.1238,
+          gross_pnl_usd: 18.42,
+          net_pnl_usd: 18.2962,
+        },
+        {
+          batch_index: 2,
+          qty: 1.842,
+          role: 'TAKER',
+          mode_code: 'STOP_MARKET',
+          fee_known: true,
+          fee_bps: 5.0,
+          time_ms: 1795708860000,
+          time_str: '11-27 00:01:00',
+          avg_price: 1695.1752,
+          notional_usd: 3122.51,
+          gross_fee_usd: 1.5613,
+          discount_saved_usd: 0,
+          discount_asset: '',
+          rebate_usd: 1.1561,
+          net_fee_usd: 0.4052,
+          gross_pnl_usd: 46.3727,
+          net_pnl_usd: 45.9675,
+        },
+      ],
       tags: [],
       note: '',
     }
@@ -358,5 +398,31 @@ describe('Consolidated partial take-profit trade UI', () => {
     expect(exitCard.textContent).toContain('混合成交')
     expect(exitCard.textContent).not.toContain('MIXED')
     expect(exitCard.textContent).toContain('-2.180')
+
+    // Parent row shows "分 2 笔" and renders the 2 child exit rows directly underneath!
+    const parentRow = screen.getByTestId('trade-row-fut_ETH_USDT_1795705714_1795708860_long')
+    expect(parentRow.textContent).toContain('分 2 笔')
+    const batchRow1 = screen.getByTestId('trade-batch-row-fut_ETH_USDT_1795705714_1795708860_long-1')
+    const batchRow2 = screen.getByTestId('trade-batch-row-fut_ETH_USDT_1795705714_1795708860_long-2')
+    expect(batchRow1.textContent).toContain('第 1 笔')
+    expect(batchRow1.textContent).toContain('1,680.00')
+    expect(batchRow1.textContent).toContain('-0.62')
+    expect(batchRow2.textContent).toContain('第 2 笔')
+    expect(batchRow2.textContent).toContain('1,695.18')
+    expect(batchRow2.textContent).toContain('-1.56')
+
+    // Right settlement inspector also renders the 2 exit batches breakdown
+    const batchesSection = screen.getByTestId('exit-batches-section')
+    expect(batchesSection.textContent).toContain('第 1 笔')
+    expect(batchesSection.textContent).toContain('第 2 笔')
+    expect(batchesSection.textContent).toContain('限价挂单')
+    expect(batchesSection.textContent).toContain('止损市价')
+
+    // Clicking the toggle badge collapses and re-expands child rows
+    const toggleBtn = screen.getByTestId('toggle-batches-fut_ETH_USDT_1795705714_1795708860_long')
+    fireEvent.click(toggleBtn)
+    expect(screen.queryByTestId('trade-batch-row-fut_ETH_USDT_1795705714_1795708860_long-1')).toBeNull()
+    fireEvent.click(toggleBtn)
+    expect(screen.getByTestId('trade-batch-row-fut_ETH_USDT_1795705714_1795708860_long-1')).toBeTruthy()
   })
 })

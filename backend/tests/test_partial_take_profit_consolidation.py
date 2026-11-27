@@ -105,6 +105,23 @@ def test_gate_partial_take_profit_consolidates_into_single_order_and_single_entr
     assert tr["tags"] == ["clean_tp"]
     assert "分批止盈第一半" in tr["note"]
 
+    # Must retain the 2 individual exit batches inside the single consolidated order!
+    batches = tr["exit_batches"]
+    assert len(batches) == 2
+    assert [b["batch_index"] for b in batches] == [1, 2]
+    assert batches[0]["qty"] == pytest.approx(1.842)
+    assert batches[0]["avg_price"] == pytest.approx(1680.0)
+    assert batches[0]["mode_code"] == "LIMIT_MAKER"
+    assert batches[0]["gross_fee_usd"] == pytest.approx(0.6189, abs=1e-4)
+    assert batches[0]["gross_pnl_usd"] == pytest.approx(18.42, abs=1e-4)
+    assert batches[1]["qty"] == pytest.approx(1.842)
+    assert batches[1]["avg_price"] == pytest.approx(1695.1752, abs=1e-3)
+    assert batches[1]["mode_code"] == "STOP_MARKET"
+    assert batches[1]["gross_fee_usd"] == pytest.approx(1.5613, abs=1e-4)
+    assert batches[1]["gross_pnl_usd"] == pytest.approx(46.3727, abs=1e-4)
+    assert sum(b["gross_fee_usd"] for b in batches) == pytest.approx(tr["exit_leg"]["gross_fee_usd"], abs=1e-3)
+    assert sum(b["gross_pnl_usd"] for b in batches) == pytest.approx(tr["gross_pnl_usd"], abs=1e-3)
+
     gate_fee = next(r for r in dash["fee_matrix"] if r["venue_id"] == "gate")
     assert gate_fee["trade_count"] == 1
     assert gate_fee["gross_fee_usd"] == pytest.approx(3.4106, abs=1e-3)
@@ -260,6 +277,14 @@ def test_bitget_mexc_binance_easicoin_partial_tp_consolidate_into_single_order(t
     assert ec_tr["entry_leg"]["gross_fee_usd"] == pytest.approx(1.1248, abs=1e-4)
     assert ec_tr["exit_leg"]["gross_fee_usd"] == pytest.approx(1.1348, abs=1e-4)
 
+    for vid_chk in ("bitget", "mexc", "binance", "easicoin"):
+        tr_chk = by_venue[vid_chk][0]
+        assert len(tr_chk["exit_batches"]) == 2, f"{vid_chk} expected 2 exit_batches"
+        assert sum(b["qty"] for b in tr_chk["exit_batches"]) == pytest.approx(tr_chk["qty"], abs=1e-4)
+        assert sum(b["gross_fee_usd"] for b in tr_chk["exit_batches"]) == pytest.approx(
+            tr_chk["exit_leg"]["gross_fee_usd"], abs=1e-3
+        )
+
     assert dash["reconciliation"]["residual_usd"] == 0.0
 
 
@@ -374,3 +399,16 @@ def test_okx_bybit_kucoin_hl_htx_bingx_partial_tp_single_entry_fee() -> None:
     assert bx_trades[0]["qty"] == pytest.approx(2.0)
     assert bx_trades[0]["entry_leg"]["gross_fee_usd"] == pytest.approx(0.80, abs=1e-4)
     assert bx_trades[0]["exit_leg"]["gross_fee_usd"] == pytest.approx(2.03, abs=1e-4)
+
+    for label_chk, tr_obj in (
+        ("okx", p_same),
+        ("bybit", bybit_trades[0]),
+        ("kucoin", kc_trades[0]),
+        ("hyperliquid", hl_trades[0]),
+        ("htx", htx_trades[0]),
+        ("bingx", bx_trades[0]),
+    ):
+        assert len(tr_obj["exit_batches"]) == 2, f"{label_chk} expected 2 exit_batches"
+        assert sum(b["gross_fee_usd"] for b in tr_obj["exit_batches"]) == pytest.approx(
+            tr_obj["exit_leg"]["gross_fee_usd"], abs=1e-3
+        )

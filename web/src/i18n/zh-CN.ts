@@ -61,6 +61,8 @@ export const zhCN = {
   side_long: '做多',
   side_short: '做空',
   partial_badge: '分批',
+  exit_batches_title: '分批平仓明细',
+  exit_batches_note: '仅列各批出场费与价差（入场费在主单单次计入）',
   all_venues: '全部平台',
   all_symbols: '全部标的',
   view_detailed: '详细列表',

@@ -7,7 +7,7 @@ import type { MessageKey } from '../i18n/zh-CN'
 import { api } from '../lib/api'
 import { useCurrency } from '../lib/currency'
 import { fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
-import type { ClosedTrade, OpenPosition, TradeLegFee } from '../lib/types'
+import type { ClosedTrade, OpenPosition, TradeExitBatch, TradeLegFee } from '../lib/types'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { InstrumentMark } from './InstrumentMark'
 import { VenueBadge } from './VenueBadge'
@@ -353,13 +353,20 @@ export function TradeDrilldownDrawer({
                       className="w-full px-6 py-3.5 flex items-center justify-between gap-3 text-left hover:bg-[var(--surface-hover)] cursor-pointer"
                     >
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-[13px]">
+                        <div className="flex items-center gap-2 text-[13px] flex-wrap">
                           <span className={`font-semibold ${tr.side === 'LONG' ? 'txt-pos' : 'txt-neg'}`}>
                             {tr.side === 'LONG' ? t('side_long') : t('side_short')}
                           </span>
                           <span className="font-medium text-[var(--fg)] whitespace-nowrap">
                             {tr.close_time_str}
                           </span>
+                          {tr.exit_batches && tr.exit_batches.length > 1 && (
+                            <span className="px-1.5 py-0.5 rounded text-[11px] font-medium text-[var(--fg-2)] bg-[var(--surface-2)] border border-[var(--border)] whitespace-nowrap">
+                              {locale === 'en'
+                                ? `${tr.exit_batches.length} Exits`
+                                : `分 ${tr.exit_batches.length} 笔`}
+                            </span>
+                          )}
                           <span className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
                             · {fmtDuration(tr.holding_sec, locale)}
                             {(tr.contract_count != null || tr.qty != null) && (
@@ -407,6 +414,75 @@ export function TradeDrilldownDrawer({
                         netLabel={t('leg_exit_net')}
                         leg={tr.exit_leg}
                       />
+                      {tr.exit_batches && tr.exit_batches.length > 1 && (
+                        <div className="py-2.5 border-t border-[var(--border)] space-y-1.5 text-[12px]">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="font-semibold text-[var(--fg-2)]">
+                              {t('exit_batches_title')}（
+                              {locale === 'en'
+                                ? `${tr.exit_batches.length}`
+                                : `共 ${tr.exit_batches.length} 笔`}
+                              ）
+                            </span>
+                            <span className="text-[11px] text-[var(--fg-3)]">{t('exit_batches_note')}</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {tr.exit_batches.map((b: TradeExitBatch) => {
+                              const bFeeUnknown = b.fee_known === false
+                              return (
+                                <div
+                                  key={b.batch_index}
+                                  className="px-2.5 py-1.5 rounded bg-[var(--surface)] border border-[var(--border)] space-y-0.5"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="font-medium text-[var(--fg)]">
+                                        {locale === 'en' ? `Exit #${b.batch_index}` : `第 ${b.batch_index} 笔`}
+                                      </span>
+                                      {(b.qty != null || b.contract_count != null) && (
+                                        <span className="text-[var(--fg-2)] sensitive">
+                                          ·{' '}
+                                          {fmtContractQty(
+                                            {
+                                              symbol: tr.symbol,
+                                              qty: b.qty,
+                                              contract_count: b.contract_count,
+                                            },
+                                            locale,
+                                          )}
+                                        </span>
+                                      )}
+                                      {b.avg_price > 0 && (
+                                        <span className="text-[var(--fg-2)]">
+                                          @ <span className="sensitive">{fmtPrice(b.avg_price)}</span>
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span
+                                      className={`font-semibold whitespace-nowrap sensitive ${pnlTone(b.net_pnl_usd)}`}
+                                    >
+                                      {cur.signedMoney(b.net_pnl_usd)}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--fg-3)]">
+                                    <span className="truncate">
+                                      {b.time_str} ·{' '}
+                                      {bFeeUnknown
+                                        ? t('leg_fee_unknown')
+                                        : `${modeText(b.mode_code, t)} · ${fmtLegRate(b.fee_bps, locale)}`}
+                                    </span>
+                                    <span className="whitespace-nowrap sensitive">
+                                      {bFeeUnknown
+                                        ? t('leg_fee_unknown')
+                                        : `${t('fee_exit_short')} -${cur.money(b.gross_fee_usd, 3)} · ${t('fee_net_short')} ${cur.signedMoney(-b.net_fee_usd, 3)}`}
+                                    </span>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
                       <div className="pt-2.5 border-t border-[var(--border)] space-y-1 text-[12px]">
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>

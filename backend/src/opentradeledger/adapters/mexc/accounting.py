@@ -428,6 +428,35 @@ def _build_mexc_closed_records(
 
             en_leg = _build_mx_leg(sliced_entries, is_exit=False, is_win_hint=(gpnl > 0))
             ex_leg = _build_mx_leg(exit_grp, is_exit=True, is_win_hint=(gpnl > 0))
+            mx_exit_batches: list[dict[str, Any]] = []
+            if is_partial_pos:
+                mx_by_oid: dict[str, list[dict[str, Any]]] = {}
+                for x_it in exit_grp:
+                    oid_k = x_it["order_id"] or f"ts_{x_it['ts_ms']}"
+                    mx_by_oid.setdefault(oid_k, []).append(x_it)
+                ordered_mx_grps = sorted(
+                    mx_by_oid.values(),
+                    key=lambda g_it: max(y["ts_ms"] for y in g_it),
+                )
+                rem_mx_gpnl = gpnl
+                for b_i, g_items in enumerate(ordered_mx_grps):
+                    b_last = b_i == len(ordered_mx_grps) - 1
+                    b_vol = sum((y["vol"] for y in g_items), Decimal("0"))
+                    if b_last:
+                        b_gpnl = rem_mx_gpnl
+                    else:
+                        b_raw_p = sum((y["profit"] for y in g_items), Decimal("0"))
+                        b_gpnl = b_raw_p if b_raw_p != 0 else (gpnl * (b_vol / tot_close_vol) if tot_close_vol > 0 else Decimal("0"))
+                        rem_mx_gpnl -= b_gpnl
+                    b_leg_mx = _build_mx_leg(g_items, is_exit=True, is_win_hint=(b_gpnl > 0))
+                    mx_exit_batches.append(
+                        {
+                            **b_leg_mx,
+                            "batch_index": b_i + 1,
+                            "qty": f2(b_vol * mult, 6),
+                            "gross_pnl_usd": f2(b_gpnl, 4),
+                        }
+                    )
 
             all_legs = sliced_entries + exit_grp
             tot_fee = sum((x["fee_usd"] for x in all_legs), Decimal("0"))
@@ -481,6 +510,7 @@ def _build_mexc_closed_records(
                     "holding_zh": format_duration_zh(hold_s),
                     "entry_leg": en_leg,
                     "exit_leg": ex_leg,
+                    "exit_batches": mx_exit_batches,
                     "gross_pnl_usd": f2(gpnl, 4),
                     "funding_pnl_usd": f2(fund_u, 4),
                     "total_fee_usd": f2(tot_fee, 4),
