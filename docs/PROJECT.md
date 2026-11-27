@@ -97,7 +97,8 @@ Bybit 首次接入及旧快照升级按七天窗口回补近两年的平仓。�
 公开带单监控保留最近成功取得的成交快照。接口异常或单向模式缺少起始仓位时，页面标出数据状态；调仓通知按目标、成交与方向区分。Bark 投递状态和已成功的空位提醒冷却保存在本地账本中。
 
 ### 3.4 跨品牌 NAS 网页内一键在线升级（OTA）
-- `services/self_updater.py` 从官方 GitHub Release（含国内镜像自动回退）下载轻量代码更新包，强制校验官方权威 `SHA-256` 哈希后解压至持久化目录 `/app/data/.ota/releases/vX.Y.Z` 并更新 `/app/data/.ota/active.json`。
+- 设置页显示后端报告的运行版本。GitHub Release 的版本标签与项目版本一致时，旧版实例可从设置页检测到新版本并下载对应的升级包。
+- `core/self_updater.py` 从官方 GitHub Release（含国内镜像自动回退）下载轻量代码更新包，强制校验官方权威 `SHA-256` 哈希后解压至持久化目录 `/app/data/.ota/releases/vX.Y.Z` 并更新 `/app/data/.ota/active.json`。
 - `scripts/run_server.py` 启动时优先挂载 `active.json` 指向的版本槽位，无需挂载高危 `docker.sock`，容器重启后版本与全部账本数据 100% 保留。
 
 ---

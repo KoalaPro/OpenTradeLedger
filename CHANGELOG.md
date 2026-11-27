@@ -4,7 +4,7 @@ All notable changes to **OpenTradeLedger (交易账本)** are documented in this
 
 ---
 
-## [Unreleased]
+## [v1.4.1] — 分批平仓与手续费核对、个人 Bark 提醒和美股代币识别
 
 - **全 11 家交易所及子账户统一 1:1 美股代币识别与历史死代码瘦身**：
   - 在 `adapters/stock_channels.py` 新增统一兜底提升函数 `promote_spot_stock_tokens_from_wallets`，并接入 `core/ledger_service.py` 逐账号聚合管线（位于多账号盖章 `stamp_bundle_for_account` 之前）：覆盖 KuCoin、BingX、HTX、Hyperliquid 及全部 11 家交易所的独立子账户与资金账户，按原始交易所协议代码识别 `xStocks (*X)`、`Ondo (*ON)`、`*STOCK`、Bitget `rStock` 与币安 `bStock`，自动从现货列表归入「股票与代币账户」且绝不重复统计，全平台维持 `0.00 U` 闭环核账。
