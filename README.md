@@ -4,14 +4,14 @@
 
 # 交易账本 · OpenTradeLedger
 
-**本地优先、严格只读的多交易所实盘交易账本与精算级闭环核账引擎**
+**部署在电脑或 NAS 上的多交易所只读账本，逐笔核对成交、手续费、资金费和实际盈亏。**
 
 [![CI](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/ci.yml/badge.svg)](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/ci.yml)
 [![Docker GHCR](https://github.com/KoalaPro/OpenTradeLedger/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/KoalaPro/OpenTradeLedger/pkgs/container/opentradeledger)
 [![License: MIT](https://img.shields.io/badge/开源协议-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](pyproject.toml)
 [![React 19 + Vite](https://img.shields.io/badge/前端-React%2019%20%2B%20Tailwind%20v4-38BDF8.svg)](web/package.json)
-[![Read-Only API](https://img.shields.io/badge/安全防线-GET--Only%20只读拦截-10B981.svg)](backend/src/opentradeledger/security/readonly_guard.py)
+[![交易所只读访问](https://img.shields.io/badge/交易所访问-只读-10B981.svg)](backend/src/opentradeledger/security/readonly_guard.py)
 
 [项目与架构说明](docs/PROJECT.md) · [版本更新日志](CHANGELOG.md) · [贡献与新增交易所指南](CONTRIBUTING.md) · [English Documentation (README.en.md)](README.en.md)
 
@@ -36,8 +36,8 @@
 ### 总览页 — 细线原生账本布局、多交易所统一持仓与 `0.00 U` 闭环核账（曜石暗色）
 ![交易账本总览曜石黑](docs/screenshots/overview-dark.png)
 
-### 进场 / 出场双腿手续费独立拆解 — 挂吃单费率 bps、真实返佣流水与复盘笔记
-![交易账本逐腿进出场手续费](docs/screenshots/trades-per-leg-fees.png)
+### 进场与出场手续费
+![合约交易详情中的进场费、出场费、挂单或吃单费率及返佣](docs/screenshots/trades-per-leg-fees.png)
 
 ### 11 大交易所严格只读接入 — 同所多账号（主/子账户识别）与 Hyperliquid 免私钥 `0x` 发现
 ![交易账本11平台与免密钥链上接入](docs/screenshots/settings-11-venues.png)
@@ -55,15 +55,17 @@
 
 - **闭环恒等式核账（`0.00 U` 误差校验）与资产构成穿透**：按平台与账户分区独立验证 `期初权益 + 净充提划转 + 已实现盈亏 + 手续费与真实返佣 + 资金费 + 未实现盈亏 = 当前真实净资产`。点击 **资产构成** 查看合约保证金、跟单专账、正股/代币化美股与现货理财四维占比，点击 **对账明细** 逐项复核每一分钱差额。
 - **进场 / 出场双腿手续费独立明示与实时返佣实算**：拒绝笼统的“总手续费”。每笔平仓并排拆解 **进场腿** 与 **出场腿** 成本卡片——清晰列出成交类型（挂单 Maker / 吃单 Taker / 止损 / 反手）、实测有效费率（bps）、毛手续费、来自交易所真实账单流水的实收返佣（绝不套静态比例估算）以及 BNB / MX 等平台币抵扣说明；原始接口未提供分腿明细时诚实标注 `分腿费用未知` 并完整纳入成本矩阵。
+- **分批平仓**按一段连续持仓归为一笔交易。展开时间线可核对每次加仓、减仓和最终平仓的成交，以及交易所提供的手续费明细。
 - **11 平台全独立对等架构 & 同交易所多账号（主账户 / 子账户 / 独立号）隔离核账**：
   - 开箱内置 **币安 Binance**、**OKX (v5)**、**Bybit (v5)**、**Gate**、**Bitget (UTA)**、**MEXC**、**Hyperliquid（链上免密钥 `0x`）**、**KuCoin（库币）**、**BingX**、**火币 HTX**、**易币 EasiCoin** 11 套完全解耦的只读适配器。
   - **全平台原生支持同一交易所绑定多个账号**：自动探测远端脱敏 `UID` 并识别 `主账户` / `子账户` / `链上钱包` 身份徽标，内置重复 `UID` 冲突拦截（杜绝同一账户两把 Key 导致总净资产翻倍）与换钥归属校验（防止跨账号串账）；Hyperliquid 仅需填入公开 42 位 `0x` 地址即可免私钥同步，并支持一键探测勾选导入名下链上子账户。
   - **封存保留与数值强校验**：解绑 API Key 时可选择「仅解绑凭证、保留本地历史（已封存）」或「彻底清除分区数据」；全平台内置钱包金额有限数强校验与子接口局部异常防写小保护，绝不因上游瞬时繁忙或畸形返回冲掉已有资产。
 - **免密钥公开带单盯盘雷达 & iOS Bark 秒级提醒**：无需任何 API Key 即可监控公开带单员跟单余位与实时成交流推算持仓，支持自定义扫描频率（最低 `3 秒` 极速抢位），车位释放或带单调仓时通过 iOS Bark 推送即时响铃并直跳交易所 App。
+- 启用**个人账本 Bark 提醒**后，同一账户在一次同步中新入账的减仓和平仓会合并推送。首次导入历史、重复同步、开仓和加仓均保持静默。
 - **多资产统一总览与 7 币种实时汇率瞬切**：合约在途仓位、美股正股 / 1:1 代币化股票与全账户现货尾仓同屏呈现；顶栏一键在 `USDT`、`USD`、`CNY`、`GBP`、`EUR`、`HKD`、`JPY` 之间实时换算全部净值与图表。
 - **通用 AI 智能复盘（数据外发四态透明披露）**：兼容任意 OpenAI 格式接口（DeepSeek、OpenAI、Ollama、OpenRouter 等），支持在线拉取模型列表点选；严格仅发送 8 项脱敏聚合指标（零 API Key、零 UID、零原始订单号），并明确标注 `0 笔成交本地短路`、`纯本地精算`、`远端异常回退本地`、`远端模型生成` 四类状态。
 - **本地优先安全防线与跨品牌 NAS 网页一键升级**：
-  - 网络层经 `readonly_guard.py` 强制拦截非只读请求与任何交易/划转/提币路径；API 凭证经 **Fernet（AES-128-CBC + HMAC-SHA256）** 本地 `0600` 权限加密落盘；内置 `scrypt` 局域网访问密码锁与 `--reset-password` 本地恢复命令。
+  - 交易所适配器通过 `readonly_guard.py` 限定只读访问。Hyperliquid 使用公开钱包地址调用 `POST /info`，仅允许预先列明的查询类型。API 凭证经 **Fernet（AES-128-CBC + HMAC-SHA256）** 本地 `0600` 权限加密落盘；内置 `scrypt` 局域网访问密码锁与 `--reset-password` 本地恢复命令。
   - **网页内一键在线升级（OTA）**：检测到新版本后直接在设置页点击「一键在线升级」，自动完成官方 Release 包 SHA-256 校验与秒级热切换，无需 SSH 终端、无需挂载高危 `docker.sock`。
 
 ---
@@ -154,7 +156,7 @@ OpenTradeLedger/
 │   │   ├── adapters/            # 11 大交易所全独立只读包（client.py / sync.py / accounting.py）
 │   │   ├── api/                 # FastAPI 路由装配（app.py / routes_exchanges.py / schemas.py / http_helpers.py）
 │   │   ├── core/                # 多账号分区代理、SyncManager、LedgerService、实时汇率、公开盯盘、AI 复盘、OTA 升级
-│   │   └── security/            # GET-Only 只读网络护栏、Fernet 密钥保险箱、scrypt 本地会话锁
+│   │   └── security/            # 交易所只读访问控制、Fernet 密钥保险箱、scrypt 本地会话锁
 │   └── tests/                   # 按业务领域组织的后端单元/精算/安全与架构 AST 守卫测试套件
 ├── web/
 │   └── src/
