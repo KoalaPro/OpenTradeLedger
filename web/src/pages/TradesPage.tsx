@@ -3,13 +3,13 @@ import { AlertTriangle, ArrowDown, ArrowUp, Check } from 'lucide-react'
 import { InstrumentMark } from '../components/InstrumentMark'
 import { formatDisplayKpiValue } from '../components/KpiCard'
 import { SegmentedPills } from '../components/SegmentedPills'
-import { PositionTimeline, PartialSettlement, BatchNetResult, lifecycleStatus } from '../components/PositionTimeline'
+import { PositionTimeline, PartialSettlement, isScaleOutTrade, lifecycleStatus } from '../components/PositionTimeline'
 import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n/zh-CN'
 import { useCurrency } from '../lib/currency'
 import { collectActiveWarnings, fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, pnlTone } from '../lib/format'
-import type { ClosedTrade, DashboardData, DashboardWarningItem, TradeExitBatch, TradeLegFee } from '../lib/types'
+import type { ClosedTrade, DashboardData, DashboardWarningItem, TradeLegFee } from '../lib/types'
 
 const TAG_KEYS: Array<{ id: string; key: MessageKey }> = [
   { id: 'planned', key: 'tag_planned' },
@@ -37,23 +37,20 @@ function modeLabel(code: string, t: (k: MessageKey) => string): string {
   return known[code] ? t(known[code]) : code
 }
 
-const CIRCLED_NUMS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']
-
-function batchRebatePct(b: TradeExitBatch): number {
-  if (b.rebate_pct != null && b.rebate_pct > 0) return b.rebate_pct
-  return b.gross_fee_usd > 0 ? (b.rebate_usd / b.gross_fee_usd) * 100 : 0
-}
-
 function LegFeeCard({
   title,
+  subtitleBadge,
   netLabel,
   leg,
+  feeDecimals = 3,
   testId,
   padClass = '',
 }: {
   title: string
+  subtitleBadge?: string
   netLabel: string
   leg: TradeLegFee
+  feeDecimals?: number
   testId: string
   padClass?: string
 }) {
@@ -63,7 +60,12 @@ function LegFeeCard({
   return (
     <div data-testid={testId} className={`space-y-2 ${padClass}`}>
       <div>
-        <div className="font-semibold text-[13px] text-[var(--fg)]">{title}</div>
+        <div className="font-semibold text-[13px] text-[var(--fg)] flex items-center gap-1.5 flex-wrap">
+          <span>{title}</span>
+          {subtitleBadge && (
+            <span className="font-normal text-[12px] text-[var(--fg-3)]">· {subtitleBadge}</span>
+          )}
+        </div>
         <div className="text-[12px] text-[var(--fg-2)] truncate">
           {feeUnknown ? t('leg_fee_unknown') : `${modeLabel(leg.mode_code, t)} · ${fmtLegRate(leg.fee_bps, locale)}`}
         </div>
@@ -78,11 +80,11 @@ function LegFeeCard({
         </div>
       </div>
 
-      <div className="pt-2 border-t border-[var(--border)] space-y-1 text-[12px]">
+      <div className="pt-2 border-t border-[var(--border)] space-y-1 text-[12px] tabular-nums">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[var(--fg-3)]">{t('leg_gross_fee')}</span>
           <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? t('leg_fee_unknown') : cur.signedMoney(-leg.gross_fee_usd, 3)}
+            {feeUnknown ? t('leg_fee_unknown') : cur.signedMoney(-leg.gross_fee_usd, feeDecimals)}
           </span>
         </div>
         <div className="flex items-center justify-between gap-2">
@@ -91,8 +93,8 @@ function LegFeeCard({
             {feeUnknown
               ? '—'
               : leg.rebate_usd > 0
-                ? `+${cur.money(leg.rebate_usd, 3)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
-                : leg.gross_fee_usd === 0 ? t('leg_zero_fee') : cur.money(0, 3)}
+                ? `+${cur.money(leg.rebate_usd, feeDecimals)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
+                : leg.gross_fee_usd === 0 ? t('leg_zero_fee') : cur.money(0, feeDecimals)}
           </span>
         </div>
         {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
@@ -101,176 +103,17 @@ function LegFeeCard({
               {locale === 'en' ? 'Pre-discount' : '抵扣已省'}
             </span>
             <span className="txt-pos sensitive whitespace-nowrap">
-              +{cur.money(leg.discount_saved_usd, 3)}
+              +{cur.money(leg.discount_saved_usd, feeDecimals)}
             </span>
           </div>
         )}
         <div className="flex items-center justify-between gap-2 font-semibold pt-1">
           <span className="text-[var(--fg-2)]">{netLabel}</span>
           <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? '—' : cur.signedMoney(-leg.net_fee_usd, 3)}
+            {feeUnknown ? '—' : cur.signedMoney(-leg.net_fee_usd, feeDecimals)}
           </span>
         </div>
       </div>
-    </div>
-  )
-}
-
-function MultiBatchExecutionLedger({
-  trade,
-  batches,
-}: {
-  trade: ClosedTrade
-  batches: TradeExitBatch[]
-}) {
-  const { locale, t } = useI18n()
-  const cur = useCurrency()
-  const enLeg = trade.entry_leg
-  const enFeeUnknown = enLeg.fee_known === false
-
-  return (
-    <div
-      data-testid="multi-batch-ledger"
-      className="divide-y divide-[var(--border)] border-b border-[var(--border)] tabular-nums text-[12px]"
-    >
-      {/* Row 1: Entry Leg */}
-      <div data-testid="entry-leg-fee-card" className="py-3 flex items-start justify-between gap-3">
-        <div className="min-w-0 space-y-0.5">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-[13px] text-[var(--fg)] whitespace-nowrap">
-              {trade.position_events?.length ? t('lifecycle_entry_total') : locale === 'en' ? 'Entry' : '开仓进场'}
-            </span>
-            {(trade.qty != null || trade.contract_count != null) && (
-              <span className="text-[var(--fg)] sensitive whitespace-nowrap">
-                {fmtContractQty(trade, locale)}
-              </span>
-            )}
-            {enLeg.avg_price > 0 && (
-              <span className="text-[var(--fg)] whitespace-nowrap">
-                @ <span className="sensitive">{fmtPrice(enLeg.avg_price)}</span>
-              </span>
-            )}
-          </div>
-          <div className="text-[var(--fg-3)]">
-            {enLeg.time_str} ·{' '}
-            {enFeeUnknown
-              ? t('leg_fee_unknown')
-              : `${modeLabel(enLeg.mode_code, t)} · ${fmtLegRate(enLeg.fee_bps, locale)}`}
-          </div>
-        </div>
-        <div className="text-right shrink-0 space-y-0.5">
-          <div className="text-[var(--fg-2)] whitespace-nowrap sensitive">
-            {enFeeUnknown ? (
-              <span className="text-[var(--fg-3)]">{t('leg_fee_unknown')}</span>
-            ) : (
-              <>
-                {locale === 'en' ? 'Gross ' : '先扣 '}
-                {cur.signedPlainMoney(-enLeg.gross_fee_usd, 4)}
-                {enLeg.rebate_usd > 0 && (
-                  <>
-                    {' · '}
-                    <span className="txt-pos">
-                      {locale === 'en' ? 'Reb ' : '返 '}+{cur.plainMoney(enLeg.rebate_usd, 4)}
-                      {enLeg.gross_fee_usd > 0 ? ` (${enLeg.rebate_pct.toFixed(0)}%)` : ''}
-                    </span>
-                  </>
-                )}
-                {enLeg.discount_saved_usd > 0.0001 && (
-                  <>
-                    {' · '}
-                    <span className="txt-pos">
-                      {locale === 'en' ? 'Disc ' : '抵扣 '}+{cur.plainMoney(enLeg.discount_saved_usd, 4)}
-                    </span>
-                  </>
-                )}
-              </>
-            )}
-          </div>
-          <div className="font-semibold text-[var(--fg)] whitespace-nowrap sensitive">
-            {t('leg_entry_net')}{' '}
-            {enFeeUnknown ? '—' : cur.signedMoney(-enLeg.net_fee_usd, 4)}
-          </div>
-        </div>
-      </div>
-
-      {/* Rows 2..N+1: Chronological Exit Batches */}
-      {batches.map(b => {
-        const bFeeUnknown = b.fee_known === false
-        const rebPct = batchRebatePct(b)
-        return (
-          <div
-            key={b.batch_index}
-            data-testid={`exit-batch-row-${b.batch_index}`}
-            className="py-3 flex items-start justify-between gap-3"
-          >
-            <div className="min-w-0 space-y-0.5">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold text-[13px] text-[var(--fg)] whitespace-nowrap">
-                  {locale === 'en' ? `Exit #${b.batch_index}` : `平仓第 ${b.batch_index} 笔`}
-                </span>
-                {(b.qty != null || b.contract_count != null) && (
-                  <span className="text-[var(--fg)] sensitive whitespace-nowrap">
-                    {fmtContractQty(
-                      { symbol: trade.symbol, qty: b.qty, contract_count: b.contract_count },
-                      locale,
-                    )}
-                  </span>
-                )}
-                {b.avg_price > 0 && (
-                  <span className="text-[var(--fg)] whitespace-nowrap">
-                    @ <span className="sensitive">{fmtPrice(b.avg_price)}</span>
-                  </span>
-                )}
-                <span className={`font-medium whitespace-nowrap sensitive ${pnlTone(b.gross_pnl_usd ?? 0)}`}>
-                  {locale === 'en' ? 'Spread ' : '价差 '}
-                  {b.gross_pnl_usd == null ? t('lifecycle_unknown') : cur.signedMoney(b.gross_pnl_usd)}
-                </span>
-              </div>
-              <div className="text-[var(--fg-3)]">
-                {b.time_str} ·{' '}
-                <span className="font-medium text-[var(--fg-2)]">
-                  {bFeeUnknown ? t('leg_fee_unknown') : modeLabel(b.mode_code, t)}
-                </span>
-                {!bFeeUnknown && b.fee_bps != null ? ` · ${fmtLegRate(b.fee_bps, locale)}` : ''}
-              </div>
-            </div>
-            <div className="text-right shrink-0 space-y-0.5">
-              <div className="text-[var(--fg-2)] whitespace-nowrap sensitive">
-                {bFeeUnknown ? (
-                  <span className="text-[var(--fg-3)]">{t('leg_fee_unknown')}</span>
-                ) : (
-                  <>
-                    {locale === 'en' ? 'Gross ' : '先扣 '}
-                    {cur.signedPlainMoney(-b.gross_fee_usd, 4)}
-                    {b.rebate_usd > 0 && (
-                      <>
-                        {' · '}
-                        <span className="txt-pos">
-                          {locale === 'en' ? 'Reb ' : '返 '}+{cur.plainMoney(b.rebate_usd, 4)}
-                          {b.gross_fee_usd > 0 ? ` (${rebPct.toFixed(0)}%)` : ''}
-                        </span>
-                      </>
-                    )}
-                    {b.discount_saved_usd > 0.0001 && (
-                      <>
-                        {' · '}
-                        <span className="txt-pos">
-                          {locale === 'en' ? 'Disc ' : '抵扣 '}+{cur.plainMoney(b.discount_saved_usd, 4)}
-                        </span>
-                      </>
-                    )}
-                  </>
-                )}
-              </div>
-              <div className="font-semibold text-[var(--fg)] whitespace-nowrap sensitive">
-                {t('leg_exit_net')}{' '}
-                {bFeeUnknown ? '—' : cur.signedMoney(-b.net_fee_usd, 4)}
-              </div>
-              <BatchNetResult batch={b} />
-            </div>
-          </div>
-        )
-      })}
     </div>
   )
 }
@@ -396,7 +239,7 @@ export function TradesPage({
     return sortedTrades.find(tr => tr.trade_id === selectedId) ?? sortedTrades[0]
   }, [sortedTrades, selectedId])
 
-  const singleLifecycle = sortedTrades.length === 1 && Boolean(selected?.position_events?.length)
+  const selectedScaleOut = isScaleOutTrade(selected)
   const selectedIndex = selected ? sortedTrades.indexOf(selected) : -1
   const activeTradeId = selected?.trade_id ?? ''
   const currentDraft = activeTradeId ? draftMap[activeTradeId] : undefined
@@ -709,9 +552,9 @@ export function TradesPage({
         )
       ) : (
       <>
-      <div className={`grid grid-cols-1 xl:grid-cols-12 border-b border-[var(--border)] items-start ${singleLifecycle ? 'otl-single-lifecycle' : ''}`}>
+      <div className="grid grid-cols-1 xl:grid-cols-12 border-b border-[var(--border)] items-start">
         <div
-          className={`otl-trade-master min-w-0 xl:border-r border-[var(--border)] ${selected?.position_events?.length ? 'xl:col-span-6' : 'xl:col-span-7 xl:pr-4'}`}
+          className="min-w-0 xl:col-span-7 xl:border-r border-[var(--border)] xl:sticky xl:top-[68px]"
           tabIndex={0}
           onKeyDown={e => {
             if (e.key === 'ArrowDown') {
@@ -750,6 +593,7 @@ export function TradesPage({
                     const active = selected?.trade_id === tr.trade_id
                     const batches = tr.exit_batches && tr.exit_batches.length > 1 ? tr.exit_batches : []
                     const hasBatches = batches.length > 1
+                    const rowStillHolding = Boolean(tr.position_events?.length && tr.position_events.at(-1)?.action !== 'CLOSE')
                     return (
                       <tr
                         key={tr.trade_id}
@@ -777,9 +621,9 @@ export function TradesPage({
                             >
                               {tr.side === 'LONG' ? t('side_long') : t('side_short')}
                             </span>
-                            {tr.position_events?.length ? (
-                              <span className="text-[11px] text-[var(--fg-2)] whitespace-nowrap">
-                                {t(lifecycleStatus(tr.position_events))}
+                            {rowStillHolding ? (
+                              <span className="px-1.5 py-0.5 rounded border border-[var(--border)] text-[11px] font-medium text-[var(--accent)] whitespace-nowrap">
+                                {t(lifecycleStatus(tr.position_events!))}
                               </span>
                             ) : hasBatches ? (
                               <span className="px-1.5 py-0.5 rounded border border-[var(--border)] text-[11px] font-medium text-[var(--fg-2)] whitespace-nowrap">
@@ -796,42 +640,6 @@ export function TradesPage({
                           <div className="text-[12px] text-[var(--fg-3)] mt-0.5 whitespace-nowrap">
                             {tr.close_time_str} · {fmtDuration(tr.holding_sec, locale)}
                           </div>
-                          {hasBatches && !tr.position_events?.length && (
-                            <div
-                              data-testid={`trade-row-batches-${tr.trade_id}`}
-                              className="mt-1 pt-1 border-t border-dashed border-[var(--border)] text-[11.5px] text-[var(--fg-3)] tabular-nums flex flex-wrap gap-x-2.5 gap-y-0.5"
-                            >
-                              {batches.map(b => (
-                                <span key={b.batch_index} className="whitespace-nowrap">
-                                  <span>{CIRCLED_NUMS[b.batch_index - 1] ?? `#${b.batch_index}`} </span>
-                                  {(b.qty != null || b.contract_count != null) && (
-                                    <span className="sensitive">
-                                      {b.contract_count != null && b.qty == null
-                                        ? fmtContractQty(
-                                            {
-                                              symbol: tr.symbol,
-                                              qty: b.qty,
-                                              contract_count: b.contract_count,
-                                            },
-                                            locale,
-                                          )
-                                        : b.qty}
-                                    </span>
-                                  )}
-                                  {b.avg_price > 0 && (
-                                    <>
-                                      {' @ '}
-                                      <span className="sensitive">{fmtPrice(b.avg_price)}</span>
-                                    </>
-                                  )}
-                                  {' '}
-                                  <span className={`font-medium sensitive ${pnlTone(b.gross_pnl_usd ?? 0)}`}>
-                                    {b.gross_pnl_usd == null ? t('lifecycle_unknown') : cur.signedPlainMoney(b.gross_pnl_usd)}
-                                  </span>
-                                </span>
-                              ))}
-                            </div>
-                          )}
                         </td>
                         <td>
                           <VenueBadge
@@ -843,7 +651,7 @@ export function TradesPage({
                           <td className="hidden sm:table-cell text-right whitespace-nowrap tabular-nums">
                             <div className="text-[12.5px] font-medium sensitive">
                               {t('fee_net_short')}{' '}
-                              {cur.signedMoney(-tr.net_fee_usd, hasBatches ? 4 : 2)}
+                              {cur.signedMoney(-tr.net_fee_usd, 2)}
                               {tr.effective_relief_pct > 0 && (
                                 <span className="txt-pos ml-1">
                                   (-{tr.effective_relief_pct.toFixed(0)}%)
@@ -853,9 +661,7 @@ export function TradesPage({
                             <div className="text-[12px] text-[var(--fg-3)] sensitive">
                               {tr.entry_leg.fee_known === false || tr.exit_leg.fee_known === false
                                 ? t('leg_fee_unknown')
-                                : hasBatches && !tr.position_events?.length
-                                  ? `${t('fee_entry_short')} ${cur.signedPlainMoney(-tr.entry_leg.gross_fee_usd, 4)} · ${t('fee_exit_short')} ${cur.signedPlainMoney(-tr.exit_leg.gross_fee_usd, 4)}（${batches.map(b => b.fee_known === false ? t('lifecycle_unknown') : cur.signedPlainMoney(-b.gross_fee_usd, 4)).join(' / ')}）`
-                                  : `${t('fee_entry_short')} ${cur.signedPlainMoney(-tr.entry_leg.gross_fee_usd, hasBatches ? 4 : 2)} · ${t('fee_exit_short')} ${cur.signedPlainMoney(-tr.exit_leg.gross_fee_usd, hasBatches ? 4 : 2)}`}
+                                : `${t('fee_entry_short')} ${cur.signedPlainMoney(-tr.entry_leg.gross_fee_usd, 2)} · ${t('fee_exit_short')} ${cur.signedPlainMoney(-tr.exit_leg.gross_fee_usd, 2)}`}
                             </div>
                           </td>
                         )}
@@ -877,14 +683,14 @@ export function TradesPage({
           )}
         </div>
 
-        {/* Right Settlement Inspector */}
+        {/* Right Settlement Inspector: Always col-span-5, compact & symmetric height */}
         <aside
           ref={detailRef}
           data-testid="trade-detail-panel"
-          className={`otl-trade-inspector min-w-0 py-5 px-4 sm:px-5 xl:px-6 border-t xl:border-t-0 border-[var(--border)] flex flex-col gap-5 xl:sticky xl:top-[68px] ${selected?.position_events?.length ? 'xl:col-span-6' : 'xl:col-span-5'}`}
+          className="otl-trade-inspector min-w-0 xl:col-span-5 py-5 px-4 sm:px-5 xl:px-6 border-t xl:border-t-0 border-[var(--border)] flex flex-col gap-5 xl:sticky xl:top-[68px]"
         >
           <div className="flex items-center justify-between gap-2">
-            <h2 className="t-h2">{t(selected?.position_events?.length ? 'lifecycle_title' : 'detail_title')}</h2>
+            <h2 className="t-h2">{t('detail_title')}</h2>
             {sortedTrades.length > 0 && (
               <div className="flex items-center gap-1.5 text-[12px] text-[var(--fg-3)]">
                 <span className="tabular-nums mr-1">
@@ -920,17 +726,14 @@ export function TradesPage({
                 selected.exit_batches && selected.exit_batches.length > 1 ? selected.exit_batches : []
               const selectedHasBatches = selectedBatches.length > 1
               const stillHolding = Boolean(selected.position_events?.length && selected.position_events.at(-1)?.action !== 'CLOSE')
-              const allPositiveBatches =
-                selectedHasBatches &&
-                selectedBatches.every(b => b.gross_pnl_usd != null && b.gross_pnl_usd >= 0) &&
-                selectedBatches.some(b => b.gross_pnl_usd != null && b.gross_pnl_usd > 0)
+              const feeDec = selectedScaleOut ? 4 : 3
               return (
             <>
               <div
                 key={selected.trade_id}
-                className={`otl-trade-body ${swapDir === 'prev' ? 'otl-swap-prev' : 'otl-swap-next'} flex flex-col`}
+                className={`${swapDir === 'prev' ? 'otl-swap-prev' : 'otl-swap-next'} flex flex-col`}
               >
-                <div className="otl-trade-identity flex flex-wrap items-start justify-between gap-3 pb-3.5 border-b border-[var(--border)]">
+                <div className="flex flex-wrap items-start justify-between gap-3 pb-3.5 border-b border-[var(--border)]">
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <InstrumentMark instrument={selected.symbol} exchange={selected.venue_id.toUpperCase()} />
@@ -946,43 +749,36 @@ export function TradesPage({
                         venueId={selected.venue_id}
                         name={locale === 'en' ? selected.venue_name : selected.venue_name_zh || selected.venue_name}
                       />
-                      {selectedHasBatches && !selected.position_events?.length && (
-                        <span className="text-[12px] text-[var(--fg-3)] whitespace-nowrap">
-                          ·{' '}
-                          {locale === 'en'
-                            ? `${selectedBatches.length} Exits`
-                            : allPositiveBatches
-                              ? `分 ${selectedBatches.length} 笔止盈`
-                              : `分 ${selectedBatches.length} 笔平仓`}
+                      {stillHolding ? (
+                        <span className="px-1.5 py-0.5 rounded border border-[var(--border)] text-[11px] font-medium text-[var(--accent)] whitespace-nowrap">
+                          {t(lifecycleStatus(selected.position_events!))}
                         </span>
-                      )}
+                      ) : selectedHasBatches ? (
+                        <span className="px-1.5 py-0.5 rounded border border-[var(--border)] text-[11px] font-medium text-[var(--fg-2)] whitespace-nowrap">
+                          {locale === 'en' ? `${selectedBatches.length} Exits` : `分 ${selectedBatches.length} 笔`}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="text-[12px] text-[var(--fg-3)] mt-1">
-                      {selected.position_events?.length ? (
-                        <span>{selected.open_time_str} · {fmtDuration(selected.holding_sec, locale)}</span>
-                      ) : (
-                        <>
-                          {(selected.qty || selected.contract_count) ? (
-                            <span className="sensitive">{fmtContractQty(selected, locale)} · </span>
-                          ) : null}
-                          {(selected.entry_leg.avg_price > 0 || selected.exit_leg.avg_price > 0) && (
-                            <span className="sensitive">
-                              {fmtPrice(selected.entry_leg.avg_price)} →{' '}
-                              {selectedHasBatches ? (locale === 'en' ? 'Avg ' : '均 ') : ''}
-                              {fmtPrice(selected.exit_leg.avg_price)} ·{' '}
-                            </span>
-                          )}
-                          {fmtDuration(selected.holding_sec, locale)}
-                          {selected.effective_relief_pct > 0
-                            ? ` · ${t('detail_relief_short')} ${selected.effective_relief_pct.toFixed(1)}%`
-                            : ''}
-                        </>
+                      {(selected.qty || selected.contract_count) ? (
+                        <span className="sensitive">{fmtContractQty(selected, locale)} · </span>
+                      ) : null}
+                      {(selected.entry_leg.avg_price > 0 || selected.exit_leg.avg_price > 0) && (
+                        <span className="sensitive">
+                          {fmtPrice(selected.entry_leg.avg_price)} →{' '}
+                          {selectedHasBatches ? (locale === 'en' ? 'Avg ' : '均 ') : ''}
+                          {fmtPrice(selected.exit_leg.avg_price)} ·{' '}
+                        </span>
                       )}
+                      {fmtDuration(selected.holding_sec, locale)}
+                      {selected.effective_relief_pct > 0
+                        ? ` · ${t('detail_relief_short')} ${selected.effective_relief_pct.toFixed(1)}%`
+                        : ''}
                     </div>
                   </div>
                   <div className="text-right">
                     <div className={`t-kpi sensitive whitespace-nowrap ${pnlTone(selected.net_pnl_usd)}`}>
-                      {formatDisplayKpiValue(cur.signedMoney(selected.net_pnl_usd, stillHolding ? 4 : undefined))}
+                      {formatDisplayKpiValue(cur.signedMoney(selected.net_pnl_usd))}
                     </div>
                     <div className="text-[12px] text-[var(--fg-3)] mt-0.5">
                       {selected.rebate_status === 'PENDING' ? t('detail_net_pending') : t(stillHolding ? 'lifecycle_current_net' : 'detail_net_after_rebate')}
@@ -990,31 +786,34 @@ export function TradesPage({
                   </div>
                 </div>
 
-                <PositionTimeline trade={selected}>
-                  {selectedHasBatches ? (
-                    <MultiBatchExecutionLedger trade={selected} batches={selectedBatches} />
-                  ) : (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-[var(--border)] py-3.5 border-b border-[var(--border)] gap-3 sm:gap-0">
-                      <LegFeeCard
-                        testId="entry-leg-fee-card"
-                        title={t('leg_entry')}
-                        netLabel={t('leg_entry_net')}
-                        leg={selected.entry_leg}
-                        padClass="sm:pr-4"
-                      />
-                      <LegFeeCard
-                        testId="exit-leg-fee-card"
-                        title={t('leg_exit')}
-                        netLabel={t('leg_exit_net')}
-                        leg={selected.exit_leg}
-                        padClass="pt-3 sm:pt-0 sm:pl-4"
-                      />
-                    </div>
-                  )}
-                </PositionTimeline>
+                {/* Always-visible Symmetric Entry | Exit Fee Cards (Maker/Taker mode, bps & per-leg rebate %) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-[var(--border)] py-3.5 border-b border-[var(--border)] gap-3 sm:gap-0">
+                  <LegFeeCard
+                    testId="entry-leg-fee-card"
+                    title={t('leg_entry')}
+                    netLabel={t('leg_entry_net')}
+                    leg={selected.entry_leg}
+                    feeDecimals={feeDec}
+                    padClass="sm:pr-4"
+                  />
+                  <LegFeeCard
+                    testId="exit-leg-fee-card"
+                    title={t('leg_exit')}
+                    subtitleBadge={
+                      selectedHasBatches
+                        ? locale === 'en'
+                          ? `${selectedBatches.length} exits`
+                          : `${selectedBatches.length} 笔汇总`
+                        : undefined
+                    }
+                    netLabel={t('leg_exit_net')}
+                    leg={selected.exit_leg}
+                    feeDecimals={feeDec}
+                    padClass="pt-3 sm:pt-0 sm:pl-4"
+                  />
+                </div>
 
-                <div className="otl-trade-settlement pt-3.5 space-y-1.5 text-[12.5px] tabular-nums">
-                  {selected.position_events?.length ? <h3 className="mb-2 text-[13px] font-semibold">{t('lifecycle_settlement')}</h3> : null}
+                <div data-testid="trade-settlement" className="pt-3.5 space-y-1.5 text-[12.5px] tabular-nums">
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
                     <span className={`font-medium sensitive ${pnlTone(selected.gross_pnl_usd)}`}>
@@ -1032,19 +831,19 @@ export function TradesPage({
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_total_fee')}</span>
                     <span className="sensitive">
-                      {cur.signedMoney(-selected.total_fee_usd, selectedHasBatches ? 4 : 3)}
+                      {cur.signedMoney(-selected.total_fee_usd, feeDec)}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
                     <span className="txt-pos sensitive">
-                      +{cur.money(selected.total_rebate_usd, selectedHasBatches ? 4 : 3)}
+                      +{cur.money(selected.total_rebate_usd, feeDec)}
                     </span>
                   </div>
                   <div className="flex justify-between pt-2 border-t border-[var(--border)] text-[13px] font-semibold">
                     <span>{t(stillHolding ? 'lifecycle_current_net' : 'wf_final_net')}</span>
                     <span className={`sensitive ${pnlTone(selected.net_pnl_usd)}`}>
-                      {cur.signedMoney(selected.net_pnl_usd, stillHolding ? 4 : undefined)}
+                      {cur.signedMoney(selected.net_pnl_usd)}
                     </span>
                   </div>
                   <PartialSettlement trade={selected} />
@@ -1056,7 +855,7 @@ export function TradesPage({
                           : '注：扣费前平台币抵扣已另省（不重复计入返佣）'}
                       </span>
                       <span className="txt-pos sensitive">
-                        +{cur.money(selected.total_discount_saved_usd, selectedHasBatches ? 4 : 3)}
+                        +{cur.money(selected.total_discount_saved_usd, feeDec)}
                       </span>
                     </div>
                   )}
@@ -1064,7 +863,7 @@ export function TradesPage({
               </div>
 
               {/* Journal Tags & Notes (kept outside key={selected.trade_id} to preserve synchronous drafts) */}
-              <div className="otl-trade-journal pt-3.5 border-t border-[var(--border)] space-y-2.5">
+              <div className="pt-3.5 border-t border-[var(--border)] space-y-2.5">
                 <div className="flex items-center justify-between">
                   <span className="text-[12px] font-medium text-[var(--fg-2)]">{t('journal_title')}</span>
                   <button
@@ -1163,6 +962,13 @@ export function TradesPage({
           )}
         </aside>
       </div>
+
+      {/* Full-Width Horizontal Position Timeline (ONLY for scale-out / partial / in-flight positions) */}
+      {selected && selectedScaleOut && (
+        <div className="px-4 sm:px-5 py-4 border-b border-[var(--border)] bg-[var(--surface-2)]/35">
+          <PositionTimeline trade={selected} horizontal />
+        </div>
+      )}
 
       {/* All-Time Equity & Commodity Perps Fee History */}
       <section className="py-6 space-y-3">

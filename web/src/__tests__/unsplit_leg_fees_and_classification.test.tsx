@@ -394,41 +394,42 @@ describe('Consolidated partial take-profit trade UI', () => {
       </I18nProvider>,
     )
 
-    // Left table keeps 1 clean row with inline circled batch trace + 4-decimal fees
+    // Left table keeps 1 clean compact row ("分 2 笔") with 2-decimal fees so PnL column is never clipped
     const parentRow = screen.getByTestId('trade-row-fut_ETH_USDT_1795705714_1795708860_long')
     expect(parentRow.textContent).toContain('分 2 笔')
-    expect(parentRow.textContent).toContain('①')
-    expect(parentRow.textContent).toContain('1,680.00')
-    expect(parentRow.textContent).toContain('+18.42')
-    expect(parentRow.textContent).toContain('②')
-    expect(parentRow.textContent).toContain('1,695.18')
-    expect(parentRow.textContent).toContain('+46.37')
-    expect(parentRow.textContent).toContain('进 -1.2305 · 出 -2.1802（-0.6189 / -1.5613）')
+    expect(parentRow.textContent).toContain('进 -1.23 · 出 -2.18')
+    expect(parentRow.textContent).toContain('+63.86')
     const tbody = parentRow.closest('tbody')!
     expect(within(tbody).getAllByRole('row')).toHaveLength(1)
 
-    // Right panel switches to Scheme A full-width execution ledger (Entry -> Exit #1 -> Exit #2)
-    const ledger = screen.getByTestId('multi-batch-ledger')
-    const entryRow = screen.getByTestId('entry-leg-fee-card')
-    const batch1Row = screen.getByTestId('exit-batch-row-1')
-    const batch2Row = screen.getByTestId('exit-batch-row-2')
-    expect(entryRow.textContent).toContain('开仓进场')
-    expect(entryRow.textContent).toContain('先扣 -1.2305')
-    expect(entryRow.textContent).toContain('+0.9844 (80%)')
-    expect(entryRow.textContent).toContain('-0.2461 U')
+    // Top-right inspector ALWAYS displays symmetric Entry | Exit fee cards with mode, bps & per-leg rebate %
+    const entryCard = screen.getByTestId('entry-leg-fee-card')
+    const exitCard = screen.getByTestId('exit-leg-fee-card')
+    expect(entryCard.textContent).toContain('限价挂单')
+    expect(entryCard.textContent).toContain('2.0 bps')
+    expect(entryCard.textContent).toContain('-1.2305 U')
+    expect(entryCard.textContent).toContain('+0.9844 U (80%)')
+    expect(exitCard.textContent).toContain('混合成交')
+    expect(exitCard.textContent).toContain('3.5 bps')
+    expect(exitCard.textContent).toContain('-2.1802 U')
+    expect(exitCard.textContent).toContain('+1.6192 U (74%)')
+
+    // Bottom full-width horizontal timeline renders per-batch mode, bps, rebate % & PnL cleanly
+    const strip = screen.getByTestId('scaleout-timeline-strip')
+    const batch1Row = within(strip).getByTestId('exit-batch-row-1')
+    const batch2Row = within(strip).getByTestId('exit-batch-row-2')
     expect(batch1Row.textContent).toContain('平仓第 1 笔')
     expect(batch1Row.textContent).toContain('限价挂单')
-    expect(batch1Row.textContent).toContain('先扣 -0.6189')
-    expect(batch1Row.textContent).toContain('+0.4951 (80%)')
-    expect(batch1Row.textContent).toContain('价差 +18.42 U')
-    expect(batch1Row.textContent).toContain('扣出场费后 +18.2962 U')
+    expect(batch1Row.textContent).toContain('-0.6189 U')
+    expect(batch1Row.textContent).toContain('+0.4951 U (80%)')
+    expect(batch1Row.textContent).toContain('+18.42 U')
+    expect(batch1Row.textContent).toContain('扣出场费后+18.30 U')
     expect(batch2Row.textContent).toContain('平仓第 2 笔')
     expect(batch2Row.textContent).toContain('止盈市价')
     expect(batch2Row.textContent).not.toContain('止损市价')
-    expect(batch2Row.textContent).toContain('先扣 -1.5613')
-    expect(batch2Row.textContent).toContain('+1.1241 (72%)')
-    expect(batch2Row.textContent).toContain('价差 +46.37 U')
-    expect(within(ledger).getByText('1,680.00').className).toContain('sensitive')
+    expect(batch2Row.textContent).toContain('-1.5613 U')
+    expect(batch2Row.textContent).toContain('+1.1241 U (72%)')
+    expect(batch2Row.textContent).toContain('+46.37 U')
     expect(screen.getByTestId('trade-detail-panel').textContent).toContain('-3.4106 U')
   })
 })
@@ -465,10 +466,32 @@ describe('Position lifecycle detail', () => {
   const page = (rows: ClosedTrade[]) => <TradesPage data={makeBaseDashboard(rows)} venueFilter="ALL"
     symbolFilter="ALL" onVenueChange={() => {}} onSymbolChange={() => {}} onSaveJournal={async () => {}} />
 
-  it('shows the actual inventory before each exit, both fees, time and the correct net in one position', () => {
+  it('keeps normal single-close trades clean without timeline clutter while showing entry/exit mode and rebate % directly', () => {
+    const singleClosed: ClosedTrade = {
+      ...trade,
+      trade_id: 'single-close',
+      is_partial_close: false,
+      entry_leg: { ...leg, mode_code: 'LIMIT_MAKER', fee_bps: 2.0, gross_fee_usd: 0.2, rebate_usd: 0.16, rebate_pct: 80, net_fee_usd: 0.04 },
+      exit_leg: { ...leg, role: 'TAKER', mode_code: 'MARKET_TAKER', fee_bps: 5.0, gross_fee_usd: 0.5, rebate_usd: 0.36, rebate_pct: 72, net_fee_usd: 0.14 },
+      position_events: [first, close],
+    }
+    render(page([singleClosed]))
+    expect(screen.queryByTestId('scaleout-timeline-strip')).toBeNull()
+    expect(screen.queryByRole('list', { name: '持仓时间线' })).toBeNull()
+    const row = screen.getByTestId('trade-row-single-close')
+    expect(row.textContent).not.toContain('已清仓')
+    const entry = screen.getByTestId('entry-leg-fee-card')
+    const exit = screen.getByTestId('exit-leg-fee-card')
+    expect(entry.textContent).toContain('限价挂单')
+    expect(entry.textContent).toContain('(80%)')
+    expect(exit.textContent).toContain('市价吃单')
+    expect(exit.textContent).toContain('(72%)')
+  })
+
+  it('shows the actual inventory before each exit, both fees, time and the correct net in full-width horizontal timeline', () => {
     render(page([trade]))
-    const panel = within(screen.getByTestId('trade-detail-panel'))
-    const timeline = panel.getByRole('list', { name: '持仓时间线' })
+    const strip = screen.getByTestId('scaleout-timeline-strip')
+    const timeline = within(strip).getByRole('list', { name: '持仓时间线' })
     const events = within(timeline).getAllByRole('listitem')
     expect(events.map(row => row.querySelector('h4')?.textContent)).toEqual(['开仓', '减仓', '加仓', '清仓'])
     expect(events[0].textContent).toContain('11-17 20:00:00')
@@ -479,12 +502,12 @@ describe('Position lifecycle detail', () => {
     expect(events[3].textContent).toContain('平仓前均价115.000')
     expect(events[3].textContent).toContain('剩余仓位0 ETH')
     expect(events[3].textContent).toContain('扣费后已实现+9.60')
-    expect(panel.getByText('已清仓')).toBeTruthy()
-    expect(panel.getByDisplayValue('risk journal')).toBeTruthy()
+    expect(within(strip).getByText('已清仓')).toBeTruthy()
+    expect(within(screen.getByTestId('trade-detail-panel')).getByDisplayValue('risk journal')).toBeTruthy()
     expect(within(events[1]).getByText(/9\.80/).className).toContain('sensitive')
   })
 
-  it('groups same-order fills into one opening and two exits with exact fees and expandable source quantities', () => {
+  it('groups same-order fills into one opening and two exits with 4-decimal aligned fees and expandable source fills', () => {
     const makeExit = (qty: number, price: number, fee: number, remaining: number, order: string, index: number) => ({
       ...reduce, action: remaining ? 'REDUCE' as const : 'CLOSE' as const, time_ms: reduce.time_ms + index,
       order_id: order, qty, price, remaining_qty: remaining, fee_usd: fee,
@@ -503,13 +526,13 @@ describe('Position lifecycle detail', () => {
     const orders = ledger.getAllByRole('listitem')
     expect(orders).toHaveLength(3)
     expect(orders.map(row => row.querySelector('h4')?.textContent)).toEqual(['开仓', '减仓', '清仓'])
-    expect(within(orders[1]).getByText('-0.618912 U')).toBeTruthy()
-    expect(within(orders[2]).getByText('-1.561256345 U')).toBeTruthy()
+    expect(within(orders[1]).getByText('-0.6189 U')).toBeTruthy()
+    expect(within(orders[2]).getByText('-1.5613 U')).toBeTruthy()
     const fills = within(orders[1]).getByText('3 笔成交').closest('details')!
     fireEvent.click(within(fills).getByText('3 笔成交'))
     expect(fills.open).toBe(true)
-    expect(within(fills).getByText('-0.226128 U')).toBeTruthy()
-    expect(within(fills).getByText('-0.056784 U')).toBeTruthy()
+    expect(within(fills).getByText('-0.2261 U')).toBeTruthy()
+    expect(within(fills).getByText('-0.0568 U')).toBeTruthy()
   })
 
   it('keeps nonadjacent and cross-midnight fills separate, and requires all components for an order total', () => {
@@ -532,23 +555,22 @@ describe('Position lifecycle detail', () => {
     expect(orders[2].textContent).toContain('已实现价差+20.00')
   })
 
-  it('keeps a missing fee and net unknown in historical order details and the collapsed fee summary', () => {
+  it('keeps a missing fee and net unknown in historical batch timeline', () => {
     const batch = { ...leg, batch_index: 1, qty: 1, gross_pnl_usd: 10, net_pnl_usd: 9.8,
       net_basis: 'round_trip' as const, gross_fee_usd: 0.1 }
     render(page([{ ...trade, position_events: [], exit_batches: [batch,
       { ...batch, batch_index: 2, gross_pnl_usd: null, fee_known: false, gross_fee_usd: 0, net_pnl_usd: null },
     ] }]))
-    expect(screen.getByTestId('trade-row-lifecycle').textContent).toContain('-0.1000 / 未知')
-    expect(screen.getByTestId('exit-batch-row-1').textContent).toContain('扣费后已实现 +9.80')
+    expect(screen.getByTestId('exit-batch-row-1').textContent).toContain('扣费后已实现+9.80 U')
     const unknown = screen.getByTestId('exit-batch-row-2')
-    expect(unknown.textContent).toContain('价差 未知')
-    expect(unknown.textContent).toContain('扣费后已实现 未知')
+    expect(unknown.textContent).toContain('已实现价差未知')
+    expect(unknown.textContent).toContain('扣费后已实现未知')
   })
 
   it('separates realized reductions from the entry fees carried by a remaining position', () => {
     const openTrade = { ...trade, position_events: [first, reduce, add] }
     render(page([openTrade]))
-    const settlement = screen.getByTestId('trade-detail-panel').querySelector('.otl-trade-settlement')!
+    const settlement = screen.getByTestId('trade-settlement')
     expect(settlement.textContent).toContain('已平部分扣费后合计+9.80')
     expect(settlement.textContent).toContain('剩余仓位分摊开仓费-0.2000')
   })
@@ -558,15 +580,16 @@ describe('Position lifecycle detail', () => {
       position_events: [first, { ...reduce, fee_usd: null, net_pnl_usd: null, gross_pnl_usd: 0 }] }
     render(page([partial, { ...trade, trade_id: 'reopen', position_events: [first] }]))
     fireEvent.click(screen.getByTestId('trade-row-partial'))
-    const panel = within(screen.getByTestId('trade-detail-panel'))
-    expect(panel.getByText('已减仓 · 仍持有')).toBeTruthy()
-    const rows = within(panel.getByRole('list', { name: '持仓时间线' })).getAllByRole('listitem')
+    const strip = within(screen.getByTestId('scaleout-timeline-strip'))
+    expect(strip.getByText('已减仓 · 仍持有')).toBeTruthy()
+    const rows = within(strip.getByRole('list', { name: '持仓时间线' })).getAllByRole('listitem')
     expect(rows[1].textContent).toContain('剩余仓位1 张')
     expect(rows[1].textContent).toContain('本笔手续费未知')
     expect(rows[1].textContent).toContain('扣费后已实现未知')
     expect(rows[1].textContent).toContain('已实现价差0.00')
     fireEvent.click(screen.getByTestId('trade-row-reopen'))
-    expect(panel.getByText('持仓中')).toBeTruthy()
-    expect(within(panel.getByRole('list', { name: '持仓时间线' })).getAllByRole('listitem')).toHaveLength(1)
+    const strip2 = within(screen.getByTestId('scaleout-timeline-strip'))
+    expect(strip2.getByText('持仓中')).toBeTruthy()
+    expect(within(strip2.getByRole('list', { name: '持仓时间线' })).getAllByRole('listitem')).toHaveLength(1)
   })
 })

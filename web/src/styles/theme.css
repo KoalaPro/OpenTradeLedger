@@ -1599,6 +1599,16 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 .otl-position-heading h4 { color: var(--fg); font-weight: 650; font-size: 13px; margin: 0; }
 .otl-position-heading > div > span { font-size: 12px; color: var(--fg-2); }
 .otl-position-heading time { font-size: 11px; color: var(--fg-3); white-space: nowrap; }
+.otl-position-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+}
 .otl-position-lifecycle dl {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1612,40 +1622,36 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
   border-top: 1px dashed var(--border-strong);
   padding-top: 6px;
 }
-.otl-position-fees {
-  border-block: 1px solid var(--border);
-  font-size: 12px;
+.otl-position-horizontal {
+  padding-top: 0;
 }
-.otl-position-fees > summary { justify-content: space-between; cursor: pointer; min-height: 36px; color: var(--fg-2); font-weight: 550; }
-.otl-position-fees summary::-webkit-details-marker { display: none; }
-.otl-position-fees[open] > summary svg { transform: rotate(180deg); }
+.otl-position-horizontal > header {
+  margin-bottom: 12px;
+}
+.otl-position-horizontal ol {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 12px;
+}
+.otl-position-horizontal li {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.otl-position-horizontal li:not(:last-child)::before {
+  display: none;
+}
+.otl-position-horizontal .otl-position-body {
+  padding: 0;
+}
 @container (max-width: 365px) {
   .otl-position-lifecycle li { column-gap: 7px; }
   .otl-position-heading { align-items: baseline; column-gap: 3px; }
   .otl-position-heading > div { column-gap: 5px; }
   .otl-position-lifecycle dl { column-gap: 4px; }
-  .otl-position-fees [data-testid^=exit-batch-row], .otl-position-fees [data-testid=entry-leg-fee-card] { flex-wrap: wrap; }
 }
 .otl-trade-inspector { scroll-margin-top: 92px; }
-@media (min-width: 1280px) {
-  .otl-single-lifecycle { display: block; }
-  .otl-single-lifecycle .otl-trade-master { border-right: 0; border-bottom: 1px solid var(--border); }
-  .otl-single-lifecycle .otl-trade-inspector {
-    position: static;
-    display: grid;
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-    grid-template-rows: auto auto auto 1fr;
-    align-items: start;
-    column-gap: 36px;
-    row-gap: 12px;
-  }
-  .otl-single-lifecycle .otl-trade-inspector > :first-child,
-  .otl-single-lifecycle .otl-trade-identity { grid-column: 1 / -1; }
-  .otl-single-lifecycle .otl-trade-body { display: contents; }
-  .otl-single-lifecycle .otl-position-lifecycle { grid-column: 1; grid-row: 3 / 5; }
-  .otl-single-lifecycle .otl-trade-settlement,
-  .otl-single-lifecycle .otl-trade-journal { grid-column: 2; }
-}
 .otl-position-fills { margin-top: 5px; }
 .otl-position-fills summary {
   display: inline-flex;
