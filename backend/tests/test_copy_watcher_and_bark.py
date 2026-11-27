@@ -350,7 +350,7 @@ def test_legacy_notification_settings_migrate_to_bark_only(tmp_path: Path, with_
         assert "Bark" in response.json()["detail_zh"]
 
 
-def test_unbound_watcher_allows_monitoring_without_enabling_mobile_alerts(tmp_path: Path):
+def test_unbound_watcher_allows_monitoring_without_enabling_mobile_alerts(tmp_path: Path, monkeypatch):
     client = TestClient(create_app(data_dir=tmp_path, demo_mode=False, enable_background_sync=False))
     assert client.post("/api/v1/auth/skip").status_code == 200
     route = "/api/v1/extensions/copy-watcher"
@@ -360,6 +360,10 @@ def test_unbound_watcher_allows_monitoring_without_enabling_mobile_alerts(tmp_pa
     url = f"{route}/targets/{pid}"
     assert client.patch(url, json={"slot_alert": True}).status_code == 400
     assert client.patch(url, json={"enabled": False}).status_code == 200
+    async def accept_bark(*args, **kwargs):
+        return {"ok": True, "sent": ["bark"], "errors": {}}
+
+    monkeypatch.setattr("opentradeledger.core.copy_watcher.dispatch_notification", accept_bark)
     client.put("/api/v1/settings", json={"notifications": {"bark_push_key": "demo-device"}})
     target = client.patch(url, json={"trade_alert": True}).json()["items"][0]
     assert target["trade_alert"] and not target["slot_alert"] and not target["enabled"]
@@ -401,3 +405,93 @@ def test_inflight_slot_poll_respects_saved_alert_switch(tmp_path: Path):
             assert not sent
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("path,method", [
+    ("/api/v1/extensions/copy-watcher/test-notify", "post"),
+    ("/api/v1/settings", "put"),
+])
+@pytest.mark.parametrize("old_key", ["", "working"])
+def test_failed_new_bark_destination_never_becomes_active(tmp_path, monkeypatch, path, method, old_key):
+    store = LedgerStore(tmp_path)
+    prefs = store.get_preferences()
+    prefs.notifications.bark_push_key = old_key
+    store.save_preferences(prefs)
+    calls = []
+
+    async def reject(settings, **kwargs):
+        calls.append((settings.bark_server_url, settings.bark_push_key))
+        return {"ok": False, "sent": [], "errors": {"bark": "Rejected device"}}
+
+    monkeypatch.setattr("opentradeledger.core.copy_watcher.dispatch_notification", reject)
+    app = create_app(data_dir=tmp_path, enable_background_sync=False, require_auth=False, auto_prompt_setup=False)
+    with TestClient(app) as client:
+        result = client.request(method, path, json={"notifications": {"bark_push_key": "https://new.test/bad/push"}})
+        assert result.status_code == 502
+        assert calls == [("https://new.test", "bad")]
+        saved = LedgerStore(tmp_path).get_preferences().notifications
+        assert saved == prefs.notifications
+        assert client.get("/api/v1/extensions/copy-watcher").json()["channels"]["bark"] is bool(old_key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("newest", ["clear", "replace"])
+async def test_inflight_bark_receipt_cannot_revert_a_later_edit(tmp_path, monkeypatch, newest):
+    store = LedgerStore(tmp_path)
+    initial = store.get_preferences()
+    initial.notifications.bark_push_key = "working"
+    store.save_preferences(initial)
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def deliver(request):
+        key = request.url.path.split("/")[1]
+        calls.append(key)
+        if key == "slow-device":
+            started.set()
+            await release.wait()
+        return httpx.Response(200, json={"code": 200})
+
+    async def send(settings, **kwargs):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(deliver)) as mock_bark:
+            return await dispatch_notification(settings, **{**kwargs, "client": mock_bark})
+
+    monkeypatch.setattr("opentradeledger.core.copy_watcher.dispatch_notification", send)
+    app = create_app(data_dir=tmp_path, enable_background_sync=False, require_auth=False, auto_prompt_setup=False)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://local.test") as client:
+        route = "/api/v1/settings"
+        slow = asyncio.create_task(client.post(
+            "/api/v1/extensions/copy-watcher/test-notify", json={"notifications": {"bark_push_key": "slow-device"}},
+        ))
+        await asyncio.wait_for(started.wait(), timeout=3)
+        assert store.get_preferences().notifications.bark_push_key == "working"
+        patch = {"clear_bark_push_key": True} if newest == "clear" else {"bark_push_key": "new-device"}
+        assert (await client.put(route, json={"notifications": patch})).status_code == 200
+        release.set()
+        assert (await slow).status_code == 409
+        assert store.get_preferences().notifications.bark_push_key == ("" if newest == "clear" else "new-device")
+        assert calls == (["slow-device"] if newest == "clear" else ["slow-device", "new-device"])
+
+
+def test_bark_host_change_needs_explicit_key_and_preserves_existing_on_empty_input(tmp_path, monkeypatch):
+    store = LedgerStore(tmp_path)
+    prefs = store.get_preferences()
+    prefs.notifications.bark_push_key = "old-device"
+    store.save_preferences(prefs)
+    sent = []
+
+    async def accept(settings, **kwargs):
+        sent.append((settings.bark_server_url, settings.bark_push_key))
+        return {"ok": True, "sent": ["bark"], "errors": {}}
+
+    monkeypatch.setattr("opentradeledger.core.copy_watcher.dispatch_notification", accept)
+    client = TestClient(create_app(data_dir=tmp_path, enable_background_sync=False, require_auth=False, auto_prompt_setup=False))
+    url = "/api/v1/settings"
+    assert client.put(url, json={"notifications": {"bark_push_key": ""}}).status_code == 200
+    assert client.put(url, json={"notifications": {"bark_server_url": "https://different.test"}}).status_code == 400
+    assert not sent and store.get_preferences().notifications == prefs.notifications
+    saved = client.put(url, json={"notifications": {"bark_server_url": "https://different.test/pasted"}})
+    assert saved.status_code == 200 and saved.json()["notifications"]["bark_push_key"] == ""
+    assert sent == [("https://different.test", "pasted")]
+    current = LedgerStore(tmp_path).get_preferences().notifications
+    assert current.bark_server_url == "https://different.test" and current.bark_push_key == "pasted"

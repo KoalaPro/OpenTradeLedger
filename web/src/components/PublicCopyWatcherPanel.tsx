@@ -235,13 +235,12 @@ export function PublicCopyWatcherPanel({ onGoConfigureBark }: PublicCopyWatcherP
     setTestingId(portfolioId)
     setFeedback(null)
     try {
-      const res = await api.testNotify({ portfolio_id: portfolioId })
-      const sentStr = (res.sent || []).join(', ')
+      await api.testNotify({ portfolio_id: portfolioId })
       flash(
         'ok',
         isZh
-          ? `测试提醒已送达（${sentStr}），在手机上点击通知即可验证直跳币安 App`
-          : `Test alert sent (${sentStr}) · tap notification on mobile to open Binance App`,
+          ? 'Bark 已接收测试提醒，请在手机上点击通知以验证币安 App 跳转'
+          : 'Bark accepted the test alert. Tap the notification on your phone to open Binance.',
       )
     } catch (err) {
       flash('err', err instanceof Error ? err.message : 'Test push failed')

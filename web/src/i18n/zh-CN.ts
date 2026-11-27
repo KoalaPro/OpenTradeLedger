@@ -212,6 +212,7 @@ export const zhCN = {
   polarity_cn: '红盈绿亏',
   polarity_global: '绿盈红亏',
   set_currency: '计价与折算币种',
+  set_fx_cached: '上次成功获取的汇率',
   set_fx_live: '实时参考汇率',
   set_fx_offline: '离线参考汇率',
   set_privacy_default: '默认开启隐私打码',

@@ -586,7 +586,7 @@ def test_warnings_pipeline_disabled_account_exclusion_crash_isolation_and_second
     assert dummy_bundle.trades[0]["note"] == "适配器已通过base_rk恢复的副账号笔记"
 
 
-def test_settings_secret_clear_forged_cookie_rejection_proxy_rate_limit_readonly_prefix_and_one_way_copy_watcher(tmp_path: Path) -> None:
+def test_settings_secret_clear_forged_cookie_rejection_proxy_rate_limit_readonly_prefix_and_one_way_copy_watcher(tmp_path: Path, monkeypatch) -> None:
     """Verify settings secret clearing, forged cookie rejection, reverse-proxy rate limit & Secure cookie, readonly prefix boundary, and BOTH copy positions."""
     # 1. Forged 4-segment session token must be rejected even before password setup (`enabled=False`)
     auth_mgr = LocalAuthManager(tmp_path / "auth_uninit")
@@ -638,6 +638,10 @@ def test_settings_secret_clear_forged_cookie_rejection_proxy_rate_limit_readonly
     assert legit_login.status_code == 200
     assert "secure" in legit_login.headers.get("set-cookie", "").lower()
 
+    async def accept_bark(*args, **kwargs):
+        return {"ok": True, "sent": ["bark"], "errors": {}}
+
+    monkeypatch.setattr("opentradeledger.core.copy_watcher.dispatch_notification", accept_bark)
     # 3. Settings secret clearing (`clear_ai_api_key` / `__CLEAR__` & `clear_bark_push_key` / `__CLEAR__`)
     s_set = legit_user.put(
         "/api/v1/settings",

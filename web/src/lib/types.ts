@@ -77,6 +77,7 @@ export interface TradeLegFee {
 
 export interface TradeExitBatch {
   batch_index: number
+  order_id?: string
   net_basis?: 'exit_only' | 'round_trip'
   qty: number | null
   contract_count?: number
@@ -108,6 +109,11 @@ export interface PositionEvent {
   avg_entry_price: number | null
   cost_basis_price: number | null
   fee_usd: number | null
+  role?: 'MAKER' | 'TAKER' | 'MIXED'
+  rebate_status?: 'SETTLED' | 'PENDING'
+  fee_bps?: number | null
+  rebate_usd?: number | null
+  net_fee_usd?: number | null
   gross_pnl_usd: number | null
   allocated_entry_fee_usd: number | null
   net_pnl_usd: number | null
@@ -134,6 +140,9 @@ export interface ClosedTrade {
   gross_pnl_usd: number
   funding_pnl_usd: number
   book_pnl_usd: number
+  net_pnl_known?: boolean
+  settlement_adjustment_usd?: number
+  total_fee_known?: boolean
   total_fee_usd: number
   total_rebate_usd: number
   total_discount_saved_usd: number
@@ -201,6 +210,7 @@ export interface OpenPosition {
 }
 
 export interface VenueFeeRow {
+  total_fee_known?: boolean
   venue_id: string
   display_name: string
   display_name_zh?: string
@@ -255,6 +265,8 @@ export interface DashboardData {
   available_months: string[]
   available_symbols: string[]
   summary: {
+    net_pnl_known?: boolean
+    total_fee_known?: boolean
     total_equity_usd: number
     net_principal_usd: number
     whole_net_pnl_usd: number
@@ -329,6 +341,8 @@ export interface DashboardData {
     }>
   }>
   symbol_attribution: Array<{
+    net_pnl_known?: boolean
+    total_fee_known?: boolean
     venue_id: string
     venue_name: string
     venue_name_zh?: string
@@ -480,6 +494,8 @@ export interface DashboardData {
         change: string
       }>
       perpetuals: Array<{
+        total_fee_known?: boolean
+        net_pnl_known?: boolean
         venue_id: string
         venue_name: string
         venue_name_zh?: string

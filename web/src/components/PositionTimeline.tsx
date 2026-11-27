@@ -2,8 +2,9 @@ import { ArrowDownLeft, ArrowUpRight, Check, ChevronDown, Plus } from 'lucide-re
 import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n/zh-CN'
 import { useCurrency } from '../lib/currency'
+import { formatExecutionFee } from '../lib/executionFee'
 import { fmtContractQty, fmtLegRate, fmtPrice, pnlTone } from '../lib/format'
-import { isPositionExit, positionOrders, sumKnown } from '../lib/positionEvents'
+import { isPositionExit, positionOrders, sumAmounts, sumKnown } from '../lib/positionEvents'
 import type { ClosedTrade, Locale, PositionEvent, TradeExitBatch } from '../lib/types'
 
 const actions = {
@@ -57,7 +58,7 @@ function eventTime(event: PositionEvent, milliseconds = false) {
 }
 
 function Metric({ label, value, tone = '' }: { label: string; value: string; tone?: string }) {
-  return <div><dt>{label}</dt><dd className={`sensitive ${tone}`}>{value}</dd></div>
+  return <div><dt>{label}</dt><dd data-wide={value.length >= 13 || undefined} className={`sensitive ${tone}`}>{value}</dd></div>
 }
 
 function usePositionCash() {
@@ -66,7 +67,7 @@ function usePositionCash() {
   const unknown = t('lifecycle_unknown')
   return (value: number | null, fee = false) => {
     if (value == null) return unknown
-    return cur.signedMoney(fee ? -value : value, fee ? 4 : 2)
+    return fee ? formatExecutionFee(cur, -value) : cur.signedMoney(value, 2)
   }
 }
 
@@ -100,7 +101,7 @@ export function PartialSettlement({ trade }: { trade: ClosedTrade }) {
       </div>
       <div className="flex justify-between gap-2">
         <span className="text-[var(--fg-2)]">{t('lifecycle_carried_fee')}</span>
-        <span className="sensitive">{cash(entryFees == null || allocated == null ? null : entryFees - allocated, true)}</span>
+        <span className="sensitive">{cash(sumAmounts([entryFees, allocated == null ? null : -allocated]), true)}</span>
       </div>
     </div>
   )
@@ -130,71 +131,59 @@ function EventMetrics({ event, trade }: { event: PositionEvent; trade: ClosedTra
   )
 }
 
-interface OrderExecutionMeta {
-  modeCode: string
-  feeKnown: boolean
-  feeBps: number | null
-  grossFeeUsd: number
-  rebateUsd: number
-  rebatePct: number
-  discountSavedUsd: number
-  netFeeUsd: number
-}
+type FeeSource = ClosedTrade['entry_leg'] | TradeExitBatch
 
-function resolveOrderMeta(
-  order: PositionEvent,
-  entryOrderCount: number,
-  exitIndex: number,
-  exitOrderCount: number,
-  trade: ClosedTrade,
-): OrderExecutionMeta | null {
-  if (!isPositionExit(order)) {
-    if (entryOrderCount !== 1) return null
-    const en = trade.entry_leg
-    return {
-      modeCode: en.mode_code,
-      feeKnown: en.fee_known !== false,
-      feeBps: en.fee_bps,
-      grossFeeUsd: en.gross_fee_usd,
-      rebateUsd: en.rebate_usd,
-      rebatePct: en.rebate_pct,
-      discountSavedUsd: en.discount_saved_usd,
-      netFeeUsd: en.net_fee_usd,
-    }
+function orderFeeSource(order: PositionEvent, peers: PositionEvent[], trade: ClosedTrade): FeeSource | undefined {
+  const exit = isPositionExit(order)
+  if (!exit) {
+    // While the position is open, the parent entry leg may cover only allocated fees.
+    return peers.length === 1 && trade.position_events?.at(-1)?.action === 'CLOSE' ? trade.entry_leg : undefined
   }
   const batches = trade.exit_batches ?? []
-  let matched: TradeExitBatch | undefined
-  if (batches.length > 0 && batches.length === exitOrderCount) {
-    matched = batches[exitIndex]
-  } else if (batches.length > 0 && order.time_ms > 0) {
-    matched = batches.find(b => Math.abs(b.time_ms - order.time_ms) <= 5000)
+  if (batches.length && order.order_id) {
+    const matches = batches.filter(batch => batch.order_id === order.order_id)
+    if (matches.length === 1 && peers.filter(peer => peer.order_id === order.order_id).length === 1) return matches[0]
   }
-  if (matched) {
-    return {
-      modeCode: matched.mode_code,
-      feeKnown: matched.fee_known !== false,
-      feeBps: matched.fee_bps,
-      grossFeeUsd: matched.gross_fee_usd,
-      rebateUsd: matched.rebate_usd,
-      rebatePct: batchRebatePct(matched),
-      discountSavedUsd: matched.discount_saved_usd,
-      netFeeUsd: matched.net_fee_usd,
-    }
-  }
-  if (exitOrderCount === 1) {
-    const ex = trade.exit_leg
-    return {
-      modeCode: ex.mode_code,
-      feeKnown: ex.fee_known !== false,
-      feeBps: ex.fee_bps,
-      grossFeeUsd: ex.gross_fee_usd,
-      rebateUsd: ex.rebate_usd,
-      rebatePct: ex.rebate_pct,
-      discountSavedUsd: ex.discount_saved_usd,
-      netFeeUsd: ex.net_fee_usd,
-    }
-  }
-  return null
+  if (peers.length === 1) return trade.exit_leg
+  // Historical batches without an ID can still be identified by exact time and size.
+  const matches = batches.filter(batch => !batch.order_id && batch.time_ms === order.time_ms &&
+    (order.qty_unit === 'contracts' ? batch.contract_count : batch.qty) === order.qty)
+  const unambiguous = peers.filter(peer => peer.time_ms === order.time_ms && peer.qty === order.qty && peer.qty_unit === order.qty_unit).length === 1
+  return matches.length === 1 && unambiguous ? matches[0] : undefined
+}
+
+function ExecutionTerms({ event, source }: { event: PositionEvent; source?: FeeSource }) {
+  const { locale, t } = useI18n()
+  const cur = useCurrency()
+  const en = locale === 'en'
+  const sourceMode = source?.mode_code
+  const role = event.role
+  const mode = sourceMode && sourceMode !== 'UNKNOWN' && (!role || source?.role === role)
+    ? modeLabel(sourceMode, t)
+    : role === 'MAKER' ? (en ? 'Maker' : '挂单 Maker')
+    : role === 'TAKER' ? (en ? 'Taker' : '吃单 Taker')
+    : role === 'MIXED' ? t('mode_MIXED') : t('mode_UNKNOWN')
+  const feeSource = source?.fee_known === false || event.fee_usd == null ? undefined : source
+  const rebate = event.rebate_usd ?? feeSource?.rebate_usd
+  const net = event.net_fee_usd ?? feeSource?.net_fee_usd
+  const rate = event.fee_bps ?? feeSource?.fee_bps ?? null
+  const gross = event.fee_usd
+  const pending = (event.rebate_status ?? (source && 'rebate_status' in source ? source.rebate_status : undefined)) === 'PENDING'
+  return (
+    <div className="otl-position-mode">
+      <span>{mode} · {fmtLegRate(rate, locale)}</span>
+      <span className="sensitive">
+        {rebate == null ? (en ? 'Rebate unknown' : '返佣未知') : (
+          <span className={rebate > 0 ? 'txt-pos' : undefined}>
+            {pending ? (en ? 'Est. rebate ' : '预估返 ') : (en ? 'Reb ' : '返 ')}{formatExecutionFee(cur, rebate)}
+            {rebate > 0 && gross != null && gross > 0 ? ` (${(rebate / gross * 100).toFixed(0)}%)` : ''}
+          </span>
+        )}
+        {' · '}
+        {en ? 'Net ' : '净 '}{net == null ? t('lifecycle_unknown') : formatExecutionFee(cur, -net)}
+      </span>
+    </div>
+  )
 }
 
 function BatchOnlyTimelineStrip({
@@ -246,19 +235,19 @@ function BatchOnlyTimelineStrip({
               {enUnknown ? t('leg_fee_unknown') : `${modeLabel(en.mode_code, t)} · ${fmtLegRate(en.fee_bps, locale)}`}
             </div>
             <dl>
-              <Metric label={t('leg_gross_fee')} value={enUnknown ? t('leg_fee_unknown') : cur.signedMoney(-en.gross_fee_usd, 4)} />
+              <Metric label={t('leg_gross_fee')} value={enUnknown ? t('leg_fee_unknown') : formatExecutionFee(cur, -en.gross_fee_usd)} />
               <Metric
                 label={t('leg_rebate_disc')}
                 value={
                   enUnknown
                     ? '—'
                     : en.rebate_usd > 0
-                      ? `+${cur.money(en.rebate_usd, 4)}${en.gross_fee_usd > 0 ? ` (${en.rebate_pct.toFixed(0)}%)` : ''}`
+                      ? `${formatExecutionFee(cur, en.rebate_usd)}${en.gross_fee_usd > 0 ? ` (${en.rebate_pct.toFixed(0)}%)` : ''}`
                       : cur.money(0, 4)
                 }
                 tone={!enUnknown && en.rebate_usd > 0 ? 'txt-pos' : ''}
               />
-              <Metric label={t('leg_entry_net')} value={enUnknown ? '—' : cur.signedMoney(-en.net_fee_usd, 4)} />
+              <Metric label={t('leg_entry_net')} value={enUnknown ? '—' : formatExecutionFee(cur, -en.net_fee_usd)} />
             </dl>
           </div>
         </li>
@@ -294,19 +283,19 @@ function BatchOnlyTimelineStrip({
                     : `${modeLabel(b.mode_code, t)}${b.fee_bps != null ? ` · ${fmtLegRate(b.fee_bps, locale)}` : ''}`}
                 </div>
                 <dl>
-                  <Metric label={t('leg_gross_fee')} value={bUnknown ? t('leg_fee_unknown') : cur.signedMoney(-b.gross_fee_usd, 4)} />
+                  <Metric label={t('leg_gross_fee')} value={bUnknown ? t('leg_fee_unknown') : formatExecutionFee(cur, -b.gross_fee_usd)} />
                   <Metric
                     label={t('leg_rebate_disc')}
                     value={
                       bUnknown
                         ? '—'
                         : b.rebate_usd > 0
-                          ? `+${cur.money(b.rebate_usd, 4)}${b.gross_fee_usd > 0 ? ` (${rebPct.toFixed(0)}%)` : ''}`
+                          ? `${formatExecutionFee(cur, b.rebate_usd)}${b.gross_fee_usd > 0 ? ` (${rebPct.toFixed(0)}%)` : ''}`
                           : cur.money(0, 4)
                     }
                     tone={!bUnknown && b.rebate_usd > 0 ? 'txt-pos' : ''}
                   />
-                  <Metric label={t('leg_exit_net')} value={bUnknown ? '—' : cur.signedMoney(-b.net_fee_usd, 4)} />
+                  <Metric label={t('leg_exit_net')} value={bUnknown ? '—' : formatExecutionFee(cur, -b.net_fee_usd)} />
                 </dl>
                 <dl className="otl-position-realized">
                   <Metric
@@ -337,7 +326,6 @@ export function PositionTimeline({
   horizontal?: boolean
 }) {
   const { t, locale } = useI18n()
-  const cur = useCurrency()
   const events = trade.position_events ?? []
   const batches = trade.exit_batches && trade.exit_batches.length > 1 ? trade.exit_batches : []
 
@@ -349,9 +337,8 @@ export function PositionTimeline({
   }
 
   const orders = positionOrders(events)
-  const entryOrderCount = orders.filter(({ order }) => !isPositionExit(order)).length
-  const exitOrderCount = orders.filter(({ order }) => isPositionExit(order)).length
-  let exitCursor = 0
+  const entries = orders.map(group => group.order).filter(order => !isPositionExit(order))
+  const exits = orders.map(group => group.order).filter(isPositionExit)
 
   return (
     <section
@@ -373,9 +360,7 @@ export function PositionTimeline({
       <ol aria-label={t('lifecycle')}>
         {orders.map(({ order, fills }, index) => {
           const { label, icon: Icon } = actions[order.action]
-          const isExit = isPositionExit(order)
-          const curExitIdx = isExit ? exitCursor++ : -1
-          const meta = resolveOrderMeta(order, entryOrderCount, curExitIdx, exitOrderCount, trade)
+          const source = orderFeeSource(order, isPositionExit(order) ? exits : entries, trade)
           return (
             <li key={`${order.order_id}-${order.time_ms}-${index}`} data-action={order.action}>
               <span className="otl-position-icon" aria-hidden="true"><Icon size={13} strokeWidth={2} /></span>
@@ -387,30 +372,7 @@ export function PositionTimeline({
                   </div>
                   <time title="UTC+8">{eventTime(order)}</time>
                 </div>
-                {meta && (
-                  <div className="otl-position-mode">
-                    <span>
-                      {!meta.feeKnown
-                        ? t('leg_fee_unknown')
-                        : `${modeLabel(meta.modeCode, t)}${meta.feeBps != null ? ` · ${fmtLegRate(meta.feeBps, locale)}` : ''}`}
-                    </span>
-                    {meta.feeKnown && (
-                      <span className="sensitive">
-                        {meta.rebateUsd > 0 ? (
-                          <>
-                            <span className="txt-pos">
-                              {locale === 'en' ? 'Reb ' : '返 '}+{cur.plainMoney(meta.rebateUsd, 4)}
-                              {meta.grossFeeUsd > 0 ? ` (${meta.rebatePct.toFixed(0)}%)` : ''}
-                            </span>
-                            {' · '}
-                          </>
-                        ) : null}
-                        {locale === 'en' ? 'Net ' : '净 '}
-                        {cur.signedMoney(-meta.netFeeUsd, 4)}
-                      </span>
-                    )}
-                  </div>
-                )}
+                <ExecutionTerms event={order} source={source} />
                 <EventMetrics event={order} trade={trade} />
                 {fills.length > 1 && (
                   <details className="otl-position-fills">
@@ -422,6 +384,7 @@ export function PositionTimeline({
                             <span className="sensitive">{quantity(fill.qty, fill, trade, locale)} @ {fmtPrice(fill.price)}</span>
                             <time title="UTC+8">{eventTime(fill, true)}</time>
                           </div>
+                          <ExecutionTerms event={fill} />
                           <EventMetrics event={fill} trade={trade} />
                         </div>
                       ))}

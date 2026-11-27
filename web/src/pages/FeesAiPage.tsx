@@ -26,6 +26,9 @@ function FeeRateCell({ row, side }: { row: VenueFeeRow; side: 'maker' | 'taker' 
       </span>
     )
   }
+  if (row.total_fee_known === false) {
+    return <span className="text-[var(--fg-3)]">{isZh ? '费用未核全' : 'Incomplete fees'}</span>
+  }
   if (source === 'unknown' || row[`${side}_bps_known`] === false || row.trade_count === 0) {
     const blended = side === 'taker' && row.blended_net_bps != null && row.blended_net_bps !== 0
     return (
@@ -157,7 +160,7 @@ export function FeesAiPage({
             <h2 className="t-h2">{t('fee_matrix_title')}</h2>
             <p className="m-0 text-[12px] text-[var(--fg-3)] mt-0.5">{t('fee_matrix_sub')}</p>
           </div>
-          {data.summary.potential_maker_savings_usd > 0 && (
+          {data.summary.total_fee_known !== false && data.summary.potential_maker_savings_usd > 0 && (
             <span className="text-[12px] text-[var(--fg-2)] whitespace-nowrap sensitive">
               {t('maker_savings_badge')}:{' '}
               <strong className="font-semibold txt-pos">
@@ -208,14 +211,14 @@ export function FeesAiPage({
                   <td className="text-right whitespace-nowrap sensitive">
                     {row.rebate_usd > 0 ? (
                       <span className="txt-pos">
-                        +{cur.money(row.rebate_usd)}{row.gross_fee_usd > 0 && ` (${row.rebate_pct.toFixed(1)}%)`}
+                        +{cur.money(row.rebate_usd)}{row.total_fee_known !== false && row.gross_fee_usd > 0 && ` (${row.rebate_pct.toFixed(1)}%)`}
                       </span>
                     ) : (
                       <span className="text-[var(--fg-3)]">—</span>
                     )}
                   </td>
                   <td className="text-right font-semibold whitespace-nowrap">
-                    {row.trade_count > 0 && row.gross_fee_usd + row.discount_saved_usd > 0
+                    {row.total_fee_known !== false && row.trade_count > 0 && row.gross_fee_usd + row.discount_saved_usd > 0
                       ? `${row.combined_relief_pct.toFixed(1)}%`
                       : '—'}
                   </td>

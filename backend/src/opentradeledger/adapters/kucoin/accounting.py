@@ -122,11 +122,15 @@ def build_kucoin_venue_ledger(
         raw_qty = float(pos.get("currentQty") or 0.0)
         if abs(raw_qty) <= 0:
             continue
-        mult = abs(float(pos.get("multiplier") or 1.0))
-        qty = abs(raw_qty) * mult
+        linear = str(pos.get("symbol") or "").upper().endswith(("USDTM", "USDCM"))
+        mult = abs(float(pos.get("multiplier") or 0)) if linear else 0.0
+        qty = abs(raw_qty) * mult if mult else None
         sym = normalize_kucoin_symbol(str(pos.get("symbol") or ""))
         upnl = round(float(pos.get("unrealisedPnl") or 0.0), 2)
-        notional = abs(float(pos.get("markValue") or (qty * float(pos.get("markPrice") or 0.0))))
+        mark_px = float(pos.get("markPrice") or 0)
+        notional = abs(float(pos.get("markValue") or (qty or 0) * mark_px)) if linear else 0.0
+        if qty is None and mark_px > 0 and notional > 0:
+            qty = notional / mark_px
         lev = float(pos.get("realLeverage") or pos.get("leverage") or 1.0)
         open_positions.append(
             {

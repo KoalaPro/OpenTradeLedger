@@ -727,7 +727,8 @@ def normalize_htx_closed_trades(
             dedup_matches[htx_match_unique_key(m_row, fallback_idx=idx_m)] = m_row
     unique_matches = list(dedup_matches.values())
 
-    total_fees_raw = sum(abs(float(m.get("trade_fee") or 0.0)) for m in unique_matches if float(m.get("trade_fee") or 0.0) < 0)
+    total_fees_raw = sum(max(0.0, -(usd_fee(m.get("trade_fee"), m.get("fee_asset") or "USDT") or 0.0))
+                         for m in unique_matches)
     rebate_ratio = min(0.95, rebate_sum / total_fees_raw) if total_fees_raw > 0 and rebate_sum > 0 else 0.0
 
     sorted_matches = sorted(
@@ -755,6 +756,8 @@ def normalize_htx_closed_trades(
         en_reb: float,
         ex_reb: float,
         en_known: bool,
+        ex_known: bool,
+        net_known: bool,
         en_makers: bool,
         en_takers: bool,
         ex_makers: bool,
@@ -786,6 +789,8 @@ def normalize_htx_closed_trades(
         en_mode = "MIXED" if (en_makers and en_takers) else ("LIMIT_MAKER" if en_makers else "MARKET_TAKER")
         ex_mode = "MIXED" if (ex_makers and ex_takers) else ("LIMIT_MAKER" if ex_makers else "MARKET_TAKER")
 
+        if not net_known:
+            book_pnl = net_pnl = 0.0
         records.append(
             {
                 **cycle_journal_keys(journal_keys or [f"htx_{mid_id}_{close_ms}"], is_partial),
@@ -803,10 +808,12 @@ def normalize_htx_closed_trades(
                 "funding_pnl_usd": round(funding_pnl, 4),
                 "funding_by_day": dated_cash(funding_receipts),
                 "book_pnl_usd": round(book_pnl, 4),
+                "total_fee_known": net_known,
+                "net_pnl_known": net_known,
                 "total_fee_usd": round(total_fee, 4),
                 "total_rebate_usd": round(total_rebate, 4),
                 "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(max(0.0, total_fee - total_rebate), 4),
+                "net_fee_usd": round(total_fee - total_rebate, 4),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
                 "is_partial_close": is_partial,
@@ -823,15 +830,15 @@ def normalize_htx_closed_trades(
                     "discount_asset": "",
                     "rebate_usd": round(en_reb, 4),
                     "rebate_pct": round((en_reb / en_fee) * 100.0, 2) if en_fee > 0 else (100.0 if en_reb > 0 else 0.0),
-                    "net_fee_usd": round(max(0.0, en_fee - en_reb), 4),
+                    "net_fee_usd": round(en_fee - en_reb, 4),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
                 "exit_leg": {
                     "role": "MAKER" if ex_maker else "TAKER",
                     "mode_code": ex_mode,
-                    "fee_known": True,
-                    "fee_bps": round((ex_fee / ex_notional) * 10_000, 2) if ex_notional > 0 else 0.0,
+                    "fee_known": ex_known,
+                    "fee_bps": round((ex_fee / ex_notional) * 10_000, 2) if ex_known and ex_notional > 0 else None,
                     "time_ms": close_ms,
                     "avg_price": round(ex_px, 6),
                     "notional_usd": round(ex_notional, 2),
@@ -840,7 +847,7 @@ def normalize_htx_closed_trades(
                     "discount_asset": "",
                     "rebate_usd": round(ex_reb, 4),
                     "rebate_pct": round((ex_reb / ex_fee) * 100.0, 2) if ex_fee > 0 else (100.0 if ex_reb > 0 else 0.0),
-                    "net_fee_usd": round(max(0.0, ex_fee - ex_reb), 4),
+                    "net_fee_usd": round(ex_fee - ex_reb, 4),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -890,7 +897,8 @@ def normalize_htx_closed_trades(
                 bpx = (bnot / bq) if bq > 0 else float(g_e[-1]["px"])
                 bfee = sum(float(y["fee_paid"]) for y in g_e)
                 breb = sum(float(y["maker_rebate"]) for y in g_e) + (bfee * rebate_ratio)
-                bnetf = max(0.0, bfee - breb)
+                batch_known = all(y["fee_known"] for y in g_e)
+                bnetf = bfee - breb
                 bgpnl = sum(float(y["offset_pl"]) for y in g_e)
                 bmk = any(bool(y["is_maker"]) for y in g_e)
                 btk = any(not bool(y["is_maker"]) for y in g_e)
@@ -904,8 +912,8 @@ def normalize_htx_closed_trades(
                         **({"contract_count": bvol} if bvol is not None else {}),
                         "role": "MAKER" if (bmk and not btk) else "TAKER",
                         "mode_code": "MIXED" if (bmk and btk) else ("LIMIT_MAKER" if bmk else "MARKET_TAKER"),
-                        "fee_known": True,
-                        "fee_bps": round(bfee / bnot * 10_000, 2) if bnot > 0 else 0.0,
+                        "fee_known": batch_known,
+                        "fee_bps": round(bfee / bnot * 10_000, 2) if batch_known and bnot > 0 else None,
                         "time_ms": bts,
                         "time_str": _fmt_bj_ms(bts),
                         "avg_price": round(bpx, 6),
@@ -916,7 +924,7 @@ def normalize_htx_closed_trades(
                         "rebate_usd": round(breb, 4),
                         "net_fee_usd": round(bnetf, 4),
                         "gross_pnl_usd": round(bgpnl, 4),
-                        "net_pnl_usd": round(bgpnl - bfee + breb, 4),
+                        "net_pnl_usd": round(bgpnl - bfee + breb, 4) if batch_known else None,
                     }
                 )
         _emit_htx_record(
@@ -934,7 +942,9 @@ def normalize_htx_closed_trades(
             ex_fee=ex_fee,
             en_reb=en_reb,
             ex_reb=ex_reb,
-            en_known=True,
+            en_known=lot["entry_fees_known"],
+            ex_known=all(x["fee_known"] for x in exits),
+            net_known=lot["entry_fees_known"] and all(x["fee_known"] for x in exits),
             en_makers=bool(lot["maker_notional"] > 0),
             en_takers=bool(lot["taker_notional"] > 0),
             ex_makers=any(bool(x["is_maker"]) for x in exits),
@@ -958,10 +968,11 @@ def normalize_htx_closed_trades(
         qty = (turnover / px) if (turnover > 0 and px > 0) else vol
         if px <= 0 or qty <= 0:
             continue
-        raw_fee = float(m.get("trade_fee") or 0.0)
-        # In HTX swap_matchresults: negative trade_fee = fee paid, positive trade_fee = Maker rebate!
-        fee_paid = abs(raw_fee) if raw_fee < 0 else 0.0
-        maker_rebate = raw_fee if raw_fee > 0 else 0.0
+        # HTX reports a debit as a negative wallet movement.
+        raw = m.get("trade_fee")
+        charged = usd_fee(-float(raw), m.get("fee_asset") or "USDT") if raw not in (None, "") else None
+        fee_paid = max(0.0, charged or 0.0)
+        maker_rebate = max(0.0, -(charged or 0.0))
         role_str = str(m.get("role") or "").lower()
         is_maker = role_str == "maker"
         offset = str(m.get("offset") or "").lower()
@@ -970,7 +981,6 @@ def normalize_htx_closed_trades(
         oid_str = str(m.get("order_id") or m.get("order_id_str") or "").strip()
         mid_id = htx_match_unique_key(m, fallback_idx=idx)
 
-        charged = usd_fee(-raw_fee if m.get("trade_fee") not in (None, "") else None, m.get("fee_asset") or "USDT")
         unit = "base" if turnover > 0 else "contracts"
 
         is_open = offset == "open" and abs(offset_pl) <= 1e-9
@@ -987,6 +997,7 @@ def normalize_htx_closed_trades(
                     "open_ms": float(ts),
                     "maker_notional": 0.0,
                     "taker_notional": 0.0,
+                    "entry_fees_known": True,
                     "event_fills": [],
                     "exits": [],
                 },
@@ -994,7 +1005,8 @@ def normalize_htx_closed_trades(
             if (lot["qty"] - lot["closed_qty"]) <= 1e-12 and not lot["exits"]:
                 lot["open_ms"] = float(ts)
             notional_m = turnover if turnover > 0 else (px * qty)
-            lot["event_fills"].append(event_fill(ts, qty, px, True, charged, oid_str, qty_unit=unit))
+            lot["entry_fees_known"] &= charged is not None
+            lot["event_fills"].append(event_fill(ts, qty, px, True, charged, oid_str, qty_unit=unit, role=role_str))
             lot["qty"] += qty
             lot["notional"] += notional_m
             lot["fee"] += fee_paid
@@ -1017,12 +1029,13 @@ def normalize_htx_closed_trades(
             lot["event_fills"].append(event_fill(ts, qty, px, False, charged, oid_str,
                                                 gross=offset_pl if any(m.get(k) not in (None, "") for k in
                                                                        ("real_profit", "offset_profitloss", "profit")) else None,
-                                                qty_unit=unit))
+                                                qty_unit=unit, role=role_str))
             lot["exits"].append(
                 {
                     "qty": min(qty, rem_open_q) if qty > rem_open_q + 1e-9 else qty,
                     "px": px,
                     "notional": ex_notional * (rem_open_q / qty) if qty > rem_open_q + 1e-9 else ex_notional,
+                    "fee_known": charged is not None,
                     "fee_paid": fee_paid * (rem_open_q / qty) if qty > rem_open_q + 1e-9 else fee_paid,
                     "maker_rebate": maker_rebate * (rem_open_q / qty) if qty > rem_open_q + 1e-9 else maker_rebate,
                     "offset_pl": offset_pl,
@@ -1058,6 +1071,8 @@ def normalize_htx_closed_trades(
                 en_reb=0.0,
                 ex_reb=maker_rebate + (fee_paid * rebate_ratio),
                 en_known=False,
+                ex_known=charged is not None,
+                net_known=charged is not None,
                 en_makers=False,
                 en_takers=False,
                 ex_makers=is_maker,

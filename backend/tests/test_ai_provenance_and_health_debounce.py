@@ -14,6 +14,7 @@ from opentradeledger.core.ai_reviewer import build_ai_context_payload, generate_
 from opentradeledger.core.copy_watcher import CopyWatcherService
 from opentradeledger.core.ledger_service import LedgerService
 from opentradeledger.core.store import LedgerStore
+from opentradeledger.core.venue_primitives import build_venue_stock_perpetuals
 from opentradeledger.core.sync_manager import SyncManager
 from opentradeledger.core.venue_health import VenueHealthTracker, humanize_exchange_error
 from opentradeledger.security.vault import CredentialVault, ExchangeCredentialRecord
@@ -375,3 +376,38 @@ async def test_empty_httpx_readtimeout_classified_as_network_and_debounced_befor
     await mgr.sync_all(force_all=False)
     assert len(sent_titles) == 1
     assert "Unknown API error" not in sent_titles[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_settlement", [True, False])
+async def test_review_discloses_missing_fee_conversion_without_losing_native_pnl(has_settlement: bool) -> None:
+    trade = {
+        "side": "LONG", "total_fee_usd": 0.002, "total_fee_known": False,
+        "net_pnl_usd": 39.60, "net_pnl_known": has_settlement,
+        "entry_leg": {"fee_known": False}, "exit_leg": {"fee_known": True, "gross_fee_usd": 0.20},
+    }
+    dashboard = {
+        "summary": {**trade, "trade_count": 1, "net_fee_usd": 0.002, "win_rate_pct": 100,
+                    "futures_net_pnl_usd": 39.60},
+        "trades": [trade],
+    }
+    ctx = build_ai_context_payload(dashboard)
+    assert ctx["recent_20_trades"][0]["total_fee_usd"] is None
+    assert ctx["recent_20_trades"][0]["exit_gross_fee"] == 0.20
+    assert ctx["summary"]["net_fee_usd"] is None
+    assert ctx["summary"]["futures_net_pnl_usd"] == (39.60 if has_settlement else None)
+    report = await generate_ai_review(dashboard, UserPreferences(), force_local=True)
+    kinds = {item["kind"] for item in report["highlights"]}
+    assert kinds == ({"incomplete_settlement", "win_rate"} if has_settlement else {"incomplete_settlement"})
+    assert "手续费折算" in report["markdown_commentary_zh"]
+
+
+def test_stock_perp_fee_history_preserves_credits_and_missing_settlement():
+    trade = {"symbol": "QCOM_USDT", "total_fee_usd": -0.20, "net_pnl_usd": 40}
+    unknown = {**trade, "symbol": "NVDA_USDT", "total_fee_known": False, "net_pnl_known": False}
+    rows = {r["symbol"]: r for r in build_venue_stock_perpetuals(
+        [trade, unknown], venue_id="gate", venue_name="Gate", venue_name_zh="Gate",
+    )}
+    assert rows["QCOM_USDT"]["net_fee_usd"] == -0.20
+    assert rows["NVDA_USDT"]["total_fee_known"] is False
+    assert rows["NVDA_USDT"]["net_pnl_known"] is False

@@ -8,6 +8,7 @@ import { VenueBadge } from '../components/VenueBadge'
 import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n/zh-CN'
 import { useCurrency } from '../lib/currency'
+import { formatExecutionFee } from '../lib/executionFee'
 import { collectActiveWarnings, fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, pnlTone } from '../lib/format'
 import type { ClosedTrade, DashboardData, DashboardWarningItem, TradeLegFee } from '../lib/types'
 
@@ -84,7 +85,7 @@ function LegFeeCard({
         <div className="flex items-center justify-between gap-2">
           <span className="text-[var(--fg-3)]">{t('leg_gross_fee')}</span>
           <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? t('leg_fee_unknown') : cur.signedMoney(-leg.gross_fee_usd, feeDecimals)}
+            {feeUnknown ? t('leg_fee_unknown') : formatExecutionFee(cur, -leg.gross_fee_usd, feeDecimals)}
           </span>
         </div>
         <div className="flex items-center justify-between gap-2">
@@ -93,7 +94,7 @@ function LegFeeCard({
             {feeUnknown
               ? '—'
               : leg.rebate_usd > 0
-                ? `+${cur.money(leg.rebate_usd, feeDecimals)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
+                ? `${formatExecutionFee(cur, leg.rebate_usd, feeDecimals)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
                 : leg.gross_fee_usd === 0 ? t('leg_zero_fee') : cur.money(0, feeDecimals)}
           </span>
         </div>
@@ -103,14 +104,14 @@ function LegFeeCard({
               {locale === 'en' ? 'Pre-discount' : '抵扣已省'}
             </span>
             <span className="txt-pos sensitive whitespace-nowrap">
-              +{cur.money(leg.discount_saved_usd, feeDecimals)}
+              {formatExecutionFee(cur, leg.discount_saved_usd, feeDecimals)}
             </span>
           </div>
         )}
         <div className="flex items-center justify-between gap-2 font-semibold pt-1">
           <span className="text-[var(--fg-2)]">{netLabel}</span>
           <span className={`whitespace-nowrap sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? '—' : cur.signedMoney(-leg.net_fee_usd, feeDecimals)}
+            {feeUnknown ? '—' : formatExecutionFee(cur, -leg.net_fee_usd, feeDecimals)}
           </span>
         </div>
       </div>
@@ -227,8 +228,11 @@ export function TradesPage({
     })
     arr.sort((a, b) => {
       if (sortBy === 'OPEN_DESC') return b.open_time_ms - a.open_time_ms
-      if (sortBy === 'PNL_DESC') return b.net_pnl_usd - a.net_pnl_usd
-      if (sortBy === 'PNL_ASC') return a.net_pnl_usd - b.net_pnl_usd
+      if (sortBy === 'PNL_DESC' || sortBy === 'PNL_ASC') {
+        const unknownOrder = Number(a.net_pnl_known === false) - Number(b.net_pnl_known === false)
+        if (unknownOrder) return unknownOrder
+        if (a.net_pnl_known !== false) return sortBy === 'PNL_DESC' ? b.net_pnl_usd - a.net_pnl_usd : a.net_pnl_usd - b.net_pnl_usd
+      }
       return b.close_time_ms - a.close_time_ms
     })
     return arr
@@ -637,7 +641,7 @@ export function TradesPage({
                               )
                             )}
                           </div>
-                          <div className="text-[12px] text-[var(--fg-3)] mt-0.5 whitespace-nowrap">
+                          <div className="otl-trade-row-time text-[12px] text-[var(--fg-3)] mt-0.5">
                             {tr.close_time_str} · {fmtDuration(tr.holding_sec, locale)}
                           </div>
                         </td>
@@ -648,11 +652,11 @@ export function TradesPage({
                           />
                         </td>
                         {detailed && (
-                          <td className="hidden sm:table-cell text-right whitespace-nowrap tabular-nums">
+                          <td className="hidden sm:table-cell text-right tabular-nums">
                             <div className="text-[12.5px] font-medium sensitive">
                               {t('fee_net_short')}{' '}
-                              {cur.signedMoney(-tr.net_fee_usd, 2)}
-                              {tr.effective_relief_pct > 0 && (
+                              {tr.total_fee_known === false ? t('lifecycle_unknown') : cur.signedMoney(-tr.net_fee_usd, 2)}
+                              {tr.total_fee_known !== false && tr.effective_relief_pct > 0 && (
                                 <span className="txt-pos ml-1">
                                   (-{tr.effective_relief_pct.toFixed(0)}%)
                                 </span>
@@ -661,17 +665,21 @@ export function TradesPage({
                             <div className="text-[12px] text-[var(--fg-3)] sensitive">
                               {tr.entry_leg.fee_known === false || tr.exit_leg.fee_known === false
                                 ? t('leg_fee_unknown')
-                                : `${t('fee_entry_short')} ${cur.signedPlainMoney(-tr.entry_leg.gross_fee_usd, 2)} · ${t('fee_exit_short')} ${cur.signedPlainMoney(-tr.exit_leg.gross_fee_usd, 2)}`}
+                                : <>
+                                    <span className="inline-block">{t('fee_entry_short')} {cur.signedPlainMoney(-tr.entry_leg.gross_fee_usd, 2)}</span>
+                                    {' · '}
+                                    <span className="inline-block">{t('fee_exit_short')} {cur.signedPlainMoney(-tr.exit_leg.gross_fee_usd, 2)}</span>
+                                  </>}
                             </div>
                           </td>
                         )}
                         <td className="text-right whitespace-nowrap">
-                          <div className={`text-[13px] font-semibold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
-                            {cur.signedPlainMoney(tr.net_pnl_usd)}
+                          <div className={`text-[13px] font-semibold sensitive ${pnlTone(tr.net_pnl_known === false ? 0 : tr.net_pnl_usd)}`}>
+                            {tr.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedPlainMoney(tr.net_pnl_usd)}
                           </div>
                           <div className="text-[12px] text-[var(--fg-3)] sensitive">
                             {locale === 'en' ? 'Pre-rebate ' : '返佣前 '}
-                            {cur.signedPlainMoney(tr.book_pnl_usd)}
+                            {tr.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedPlainMoney(tr.book_pnl_usd)}
                           </div>
                         </td>
                       </tr>
@@ -771,14 +779,14 @@ export function TradesPage({
                         </span>
                       )}
                       {fmtDuration(selected.holding_sec, locale)}
-                      {selected.effective_relief_pct > 0
+                      {selected.total_fee_known !== false && selected.effective_relief_pct > 0
                         ? ` · ${t('detail_relief_short')} ${selected.effective_relief_pct.toFixed(1)}%`
                         : ''}
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className={`t-kpi sensitive whitespace-nowrap ${pnlTone(selected.net_pnl_usd)}`}>
-                      {formatDisplayKpiValue(cur.signedMoney(selected.net_pnl_usd))}
+                    <div className={`t-kpi sensitive whitespace-nowrap ${pnlTone(selected.net_pnl_known === false ? 0 : selected.net_pnl_usd)}`}>
+                      {selected.net_pnl_known === false ? t('lifecycle_unknown') : formatDisplayKpiValue(cur.signedMoney(selected.net_pnl_usd))}
                     </div>
                     <div className="text-[12px] text-[var(--fg-3)] mt-0.5">
                       {selected.rebate_status === 'PENDING' ? t('detail_net_pending') : t(stillHolding ? 'lifecycle_current_net' : 'detail_net_after_rebate')}
@@ -831,23 +839,29 @@ export function TradesPage({
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_total_fee')}</span>
                     <span className="sensitive">
-                      {cur.signedMoney(-selected.total_fee_usd, feeDec)}
+                      {selected.total_fee_known === false ? t('lifecycle_unknown') : formatExecutionFee(cur, -selected.total_fee_usd, feeDec)}
                     </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
                     <span className="txt-pos sensitive">
-                      +{cur.money(selected.total_rebate_usd, feeDec)}
+                      {selected.total_fee_known === false ? t('lifecycle_unknown') : `+${cur.money(selected.total_rebate_usd, feeDec)}`}
                     </span>
                   </div>
+                  {Boolean(selected.settlement_adjustment_usd) && (
+                    <div className="flex justify-between">
+                      <span>{locale === 'en' ? 'Unattributed settlement adjustment' : '未归因结算差额'}</span>
+                      <span className="sensitive">{formatExecutionFee(cur, selected.settlement_adjustment_usd!, 2)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between pt-2 border-t border-[var(--border)] text-[13px] font-semibold">
                     <span>{t(stillHolding ? 'lifecycle_current_net' : 'wf_final_net')}</span>
-                    <span className={`sensitive ${pnlTone(selected.net_pnl_usd)}`}>
-                      {cur.signedMoney(selected.net_pnl_usd)}
+                    <span className={`sensitive ${pnlTone(selected.net_pnl_known === false ? 0 : selected.net_pnl_usd)}`}>
+                      {selected.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedMoney(selected.net_pnl_usd)}
                     </span>
                   </div>
                   <PartialSettlement trade={selected} />
-                  {selected.total_discount_saved_usd > 0.0001 && (
+                  {selected.total_fee_known !== false && selected.total_discount_saved_usd > 0.0001 && (
                     <div className="flex justify-between text-[12px] text-[var(--fg-3)]">
                       <span>
                         {locale === 'en'
@@ -1025,15 +1039,17 @@ export function TradesPage({
                       </td>
                       <td className="text-right whitespace-nowrap sensitive">{row.trade_count} / {row.contract_count != null ? fmtContractQty(row, locale) : row.qty}</td>
                       <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
-                        {row.trade_count ? `${row.maker_bps?.toFixed(1) ?? '—'} / ${row.taker_bps?.toFixed(1) ?? '—'}` : '— / —'}
+                        {row.trade_count && row.total_fee_known !== false ? `${row.maker_bps?.toFixed(1) ?? '—'} / ${row.taker_bps?.toFixed(1) ?? '—'}` : '— / —'}
                       </td>
                       <td className="text-right whitespace-nowrap sensitive">
-                        {cur.signedPlainMoney(-row.gross_fee_usd, 4)} /{' '}
-                        <span className="txt-pos">{cur.signedPlainMoney(row.rebate_usd, 4)}</span>
+                        {row.total_fee_known === false ? t('lifecycle_unknown') : <>
+                          {cur.signedPlainMoney(-row.gross_fee_usd, 4)} /{' '}
+                          <span className="txt-pos">{cur.signedPlainMoney(row.rebate_usd, 4)}</span>
+                        </>}
                       </td>
-                      <td className="text-right whitespace-nowrap sensitive">{cur.money(row.net_fee_usd, 4)}</td>
-                      <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_usd)}`}>
-                        {cur.signedMoney(row.net_pnl_usd)}
+                      <td className="text-right whitespace-nowrap sensitive">{row.total_fee_known === false ? t('lifecycle_unknown') : cur.money(row.net_fee_usd, 4)}</td>
+                      <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_known === false ? 0 : row.net_pnl_usd)}`}>
+                        {row.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedMoney(row.net_pnl_usd)}
                       </td>
                     </tr>
                   )

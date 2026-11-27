@@ -191,7 +191,7 @@ def _build_bitget_closed_records(
         q_f = abs(dec(fl.get("execQty") or fl.get("baseVolume") or fl.get("size")))
         px_f = dec(fl.get("execPrice") or fl.get("price"))
         not_f = abs(dec(fl.get("execValue") or fl.get("quoteVolume"))) or (q_f * px_f)
-        role_f = str(fl.get("tradeScope") or fl.get("execScope") or fl.get("role") or "taker").lower()
+        role_f = str(fl.get("tradeScope") or fl.get("execScope") or fl.get("role") or "").lower()
         is_m = "maker" in role_f
         oid_f = str(fl.get("orderId") or "").strip()
         trade_side = str(fl.get("tradeSide") or fl.get("side") or "").lower()
@@ -260,7 +260,7 @@ def _build_bitget_closed_records(
                 "fee_asset": fee_coin,
                 "bgb_qty": bgb_qty,
                 "bgb_saved": bgb_saved,
-                "role": "maker" if is_m else "taker",
+                "role": "maker" if is_m else "taker", "event_role": role_f,
                 "trade_side": trade_side,
             }
         )
@@ -621,7 +621,7 @@ def _build_bitget_closed_records(
         )
         fill_inputs = [
             {"time_ms": x["ts_ms"], "qty": x["qty"], "price": x["px"], "is_entry": is_entry,
-             "order_id": x["order_id"],
+             "order_id": x["order_id"], "role": x["event_role"],
              "fill_id": x["id"], "fee_usd": x["fee_usd"] if x["fee_known"] else None,
              "gross_pnl_usd": None if is_entry else x["exec_pnl"]}
             for is_entry, items in ((True, dr["en_fills"]), (False, dr["ex_fills"])) for x in items

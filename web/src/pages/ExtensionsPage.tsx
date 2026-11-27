@@ -306,7 +306,7 @@ export function ExtensionsPage({
                           </td>
                           <td className="text-right whitespace-nowrap sensitive">{h.shares}</td>
                           <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
-                            {fmtUsd(h.avg_cost_usd)} → {fmtUsd(h.current_price_usd)}
+                            <span className="sensitive">{fmtUsd(h.avg_cost_usd)}</span> → {fmtUsd(h.current_price_usd)}
                           </td>
                           <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(h.pnl_usd)}`}>
                             {cur.signedMoney(h.pnl_usd)} ({fmtSignedPct(h.pnl_pct)})

@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PreferencesAndGoalSection } from '../components/settings/PreferencesAndGoalSection'
 import { MonthlyCalendar } from '../components/MonthlyCalendar'
 import { PublicCopyWatcherPanel } from '../components/PublicCopyWatcherPanel'
 import { I18nProvider } from '../i18n'
@@ -792,4 +793,21 @@ describe('Privacy Masking, Number Precision, FX Conversion & Calendar Formatting
       expect(document.body.textContent).toContain('未能导入')
     })
   })
+})
+
+it.each([
+  ['offline-fallback', true, '', '离线参考汇率'],
+  ['provider', true, '2026-11-26 14:00', '上次成功获取的汇率'],
+  ['provider', false, '2026-11-27 14:00', '实时参考汇率'],
+] as const)('reports the origin and freshness of %s rates (stale=%s)', (source, stale, updated_at, label) => {
+  render(
+    <I18nProvider locale="zh-CN"><CurrencyProvider currency="CNY" fx={{ ...DEFAULT_FX, source, stale, updated_at }}>
+      <PreferencesAndGoalSection settings={baseSettings} demoMode={false} previewFallback={false}
+        onUpdateSettings={async () => true} onToggleDemo={async () => {}} onClearStatus={() => {}}
+        flashOk={() => {}} setErrorMsg={() => {}} />
+    </CurrencyProvider></I18nProvider>,
+  )
+  const note = screen.getByTestId('settings-fx-note')
+  expect(note.textContent).toContain(label)
+  if (updated_at) expect(note.textContent).toContain(updated_at)
 })

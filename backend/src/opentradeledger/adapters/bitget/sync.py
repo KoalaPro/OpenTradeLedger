@@ -133,13 +133,11 @@ async def sync_bitget_venue(
         scope.count_records("fills"),
         scope.count_records("bills"),
     )
-    new_closed = max(0, int(fp_after[0]) - int(fp_before[0])) if sum(fp_before) > 0 else 0
     return VenueSyncOutcome(
         equity_usd=eq_val,
         has_open_activity=has_open,
         fp_before=fp_before,
         fp_after=fp_after,
-        new_closed_delta=new_closed,
         mode="venue_sync",
         warnings=warnings,
     )

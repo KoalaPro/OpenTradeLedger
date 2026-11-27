@@ -182,7 +182,7 @@ def _build_binance_closed_records(
     obs_usdt_rates_cat: dict[tuple[str, str], list[Decimal]] = defaultdict(list)
     for f_obs in binance_fills:
         c_asset = str(f_obs.get("commissionAsset") or "USDT").strip().upper()
-        if c_asset == "BNB":
+        if c_asset not in {"USD", "USDT", "USDC"}:
             continue
         sym_obs = str(f_obs.get("symbol") or "").strip().upper()
         not_obs = abs(dec(f_obs.get("quoteQty"))) or (abs(dec(f_obs.get("qty"))) * dec(f_obs.get("price")))
@@ -251,6 +251,8 @@ def _build_binance_closed_records(
         if comm_p <= 0:
             continue
         ca_p = str(f_pre.get("commissionAsset") or "USDT").strip().upper()
+        if ca_p not in {"USD", "USDT", "USDC", "BNB"}:
+            continue
         ts_p = norm_sec(f_pre.get("time"))
         fee_p_usd = (comm_p * _bnb_usd_at(ts_p, px_by_day, dated_bnb)) if ca_p == "BNB" else comm_p
         if fee_p_usd > 0:
@@ -305,7 +307,10 @@ def _build_binance_closed_records(
             bnb_saved = Decimal("0")
             bnb_qty = Decimal("0")
 
-        native_credit = max(Decimal("0"), -signed_commission)
+        currency_priced = comm_asset in {"USD", "USDT", "USDC", "BNB"} or signed_commission == 0
+        if not currency_priced:
+            fee_usd = Decimal(0)
+        native_credit = max(Decimal("0"), -signed_commission) if currency_priced else Decimal(0)
         fee_credit = native_credit * _bnb_usd_at(ts_f, px_by_day, dated_bnb) if comm_asset == "BNB" else native_credit
         s_reb_usd = fee_credit
         s_reb_bnb = Decimal("0")
@@ -330,6 +335,7 @@ def _build_binance_closed_records(
             "rpnl": rpnl_f,
             "has_rpnl": raw_f.get("realizedPnl") not in (None, ""),
             "execution_id": int(raw_f.get("id") or 0),
+            "currency_priced": currency_priced,
             "event_fee_known": raw_f.get("commission") not in (None, "") and (
                 signed_commission == 0 or comm_asset in {"USD", "USDT", "USDC"} or (
                     comm_asset == "BNB" and fmt_bj(ts_f, "%Y-%m-%d") in px_by_day
@@ -344,6 +350,7 @@ def _build_binance_closed_records(
             "settled_reb_bnb": s_reb_bnb,
             "pending_reb_usd": p_reb_usd,
             "reb_sec": reb_sec,
+            "has_native_role": raw_f.get("maker") is not None,
             "role": role_str,
             "order_id": oid_s,
             "order_type": order_type_by_key.get((sym_u, oid_s), ""),
@@ -395,6 +402,7 @@ def _build_binance_closed_records(
             "mode": mode_code,
             "mode_zh": mode_zh,
             "fill_count": len(leg_items),
+            "fee_known": all(it["currency_priced"] for it in leg_items),
             "qty_base": f2(tot_q, 6),
             "avg_price": f2(avg_p, 6),
             "notional_usd": f2(tot_not, 2),
@@ -543,6 +551,9 @@ def _build_binance_closed_records(
         book_pnl = gross_pnl + fund_usd - tot_fee
         real_net = book_pnl + s_reb
         exp_net = book_pnl + eff_reb
+        net_known = en_leg["fee_known"] and ex_leg["fee_known"]
+        if not net_known:
+            book_pnl = real_net = exp_net = Decimal(0)
         qty_closed = sum((it["qty"] for it in exit_items), Decimal("0"))
         hold_s = max(0, int(t_close - t_open))
 
@@ -597,6 +608,8 @@ def _build_binance_closed_records(
                 "gross_pnl_usd": f2(gross_pnl, 4),
                 "funding_pnl_usd": f2(fund_usd, 4),
                 "total_fee_usd": f2(tot_fee, 4),
+                "total_fee_known": net_known,
+                "net_pnl_known": net_known,
                 "fee_asset": rec_fee_asset,
                 "bnb_fee_qty": f2(bnb_qty_rec, 6),
                 "bnb_discount_saved_usd": f2(bnb_saved_rec, 4),
@@ -634,9 +647,18 @@ def _build_binance_closed_records(
             ordered.sort(key=lambda item: (item[0]["ts_ms"], item[0]["execution_id"]))
             evidence = [
                 event_fill(f["ts_ms"], f["qty"], f["px"], is_entry, (f["fee_usd"] - f["fee_credit"]) if f["event_fee_known"] else None,
-                           f["order_id"], gross=f["rpnl"] if not is_entry and f["has_rpnl"] else None)
+                           f["order_id"], gross=f["rpnl"] if not is_entry and f["has_rpnl"] else None,
+                           role=f["role"] if f["has_native_role"] else "")
                 for f, is_entry in ordered
             ]
+            for (fill, _), item in zip(ordered, evidence):
+                if fill["event_fee_known"]:
+                    rebate = fill["settled_reb_usd"] + fill["pending_reb_usd"]
+                    item["rebate_status"] = "PENDING" if fill["pending_reb_usd"] > 0 else "SETTLED"
+                    item["rebate_usd"] = rebate
+                    item["net_fee_usd"] = fill["fee_usd"] - rebate
+                    if fill["notional"] > 0:
+                        item["fee_bps"] = fill["fee_usd"] * 10000 / fill["notional"]
             events = build_position_events(evidence, side=side_emit)
             for (fill, is_entry), event in zip(ordered, events):
                 if not is_entry and not fill["has_rpnl"] and event["gross_pnl_usd"] is not None:

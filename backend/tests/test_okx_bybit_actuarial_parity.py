@@ -203,8 +203,8 @@ async def test_okx_cursor_pagination_c2c_bills_copy_and_per_trade_rebate_matchin
 
 
 @pytest.mark.asyncio
-async def test_bybit_cursor_pagination_funding_rebates_mnt_discount_and_incremental_archive(tmp_path: Path) -> None:
-    """Bybit client follows `nextPageCursor`, extracts SETTLEMENT funding + REBATE + MNT discount from tx_logs, and merges monotonically in SQLite."""
+async def test_bybit_cursor_pagination_funding_rebates_mnt_payment_and_incremental_archive(tmp_path: Path) -> None:
+    """Bybit client follows `nextPageCursor`, retains funding, rebates and MNT payment denomination, and merges monotonically in SQLite."""
 
     def handler(req: httpx.Request) -> httpx.Response:
         path = req.url.path
@@ -338,11 +338,11 @@ async def test_bybit_cursor_pagination_funding_rebates_mnt_discount_and_incremen
     )
     assert len(trades) == 2
     xau = next(t for t in trades if t["symbol"] == "XAU_USDT")
-    # Funding (-1.50) and Rebate (+1.11) and MNT discount (> 0) must be extracted!
+    # Funding (-1.50) and Rebate (+1.11) and MNT payment currency must be preserved.
     assert xau["funding_pnl_usd"] == pytest.approx(-1.50, abs=0.01)
     assert xau["total_rebate_usd"] == pytest.approx(1.11, abs=0.01)
     assert xau["entry_leg"]["discount_asset"] == "MNT"
-    assert xau["entry_leg"]["discount_saved_usd"] > 0
+    assert xau["entry_leg"]["discount_saved_usd"] == 0
     # Waterfall closes cleanly: gross_pnl + funding_pnl - net_fee == net_pnl
     assert round(xau["gross_pnl_usd"] + xau["funding_pnl_usd"] - xau["net_fee_usd"], 4) == pytest.approx(xau["net_pnl_usd"], abs=0.01)
 
@@ -517,8 +517,8 @@ def test_okx_and_bybit_dashboard_decomposes_reconcile_streams_and_populates_copy
     assert ("okx", "TSLA_USDT") in perp_syms
     assert ("bybit", "XAU_USDT") in perp_syms
 
-    # 5. Potential maker savings & MNT discount surfaced in Fee Matrix
+    # 5. Only verified savings surface in the fee matrix.
     bybit_fee = next(r for r in dash["fee_matrix"] if r["venue_id"] == "bybit")
-    assert bybit_fee["discount_saved_usd"] > 0
-    assert bybit_fee["discount_label"] == "MNT"
+    assert bybit_fee["discount_saved_usd"] == 0
+    assert bybit_fee["discount_label"] == ""
     assert dash["summary"]["potential_maker_savings_usd"] > 0

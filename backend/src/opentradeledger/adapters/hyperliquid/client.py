@@ -667,6 +667,8 @@ def normalize_hyperliquid_closed_trades(
         entry_rebate: float,
         exit_rebate: float,
         en_known: bool,
+        ex_known: bool,
+        net_known: bool,
         en_makers: bool,
         en_takers: bool,
         ex_makers: bool,
@@ -703,6 +705,8 @@ def normalize_hyperliquid_closed_trades(
         en_mode = "MIXED" if (en_makers and en_takers) else ("LIMIT_MAKER" if en_makers else "MARKET_TAKER")
         ex_mode = "MIXED" if (ex_makers and ex_takers) else ("LIMIT_MAKER" if ex_makers else "MARKET_TAKER")
 
+        if not net_known:
+            book_pnl = net_pnl = 0.0
         records.append(
             {
                 **cycle_journal_keys(journal_keys or [f"hl_{tid_str}_{close_ms}"], is_partial),
@@ -719,10 +723,12 @@ def normalize_hyperliquid_closed_trades(
                 "funding_pnl_usd": round(funding_pnl, 4),
                 "funding_by_day": dated_cash(funding_receipts),
                 "book_pnl_usd": round(book_pnl, 4),
+                "total_fee_known": net_known,
+                "net_pnl_known": net_known,
                 "total_fee_usd": round(total_fee, 4),
                 "total_rebate_usd": round(total_rebate, 4),
                 "total_discount_saved_usd": 0.0,
-                "net_fee_usd": round(max(0.0, net_fee), 4),
+                "net_fee_usd": round(net_fee, 4),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
                 "is_partial_close": is_partial,
@@ -741,15 +747,15 @@ def normalize_hyperliquid_closed_trades(
                     "rebate_pct": 100.0 if entry_rebate > 0 and entry_gross_fee == 0 else (
                         round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else 0.0
                     ),
-                    "net_fee_usd": round(max(0.0, entry_gross_fee - entry_rebate), 4),
+                    "net_fee_usd": round(entry_gross_fee - entry_rebate, 4),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
                 "exit_leg": {
                     "role": "MAKER" if ex_is_maker else "TAKER",
                     "mode_code": ex_mode,
-                    "fee_known": True,
-                    "fee_bps": round(exit_bps, 2),
+                    "fee_known": ex_known,
+                    "fee_bps": round(exit_bps, 2) if ex_known else None,
                     "time_ms": close_ms,
                     "avg_price": round(exit_px, 6),
                     "notional_usd": round(exit_notional, 2),
@@ -760,7 +766,7 @@ def normalize_hyperliquid_closed_trades(
                     "rebate_pct": 100.0 if exit_rebate > 0 and exit_gross_fee == 0 else (
                         round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else 0.0
                     ),
-                    "net_fee_usd": round(max(0.0, exit_gross_fee - exit_rebate), 4),
+                    "net_fee_usd": round(exit_gross_fee - exit_rebate, 4),
                     "rebate_status": "SETTLED",
                     "settled_at": settled_str,
                 },
@@ -809,7 +815,8 @@ def normalize_hyperliquid_closed_trades(
                 bpx = (bnot / bq) if bq > 0 else float(g_e[-1]["px"])
                 bfee = sum(float(y["fee_paid"]) for y in g_e)
                 breb = sum(float(y["maker_rebate"]) for y in g_e)
-                bnetf = max(0.0, bfee - breb)
+                batch_known = all(y["fee_known"] for y in g_e)
+                bnetf = bfee - breb
                 bgpnl = sum(float(y["closed_pnl"]) for y in g_e)
                 bmk = any(bool(y["is_maker"]) for y in g_e)
                 btk = any(not bool(y["is_maker"]) for y in g_e)
@@ -821,8 +828,8 @@ def normalize_hyperliquid_closed_trades(
                         "qty": round(bq, 8),
                         "role": "MAKER" if (bmk and not btk) else "TAKER",
                         "mode_code": "MIXED" if (bmk and btk) else ("LIMIT_MAKER" if bmk else "MARKET_TAKER"),
-                        "fee_known": True,
-                        "fee_bps": round(bfee / bnot * 10_000, 2) if bnot > 0 else 0.0,
+                        "fee_known": batch_known,
+                        "fee_bps": round(bfee / bnot * 10_000, 2) if batch_known and bnot > 0 else None,
                         "time_ms": bts,
                         "time_str": _fmt_bj_ms(bts),
                         "avg_price": round(bpx, 6),
@@ -833,7 +840,7 @@ def normalize_hyperliquid_closed_trades(
                         "rebate_usd": round(breb, 4),
                         "net_fee_usd": round(bnetf, 4),
                         "gross_pnl_usd": round(bgpnl, 4),
-                        "net_pnl_usd": round(bgpnl - bfee + breb, 4),
+                        "net_pnl_usd": round(bgpnl - bfee + breb, 4) if batch_known else None,
                     }
                 )
         _emit_hl_record(
@@ -851,7 +858,9 @@ def normalize_hyperliquid_closed_trades(
             exit_gross_fee=exit_gross_fee,
             entry_rebate=entry_rebate,
             exit_rebate=exit_rebate,
-            en_known=True,
+            en_known=lot["entry_fees_known"],
+            ex_known=all(x["fee_known"] for x in exits),
+            net_known=lot["entry_fees_known"] and all(x["fee_known"] for x in exits),
             en_makers=bool(lot["maker_notional"] > 0),
             en_takers=bool(lot["taker_notional"] > 0),
             ex_makers=any(bool(x["is_maker"]) for x in exits),
@@ -874,17 +883,16 @@ def normalize_hyperliquid_closed_trades(
         if px <= 0 or sz <= 0:
             continue
         ts = int(fill.get("time") or 0)
-        raw_fee = float(fill.get("fee") or 0.0)
-        fee_paid = max(0.0, raw_fee)
-        maker_rebate = max(0.0, -raw_fee)
+        charged = usd_fee(fill.get("fee"), fill.get("feeToken") or "USDC")
+        fee_paid = max(0.0, charged or 0.0)
+        maker_rebate = max(0.0, -(charged or 0.0))
         crossed = bool(fill.get("crossed", True))
+        event_role = ("taker" if crossed else "maker") if fill.get("crossed") is not None else ""
         dir_str = str(fill.get("dir") or "").strip()
         closed_pnl = float(fill.get("closedPnl") or 0.0)
         side_tok = str(fill.get("side") or "").upper()
         tid_str = str(fill.get("tid") or fill.get("oid") or idx)
         oid_str = str(fill.get("oid") or "").strip()
-
-        charged = usd_fee(fill.get("fee"), fill.get("feeToken") or "USDC")
 
         is_close = ("Close" in dir_str) or (">" in dir_str) or (abs(closed_pnl) > 1e-9)
         if not is_close:
@@ -901,6 +909,7 @@ def normalize_hyperliquid_closed_trades(
                     "maker_notional": 0.0,
                     "taker_notional": 0.0,
                     "from_flat": abs(float(fill.get("startPosition") or 0.0)) <= 1e-12,
+                    "entry_fees_known": True,
                     "event_fills": [],
                     "exits": [],
                 },
@@ -908,7 +917,8 @@ def normalize_hyperliquid_closed_trades(
             if (lot["qty"] - lot["closed_qty"]) <= 1e-12 and not lot["exits"]:
                 lot["open_ms"] = float(ts)
             lot["raw_coin"] = raw_coin
-            lot["event_fills"].append(event_fill(ts, sz, px, True, charged, oid_str))
+            lot["entry_fees_known"] &= charged is not None
+            lot["event_fills"].append(event_fill(ts, sz, px, True, charged, oid_str, role=event_role))
             lot["qty"] += sz
             lot["notional"] += px * sz
             lot["gross_fee"] += fee_paid
@@ -932,12 +942,13 @@ def normalize_hyperliquid_closed_trades(
         if lot and rem_open_q > 1e-12:
             event_gross = closed_pnl if fill.get("closedPnl") not in (None, "") else None
             if sz <= rem_open_q + 1e-9:
-                lot["event_fills"].append(event_fill(ts, sz, px, False, charged, oid_str, gross=event_gross))
+                lot["event_fills"].append(event_fill(ts, sz, px, False, charged, oid_str, gross=event_gross, role=event_role))
                 lot["exits"].append(
                     {
                         "sz": sz,
                         "px": px,
                         "notional": px * sz,
+                        "fee_known": charged is not None,
                         "fee_paid": fee_paid,
                         "maker_rebate": maker_rebate,
                         "closed_pnl": closed_pnl,
@@ -957,12 +968,13 @@ def normalize_hyperliquid_closed_trades(
                 open_sh = 1.0 - close_sh
                 lot["event_fills"].append(event_fill(ts, rem_open_q, px, False,
                                                     charged * close_sh if charged is not None else None,
-                                                    oid_str, gross=event_gross))
+                                                    oid_str, gross=event_gross, role=event_role))
                 lot["exits"].append(
                     {
                         "sz": rem_open_q,
                         "px": px,
                         "notional": px * rem_open_q,
+                        "fee_known": charged is not None,
                         "fee_paid": fee_paid * close_sh,
                         "maker_rebate": maker_rebate * close_sh,
                         "closed_pnl": closed_pnl,
@@ -987,8 +999,9 @@ def normalize_hyperliquid_closed_trades(
                     "maker_notional": (px * rem_sz) if not crossed else 0.0,
                     "taker_notional": (px * rem_sz) if crossed else 0.0,
                     "from_flat": True,
+                    "entry_fees_known": charged is not None,
                     "event_fills": [event_fill(ts, rem_sz, px, True,
-                                               charged * open_sh if charged is not None else None, oid_str)],
+                                               charged * open_sh if charged is not None else None, oid_str, role=event_role)],
                     "exits": [],
                 }
         else:
@@ -1014,6 +1027,8 @@ def normalize_hyperliquid_closed_trades(
                 entry_rebate=0.0,
                 exit_rebate=maker_rebate,
                 en_known=False,
+                ex_known=charged is not None,
+                net_known=charged is not None,
                 en_makers=False,
                 en_takers=False,
                 ex_makers=not crossed,

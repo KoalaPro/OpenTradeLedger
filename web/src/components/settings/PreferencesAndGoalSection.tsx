@@ -29,6 +29,8 @@ export function PreferencesAndGoalSection({
   const { locale, t } = useI18n()
   const cur = useCurrency()
   const isZh = locale === 'zh-CN'
+  const fallbackRate = cur.fx.source === 'default' || cur.fx.source === 'offline-fallback'
+  const rateLabel = fallbackRate ? 'set_fx_offline' : cur.fx.stale ? 'set_fx_cached' : 'set_fx_live'
 
   const [goalLabel, setGoalLabel] = useState(settings.goal_label || '')
   const [goalInput, setGoalInput] = useState(String(settings.goal_target_usd ?? ''))
@@ -105,7 +107,7 @@ export function PreferencesAndGoalSection({
         </div>
         {cur.code !== 'USDT' && cur.code !== 'USD' && (
           <div data-testid="settings-fx-note" className="text-[12px] text-[var(--fg-3)] text-right">
-            {cur.fx.source === 'default' ? t('set_fx_offline') : t('set_fx_live')}: 1 USDT ≈{' '}
+            {t(rateLabel)}: 1 USDT ≈{' '}
             {cur.symbol}
             {cur.rate.toFixed(cur.code === 'JPY' ? 2 : 4)}
             {cur.fx.updated_at ? ` · ${cur.fx.updated_at}` : ''}

@@ -323,7 +323,9 @@ def test_new_reduction_precedes_next_native_summary(tmp_path, venue, extra_fee):
     assert row["position_events"][-1]["remaining_qty"] == 1
     assert row["position_events"][-1]["avg_entry_price"] == 99
     assert [b["gross_pnl_usd"] for b in row["exit_batches"]] == [10, 10]
-    assert row["funding_pnl_usd"] == pytest.approx(1.5)
+    assert row["funding_pnl_usd"] == pytest.approx(0 if venue == "easicoin" else 1.5)
+    if venue == "easicoin":
+        assert row["settlement_adjustment_usd"] == pytest.approx(1.5)
     assert row["net_pnl_usd"] == pytest.approx(21.0 - extra_fee)  # +20 gross +1.5 funding -0.5 in actual fills and any statement override
     assert row["note"] == "first verified"
     assert sum(float(c.get(f"{venue}_futures", 0)) for c in bundle.daily_components.values()) == pytest.approx(21.0 - extra_fee)
@@ -338,3 +340,115 @@ def test_new_reduction_precedes_next_native_summary(tmp_path, venue, extra_fee):
     final, = adapter.build_venue_ledger(store, journals=store.load_journals(), now_s=START / 1000 + 86400).trades
     assert final["position_events"][-1]["action"] == "CLOSE"
     assert final["note"] == "first verified"
+
+
+@pytest.mark.parametrize("venue,fee_key,native_credit", [
+    ("kucoin", "fee", -.2), ("bybit", "execFee", -.2), ("hyperliquid", "fee", -.2),
+    ("htx", "trade_fee", .2), ("bingx", "commission", .2),
+])
+def test_native_maker_credit_reaches_leg_and_parent(tmp_path, venue, fee_key, native_credit):
+    snap = _snapshot(venue, [(2, 100, 0), (-1, 110, 10), (-1, 130, 30)], split_day=True)
+    rows = snap.get("fills") or snap.get("executions") or snap["matches"]
+    rows[0][fee_key] = native_credit
+    if venue == "bybit":
+        for record, pnl in zip(snap["closed_pnl"], [10, 30]):
+            record["closedPnl"] = pnl
+    store = LedgerStore(tmp_path)
+    store.upsert_plugin_snapshot(venue, snap)
+    trade, = build_default_registry().get(venue).build_venue_ledger(store, journals={}, now_s=START / 1000 + 86400).trades
+    assert trade["entry_leg"]["net_fee_usd"] == pytest.approx(-.2)
+    assert trade["net_pnl_usd"] == pytest.approx(40)
+    assert trade["net_fee_usd"] == pytest.approx(0)
+
+
+def test_kucoin_no_multiplier_uses_native_values_and_preserves_contracts():
+    from opentradeledger.adapters.kucoin.client import normalize_kucoin_closed_trades
+    snap = _snapshot("kucoin", [(2, 100, 0), (-1, 110, 10), (-1, 130, 30)])
+    for row in snap["history_positions"]:
+        del row["multiplier"]
+        row.update(openValue=row["openPrice"], closeValue=row["closePrice"], closeSize=100)
+    for fill in snap["fills"]:
+        fill["size"] *= 100
+    trade, = normalize_kucoin_closed_trades(snap["history_positions"], snap["fills"])
+    assert trade["qty"] == 2 and trade["contract_count"] == 200
+    assert trade["entry_leg"]["notional_usd"] == 200
+    assert trade["entry_leg"]["fee_bps"] == 10
+    for row in snap["history_positions"]:
+        del row["openValue"], row["closeValue"], row["realisedGrossPnl"]
+    trade, = normalize_kucoin_closed_trades(snap["history_positions"], snap["fills"])
+    assert trade["qty"] is None and trade["contract_count"] == 200
+    assert trade["entry_leg"]["fee_bps"] is None
+    for fill in snap["fills"]:
+        fill["value"] = fill["size"] * .01 * fill["price"]
+    trade, = normalize_kucoin_closed_trades(snap["history_positions"], snap["fills"])
+    assert trade["qty"] == 2 and trade["contract_count"] == 200
+    assert trade["exit_leg"]["notional_usd"] == 240
+
+
+def test_bybit_mnt_without_settlement_fee_does_not_become_dollars():
+    from opentradeledger.adapters.bybit.client import normalize_bybit_closed_trades
+    snap = _snapshot("bybit", [(2, 100, 0), (-1, 110, 10), (-1, 130, 30)])
+    snap["executions"][0].update(feeCurrency="MNT", execFee=.002)
+    trade, = normalize_bybit_closed_trades(snap["closed_pnl"], snap["executions"])
+    assert trade["entry_leg"]["fee_known"] is False
+    assert trade["total_fee_known"] is False
+    assert trade["entry_leg"]["discount_saved_usd"] == 0
+    assert trade["gross_pnl_usd"] == 40
+    assert [b["gross_pnl_usd"] for b in trade["exit_batches"]] == [10, 30]
+    assert trade["net_pnl_usd"] == 39.6
+
+
+@pytest.mark.parametrize("venue,key", [("kucoin", "feeCurrency"), ("bingx", "commissionAsset"),
+                                       ("hyperliquid", "feeToken"), ("htx", "fee_asset"), ("bybit", "feeCurrency")])
+def test_foreign_fee_preserves_only_verified_net_and_dates(tmp_path, venue, key):
+    snap = _snapshot(venue, [(2, 100, 0), (-1, 110, 10), (-1, 130, 30)], split_day=True)
+    fills = snap.get("executions") or snap.get("fills") or snap["matches"]
+    fills[0][key] = "ETH"
+    store = LedgerStore(tmp_path)
+    store.upsert_plugin_snapshot(venue, snap)
+    bundle = build_default_registry().get(venue).build_venue_ledger(store, journals={}, now_s=START / 1000 + 86400)
+    trade, = bundle.trades
+    assert trade["total_fee_known"] is False
+    assert trade["entry_leg"]["fee_known"] is False
+    assert trade["exit_leg"]["fee_known"] is True
+    if venue == "bybit":
+        assert trade["net_pnl_usd"] == pytest.approx(39.6)
+        assert [float(parts["bybit_futures"]) for _, parts in sorted(bundle.daily_components.items())] == pytest.approx([9.8, 29.8])
+    else:
+        assert trade["net_pnl_known"] is False
+        assert trade["net_pnl_usd"] == 0
+        assert not any(sum(parts.values()) for parts in bundle.daily_components.values())
+
+
+def test_binance_foreign_commission_is_not_subtracted_as_usd(tmp_path):
+    store = LedgerStore(tmp_path)
+    _record_native_fills(store, "binance", [(2, 100, 0), (-1, 110, 10), (-1, 130, 30)], native_history=True)
+    scope = store.venue_scope("binance")
+    opener = next(r for r in scope.load_records("fills") if r["side"] == "BUY")
+    opener.update(commissionAsset="ETH", commission=.002, maker=True)
+    scope.upsert_records("fills", [opener], key_fn=lambda r: str(r["id"]), ts_fn=lambda r: r["time"])
+    trade, = build_default_registry().get("binance").build_venue_ledger(store, journals={}, now_s=START / 1000 + 86400).trades
+    assert trade["entry_leg"]["fee_known"] is False
+    assert trade["net_pnl_known"] is False
+    assert trade["position_events"][0]["role"] == "MAKER"
+    assert trade["position_events"][0]["fee_usd"] is None
+    assert trade["position_events"][1]["net_fee_usd"] == pytest.approx(.1)
+    assert trade["position_events"][1]["rebate_status"] == "SETTLED"
+
+
+def test_easicoin_maker_credit_is_not_funding(tmp_path):
+    store = LedgerStore(tmp_path)
+    _record_native_fills(store, "easicoin", [(2, 100, 0), (-1, 110, 10), (-1, 130, 30)], native_history=True)
+    scope = store.venue_scope("easicoin")
+    opener = next(r for r in scope.load_records("fills") if r["side"] == "Buy")
+    opener.update(exec_fee=-.2, liquidity_type="maker")
+    scope.upsert_records("fills", [opener], key_fn=lambda r: str(r["exec_id"]), ts_fn=lambda r: r["exec_time"])
+    rows = scope.load_records("closed_pnl")
+    for row in rows:
+        row["closed_pnl"] += .2
+    scope.upsert_records("closed_pnl", rows, key_fn=lambda r: str(r["order_id"]), ts_fn=lambda r: r["created_at"])
+    trade, = build_default_registry().get("easicoin").build_venue_ledger(store, journals={}, now_s=START / 1000 + 86400).trades
+    assert trade["entry_leg"]["net_fee_usd"] == pytest.approx(-.2)
+    assert trade["funding_pnl_usd"] == 0
+    assert trade["settlement_adjustment_usd"] == pytest.approx(0)
+    assert trade["net_pnl_usd"] == pytest.approx(40)

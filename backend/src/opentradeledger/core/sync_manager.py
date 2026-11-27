@@ -9,12 +9,14 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
+from opentradeledger.adapters.base import BaseExchangeAdapter
 from opentradeledger.adapters.easicoin.identity import EasiCoinIdentityError
 from opentradeledger.adapters.registry import AdapterRegistry
 from opentradeledger.core.account_partition import (
     AccountIdentityError,
+    AccountScopedStore,
     is_secondary_account_id,
     mask_uid,
     parse_adapter_id,
@@ -41,6 +43,66 @@ class CandidateSaveError(RuntimeError):
 
 class CandidateRollbackError(RuntimeError):
     """Local storage failed while restoring the previous venue state."""
+
+
+class ExitReceipt(NamedTuple):
+    trade_id: str
+    opened_ms: int
+    time_ms: int
+
+
+ExitReceipts = dict[tuple[str, str, str, str], ExitReceipt]
+
+
+def _booked_exits(adapter: BaseExchangeAdapter, scoped_store: AccountScopedStore, now_s: int) -> ExitReceipts | None:
+    """Read the same settled trades as the dashboard; only exit orders or statements count."""
+    try:
+        if not adapter.has_venue_data(scoped_store):
+            return None
+        bundle = adapter.build_venue_ledger(scoped_store, journals={}, now_s=now_s)
+        if bundle is None:
+            return None
+        receipts = {}
+        for trade in bundle.trades:
+            symbol, side = trade["symbol"], trade["side"]
+            opened_ms = int(trade.get("open_time_ms") or 0)
+            exits = [e for e in trade.get("position_events") or [] if e["action"] in {"REDUCE", "CLOSE"}]
+            for event in exits or trade.get("exit_batches") or []:
+                order = str(event.get("order_id") or "")
+                when = int(event.get("time_ms") or 0)
+                key = (symbol, side, "order", order) if order else (symbol, side, "time", f"{trade['trade_id']}:{when}")
+                receipts[key] = ExitReceipt(trade["trade_id"], opened_ms, when)
+            if not exits and not trade.get("exit_batches"):
+                receipts[(symbol, side, "statement", trade["trade_id"])] = ExitReceipt(
+                    trade["trade_id"], opened_ms, trade["close_time_ms"]
+                )
+        return receipts
+    except Exception:
+        logger.exception("Could not read %s settlements for Bark", adapter.meta.venue_id)
+        return None
+
+
+def _new_booked_exits(previous: ExitReceipts, current: ExitReceipts) -> int:
+    # A statement may acquire fill evidence later. Previously booked parts do not ring again.
+    previous_trade_ids = {r.trade_id for r in previous.values()}
+    previous_statements = {r.trade_id: r.time_ms for key, r in previous.items() if key[2] == "statement"}
+    old_statement_times = {
+        (key[0], key[1], r.opened_ms, r.time_ms)
+        for key, r in previous.items() if key[2] == "statement" and r.opened_ms and r.time_ms
+    }
+    # Some venue statement IDs include their latest close time. Match an actual
+    # exit at the old statement boundary before treating earlier fills as covered.
+    for key, receipt in current.items():
+        if (key[0], key[1], receipt.opened_ms, receipt.time_ms) in old_statement_times:
+            previous_statements[receipt.trade_id] = max(
+                previous_statements.get(receipt.trade_id, 0), receipt.time_ms
+            )
+    return sum(
+        1 for key, receipt in current.items()
+        if key not in previous
+        and not (key[2] == "statement" and receipt.trade_id in previous_trade_ids)
+        and not (receipt.trade_id in previous_statements and receipt.time_ms <= previous_statements[receipt.trade_id])
+    )
 
 
 def should_sync_venue(
@@ -199,6 +261,7 @@ class SyncManager:
         self._stop_event: asyncio.Event | None = None
         self._bg_task: asyncio.Task[None] | None = None
         self._sync_lock = asyncio.Lock()
+        self._last_booked_exits: dict[str, ExitReceipts] = {}
 
     def _load_schedule(self) -> dict[str, Any]:
         raw = self.store.get_meta("sync_schedule", {})
@@ -478,6 +541,13 @@ class SyncManager:
                     sched_fp_before = tuple(int(x) for x in (prev_entry.get("fingerprint") or []))
                     prev_health = (self.health_tracker.get_all().get(acct_id) or {}).get("status")
                     scoped_store = self.store.for_account(acct_id, adapter_id)
+                    notification_settings = self.store.get_preferences().notifications
+                    notifying = bark_configured(notification_settings)
+                    if not notifying:
+                        self._last_booked_exits.pop(acct_id, None)
+                    previous_exits = self._last_booked_exits.get(acct_id)
+                    if notifying and previous_exits is None:
+                        previous_exits = _booked_exits(adapter, scoped_store, now_s)
                     client: Any = None
                     try:
                         client = adapter.create_client(cred)
@@ -604,10 +674,20 @@ class SyncManager:
                                 cred.model_copy(update={"remote_uid": eff_uid, "account_role": eff_role})
                             )
                         acct_title = cred.label or acct_id.upper()
-                        if outcome.new_closed_delta > 0:
+                        new_exits = 0
+                        if notifying:
+                            current_exits = _booked_exits(adapter, scoped_store, now_s)
+                            if current_exits is not None:
+                                if previous_exits is not None:
+                                    new_exits = _new_booked_exits(previous_exits, current_exits)
+                                # Incomplete fields may temporarily hide previously booked settlements.
+                                if previous_exits and outcome.warnings:
+                                    current_exits = {**previous_exits, **current_exits}
+                                self._last_booked_exits[acct_id] = current_exits
+                        if new_exits and self.store.get_preferences().notifications == notification_settings:
                             await self._maybe_notify(
                                 title=f"OpenTradeLedger · {acct_title} 新平仓入账",
-                                body=f"{acct_title} 新增 {outcome.new_closed_delta} 笔交割记录，当前权益 {outcome.equity_usd:.2f} USDT。",
+                                body=f"{acct_title} 新增 {new_exits} 笔减仓或平仓入账记录，当前权益 {outcome.equity_usd:.2f} USDT。",
                             )
                     except Exception as exc:
                         err_state = self.health_tracker.record_error(acct_id, exc)
@@ -622,7 +702,7 @@ class SyncManager:
                         is_transient = err_state["error_code"] in {"NETWORK_UNREACHABLE", "RATE_LIMITED", "UPSTREAM_5XX"}
                         consec = int(err_state.get("consecutive_failures") or 1)
                         should_alert = (consec == 3) if is_transient else (prev_health != "error")
-                        if should_alert:
+                        if should_alert and self.store.get_preferences().notifications == notification_settings:
                             acct_title = cred.label or acct_id.upper()
                             await self._maybe_notify(
                                 title=f"OpenTradeLedger · {acct_title} 同步异常",
@@ -655,6 +735,7 @@ class SyncManager:
         async with self._sync_lock:
             if self.vault.revision(venue_id) != expected:
                 raise CredentialEditConflict()
+            self._last_booked_exits.pop(venue_id.lower(), None)
             yield
 
     async def sync_candidate_and_commit(self, cred: Any, expected_revision: str | None = None) -> dict[str, Any]:

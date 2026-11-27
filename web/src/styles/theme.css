@@ -1594,7 +1594,7 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
 }
 [data-action=REDUCE] > .otl-position-icon,
 [data-action=CLOSE] > .otl-position-icon { color: var(--fg-2); background: var(--surface-2); }
-.otl-position-body { padding: 0 0 14px; }
+.otl-position-body { container-type: inline-size; padding: 0 0 14px; }
 .otl-position-heading { min-height: 23px; justify-content: space-between; }
 .otl-position-heading h4 { color: var(--fg); font-weight: 650; font-size: 13px; margin: 0; }
 .otl-position-heading > div > span { font-size: 12px; color: var(--fg-2); }
@@ -1677,4 +1677,17 @@ button:active:not(:disabled):not(.otl-switch):not([data-no-press]) {
     gap: 8px;
   }
   .otl-position-lifecycle dl:has(dd[data-wide]) dd { text-align: right; }
+}
+
+/* Scope density to the trade-list pane so it also follows the desktop 7:5 split. */
+.otl-table-wrap:has(.otl-trades-table) { container-type: inline-size; }
+@container (max-width: 630px) {
+  .otl-trades-table th, .otl-trades-table td { padding-inline: 6px; }
+  .otl-trades-table th:first-child, .otl-trades-table td:first-child { padding-left: 9px; }
+  .otl-trades-table th:last-child, .otl-trades-table td:last-child { padding-right: 9px; }
+  .otl-trades-table td:last-child > div + div { white-space: normal; }
+}
+@container (max-width: 410px) {
+  .otl-trade-row-time { max-width: 16ch; }
+  .otl-trades-table td:last-child > div + div { max-width: 13ch; margin-left: auto; }
 }

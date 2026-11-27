@@ -6,6 +6,7 @@ import { useI18n } from '../i18n'
 import type { MessageKey } from '../i18n/zh-CN'
 import { api } from '../lib/api'
 import { useCurrency } from '../lib/currency'
+import { formatExecutionFee } from '../lib/executionFee'
 import { fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, fmtSignedPct, pnlTone } from '../lib/format'
 import type { ClosedTrade, OpenPosition, TradeLegFee } from '../lib/types'
 import { AnimatedCollapse } from './AnimatedCollapse'
@@ -71,7 +72,7 @@ function CompactLegRow({
         <div>
           <div className="text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
           <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? t('leg_fee_unknown') : cur.signedMoney(-leg.gross_fee_usd, 3)}
+            {feeUnknown ? t('leg_fee_unknown') : formatExecutionFee(cur, -leg.gross_fee_usd, 3)}
           </div>
         </div>
         <div>
@@ -80,7 +81,7 @@ function CompactLegRow({
             {feeUnknown
               ? '—'
               : leg.rebate_usd > 0
-                ? `+${cur.money(leg.rebate_usd, 3)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
+                ? `${formatExecutionFee(cur, leg.rebate_usd, 3)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
                 : leg.gross_fee_usd === 0 ? t('leg_zero_fee') : cur.money(0, 3)}
           </div>
           {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
@@ -94,7 +95,7 @@ function CompactLegRow({
         <div className="text-right">
           <div className="text-[var(--fg-3)]">{netLabel}</div>
           <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? '—' : cur.signedMoney(-leg.net_fee_usd, 3)}
+            {feeUnknown ? '—' : formatExecutionFee(cur, -leg.net_fee_usd, 3)}
           </div>
         </div>
       </div>
@@ -207,7 +208,9 @@ export function TradeDrilldownDrawer({
   if (!shouldRender) return null
 
   const isClosingVisual = !open || closing
+  const netsKnown = trades.every(tr => tr.net_pnl_known !== false)
   const totalNet = trades.reduce((a, b) => a + b.net_pnl_usd, 0)
+  const feesKnown = trades.every(tr => tr.total_fee_known !== false)
   const totalFee = trades.reduce((a, b) => a + b.total_fee_usd, 0)
   const totalReb = trades.reduce((a, b) => a + b.total_rebate_usd + b.total_discount_saved_usd, 0)
   const wins = trades.filter(tr => tr.net_pnl_usd > 0).length
@@ -240,7 +243,7 @@ export function TradeDrilldownDrawer({
             {trades.length > 0 && (
               <div className="text-[12px] text-[var(--fg-3)] mt-0.5 truncate">
                 {trades.length} {locale === 'en' ? 'trades' : '笔交割'} · {t('kpi_winrate')}{' '}
-                {winRate.toFixed(1)}%
+                {netsKnown ? `${winRate.toFixed(1)}%` : t('lifecycle_unknown')}
               </div>
             )}
           </div>
@@ -309,20 +312,20 @@ export function TradeDrilldownDrawer({
             <div className="px-6 py-3.5 border-b border-[var(--border)] bg-[var(--surface-2)] grid grid-cols-3 gap-3 text-[12px]">
               <div>
                 <div className="text-[var(--fg-3)]">{t('th_net_pnl')}</div>
-                <div className={`text-[15px] font-semibold mt-0.5 sensitive ${pnlTone(totalNet)}`}>
-                  {cur.signedMoney(totalNet)}
+                <div className={`text-[15px] font-semibold mt-0.5 sensitive ${pnlTone(netsKnown ? totalNet : 0)}`}>
+                  {netsKnown ? cur.signedMoney(totalNet) : t('lifecycle_unknown')}
                 </div>
               </div>
               <div>
                 <div className="text-[var(--fg-3)]">{t('wf_total_fee')}</div>
                 <div className="text-[14px] font-semibold mt-0.5 sensitive text-[var(--fg)]">
-                  -{cur.money(totalFee)}
+                  {feesKnown ? cur.signedMoney(-totalFee) : t('lifecycle_unknown')}
                 </div>
               </div>
               <div className="text-right">
                 <div className="text-[var(--fg-3)]">{t('wf_total_rebate')}</div>
                 <div className="text-[14px] font-semibold mt-0.5 sensitive txt-pos">
-                  +{cur.money(totalReb)}
+                  {feesKnown ? `+${cur.money(totalReb)}` : t('lifecycle_unknown')}
                 </div>
               </div>
             </div>
@@ -382,18 +385,18 @@ export function TradeDrilldownDrawer({
                         <div className="text-[12px] text-[var(--fg-3)] mt-0.5 sensitive">
                           {t('fee_entry_short')} {tr.entry_leg.fee_known === false ? t('leg_fee_unknown') : cur.signedPlainMoney(-tr.entry_leg.gross_fee_usd, 2)} ·{' '}
                           {t('fee_exit_short')} {tr.exit_leg.fee_known === false ? t('leg_fee_unknown') : cur.signedPlainMoney(-tr.exit_leg.gross_fee_usd, 2)} ·{' '}
-                          {t('fee_net_short')} {cur.signedMoney(-tr.net_fee_usd, 2)}
+                          {t('fee_net_short')} {tr.total_fee_known === false ? t('lifecycle_unknown') : cur.signedMoney(-tr.net_fee_usd, 2)}
                         </div>
                       </div>
 
                       <div className="flex items-center gap-2.5 shrink-0">
                         <div className="text-right">
-                          <div className={`text-[13px] font-semibold sensitive ${pnlTone(tr.net_pnl_usd)}`}>
-                            {cur.signedMoney(tr.net_pnl_usd)}
+                          <div className={`text-[13px] font-semibold sensitive ${pnlTone(tr.net_pnl_known === false ? 0 : tr.net_pnl_usd)}`}>
+                            {tr.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedMoney(tr.net_pnl_usd)}
                           </div>
                           <div className="text-[12px] text-[var(--fg-3)] sensitive">
                             {locale === 'en' ? 'Pre-rebate ' : '返佣前 '}
-                            {cur.signedPlainMoney(tr.book_pnl_usd)}
+                            {tr.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedPlainMoney(tr.book_pnl_usd)}
                           </div>
                         </div>
                         <ChevronDown
@@ -444,17 +447,23 @@ export function TradeDrilldownDrawer({
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_total_fee')}</span>
                           <span className="sensitive">
-                            {cur.signedMoney(-tr.total_fee_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}
+                            {tr.total_fee_known === false ? t('lifecycle_unknown') : formatExecutionFee(cur, -tr.total_fee_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}
                           </span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_total_rebate')}</span>
                           <span className="txt-pos sensitive">
-                            +{cur.money(tr.total_rebate_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}
+                            {tr.total_fee_known === false ? t('lifecycle_unknown') : `+${cur.money(tr.total_rebate_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}`}
                           </span>
                         </div>
+                        {Boolean(tr.settlement_adjustment_usd) && (
+                          <div className="flex justify-between">
+                            <span>{locale === 'en' ? 'Unattributed settlement adjustment' : '未归因结算差额'}</span>
+                            <span className="sensitive">{formatExecutionFee(cur, tr.settlement_adjustment_usd!, 2)}</span>
+                          </div>
+                        )}
                         <PartialSettlement trade={tr} />
-                        {tr.total_discount_saved_usd > 0.0001 && (
+                        {tr.total_fee_known !== false && tr.total_discount_saved_usd > 0.0001 && (
                           <div className="flex justify-between text-[var(--fg-3)]">
                             <span>
                               {locale === 'en' ? 'Pre-deduction discount saved' : '扣费前平台币抵扣已省'}

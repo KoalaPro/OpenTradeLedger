@@ -222,6 +222,17 @@ def _classify_leg_mode(
     return "MARKET_TAKER", "市价吃单"
 
 
+def _gate_fill_rebates(
+    fee: Decimal, share: Decimal, role: str, timestamp: float, match: Mapping[str, Any] | None,
+    maker_rate: Decimal, taker_rate: Decimal, now_sec: float,
+) -> tuple[Decimal, Decimal]:
+    if fee > 0 and match is not None:
+        return dec(match["rebate_usd"]) * share, Decimal(0)
+    if fee > 0 and now_sec - timestamp <= PENDING_REBATE_WINDOW_SEC:
+        return Decimal(0), fee * (maker_rate if role == "maker" else taker_rate)
+    return Decimal(0), Decimal(0)
+
+
 def _summarize_leg(
     fills: Sequence[tuple[str, Mapping[str, Any], Decimal]],
     *,
@@ -291,21 +302,14 @@ def _summarize_leg(
         if fee <= 0:
             continue
         match = paired_rebates.get(t_key)
-        fill_eff_reb = Decimal("0")
+        settled, pending = _gate_fill_rebates(fee, share, role, f_sec, match, maker_rate, taker_rate, now_sec)
+        settled_rebate += settled
+        pending_rebate += pending
+        has_pending |= pending > 0
         if match is not None:
-            rb_amt = dec(match["rebate_usd"]) * share
-            settled_rebate += rb_amt
-            fill_eff_reb = rb_amt
             has_settled = True
-            ct = int(match["commission_time"])
-            if ct > latest_rebate_sec:
-                latest_rebate_sec = ct
-        elif (now_sec - f_sec) <= PENDING_REBATE_WINDOW_SEC:
-            est_rate = maker_rate if role == "maker" else taker_rate
-            p_amt = fee * est_rate
-            pending_rebate += p_amt
-            fill_eff_reb = p_amt
-            has_pending = True
+            latest_rebate_sec = max(latest_rebate_sec, int(match["commission_time"]))
+        fill_eff_reb = settled + pending
 
         if role == "maker":
             maker_rebate += fill_eff_reb
@@ -347,15 +351,15 @@ def _summarize_leg(
         "taker_notional_usd": f2(taker_notional, 2),
         "time_sec": int(leg_sec) if leg_sec > 0 else 0,
         "time_bj": fmt_bj(leg_sec, "%m-%d %H:%M:%S") if leg_sec > 0 else "—",
-        "gross_fee_usd": f2(gross_fee, 4),
-        "maker_fee_usd": f2(maker_fee, 4),
-        "taker_fee_usd": f2(taker_fee, 4),
-        "maker_rebate_usd": f2(maker_rebate, 4),
-        "taker_rebate_usd": f2(taker_rebate, 4),
+        "gross_fee_usd": float(gross_fee),
+        "maker_fee_usd": float(maker_fee),
+        "taker_fee_usd": float(taker_fee),
+        "maker_rebate_usd": float(maker_rebate),
+        "taker_rebate_usd": float(taker_rebate),
         "fee_bps": f2(fee_bps, 2),
-        "settled_rebate_usd": f2(settled_rebate, 4),
-        "pending_rebate_usd": f2(pending_rebate, 4),
-        "net_fee_usd": f2(gross_fee - eff_rebate, 4),
+        "settled_rebate_usd": float(settled_rebate),
+        "pending_rebate_usd": float(pending_rebate),
+        "net_fee_usd": float(gross_fee - eff_rebate),
         "rebate_pct": f2(reb_pct, 2),
         "rebate_status": reb_status,
         "rebate_settled_bj": fmt_bj(latest_rebate_sec, "%m-%d %H:%M") if latest_rebate_sec > 0 else "",
@@ -663,6 +667,8 @@ def build_gate_venue_ledger(
             pos_side=pos_side,
             entry_ref_price=dec(entry_leg["avg_price"]) or en_px_fb,
         )
+        if len({batch.get("mode") for batch in ex_batches}) > 1:
+            exit_leg["mode"], exit_leg["mode_zh"] = "MIXED", "混合成交"
         fills_fee_sum = dec(entry_leg["gross_fee_usd"]) + dec(exit_leg["gross_fee_usd"])
         total_fee = b_fee if b_fee > 0 else fills_fee_sum
         if total_fee > fills_fee_sum + Decimal("0.0001"):
@@ -717,10 +723,10 @@ def build_gate_venue_ledger(
                 ]),
                 "gross_pnl_usd": f2(g_pnl, 4),
                 "funding_pnl_usd": f2(f_pnl, 4),
-                "total_fee_usd": f2(total_fee, 4),
-                "settled_rebate_usd": f2(settled_reb, 4),
-                "pending_rebate_usd": f2(pending_reb, 4),
-                "net_fee_usd": f2(total_fee - eff_reb, 4),
+                "total_fee_usd": float(total_fee),
+                "settled_rebate_usd": float(settled_reb),
+                "pending_rebate_usd": float(pending_reb),
+                "net_fee_usd": float(total_fee - eff_reb),
                 "effective_rebate_pct": f2(eff_reb_pct, 2),
                 "rebate_state": rebate_state,
                 "gate_book_pnl_usd": f2(b_pnl, 4),
@@ -807,13 +813,25 @@ def build_gate_venue_ledger(
         native_mult = dec((contract_specs.get(contract) or {}).get("quanto_multiplier"))
         fill_mult = native_mult if native_mult > 0 else Decimal("1")
         fill_inputs = []
-        for kind, timestamp, _, oid, contracts, price, trade, share in seq_events:
+        for kind, timestamp, trade_key, oid, contracts, price, trade, share in seq_events:
             raw_fee = reported_amount(trade.get("fee"))
+            fee = raw_fee * share if raw_fee is not None else None
+            execution = {}
+            if fee is not None:
+                settled, pending = _gate_fill_rebates(
+                    fee, share, str(trade.get("role") or "taker").lower(), timestamp,
+                    paired_rebates.get(trade_key), maker_reb_rate, taker_reb_rate, now_s,
+                )
+                execution = {"rebate_usd": settled + pending, "net_fee_usd": fee - settled - pending,
+                             "rebate_status": "PENDING" if pending > 0 else "SETTLED"}
+                if contracts * native_mult * price > 0:
+                    execution["fee_bps"] = fee * 10000 / (contracts * native_mult * price)
             fill_inputs.append({
+                **execution,
                 "time_ms": norm_ms(timestamp), "is_entry": kind == "ENTRY",
-                "order_id": oid, "qty": contracts * fill_mult, "price": price,
+                "order_id": oid, "qty": contracts * fill_mult, "price": price, "role": trade.get("role"),
                 "qty_unit": "base" if native_mult > 0 else "contracts",
-                "fee_usd": raw_fee * share if raw_fee is not None else None,
+                "fee_usd": fee,
             })
         events, order_pnl = position_fill_accounting(
             fill_inputs, side=side, closed_qty=total_contracts_closed * fill_mult,

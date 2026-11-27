@@ -254,3 +254,41 @@ def test_missing_order_ids_preserve_fills_without_inventing_batches(tmp_path, ve
     row, = trades(store, venue)
     assert [e['order_id'] for e in row['position_events']] == ['1-o', '1-a', '', '1-b']
     assert row['exit_batches'] == []
+
+
+def test_gate_mixed_exit_order_modes_preserve_per_fill_cost(tmp_path):
+    store = LedgerStore(tmp_path)
+    add_position(store, 'gate', [(0, 2, 100, 'o', None), (1000, -1, 110, 'tp', 10),
+                                 (2000, -1, 130, 'x', 30)], reported_gross=40)
+    scope = store.venue_scope('gate')
+    rows = scope.load_records('futures_trades')
+    for fill in rows:
+        fill['role'] = 'maker' if fill['size'] > 0 else 'taker'
+        fill['text'] = 'ao-test' if fill['order_id'] == '1-tp' else 'app'
+    scope.upsert_records('futures_trades', rows, key_fn=lambda r: r['id'], ts_fn=lambda r: r['create_time'])
+    trade, = trades(store, 'gate')
+    assert trade['exit_leg']['mode_code'] == 'MIXED'
+    assert [b['mode_code'] for b in trade['exit_batches']] == ['TP_MARKET', 'MARKET_TAKER']
+    assert [e['net_fee_usd'] for e in trade['position_events']] == pytest.approx([.2, .1, .1])
+
+
+def test_gate_split_fill_precision_through_public_legs_batches_and_totals(tmp_path):
+    store = LedgerStore(tmp_path)
+    add_position(store, 'gate', [(0, 3, 100, 'o', None), (1000, -1, 110, 'a', 10),
+                                 (2000, -1, 120, 'b', 20), (86401000, -1, 130, 'b', 30)],
+                 reported_gross=60)
+    scope = store.venue_scope('gate')
+    fees = ['.111111111', '.618912', '.80944845', '.751807895']
+    fills = scope.load_records('futures_trades')
+    for fill in fills:
+        fill['fee'] = fees[int(fill['id']) - 1]
+    scope.upsert_records('futures_trades', fills, key_fn=lambda r: r['id'], ts_fn=lambda r: r['create_time'])
+    bundle = build_default_registry().get('gate').build_venue_ledger(store, journals={}, now_s=BASE / 1000 + 2 * 86400)
+    trade, = bundle.trades
+    for field in ('gross_fee_usd', 'net_fee_usd'):
+        assert [b[field] for b in trade['exit_batches']] == [.618912, 1.561256345]
+        assert trade['entry_leg'][field] == .111111111
+        assert trade['exit_leg'][field] == 2.180168345
+    assert trade['total_fee_usd'] == trade['net_fee_usd'] == 2.291279456
+    assert [e['fee_usd'] for e in trade['position_events']] == [float(f) for f in fees]
+    assert sum(float(parts.get('manual_futures', 0)) for parts in bundle.daily_components.values()) == pytest.approx(60)

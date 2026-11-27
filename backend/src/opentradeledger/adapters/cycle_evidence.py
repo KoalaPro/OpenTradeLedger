@@ -90,7 +90,7 @@ def project_live_reduction(
     raw["settlements_by_day"] = {native_day: book_delta - dated_funding}
     raw["gross_pnl_usd"] += native["gross_pnl_usd"] - sum(e["gross_pnl_usd"] for e in covered)
     raw["funding_pnl_usd"] = native.get("funding_pnl_usd", 0.0)
-    for field in ("funding_by_day", "rebates_by_day", "total_discount_saved_usd"):
+    for field in ("funding_by_day", "rebates_by_day", "total_discount_saved_usd", "settlement_adjustment_usd"):
         if field in native:
             raw[field] = native[field]
     for leg_key, fee_key in (("entry_leg", "allocated_entry_fee_usd"), ("exit_leg", "fee_usd")):

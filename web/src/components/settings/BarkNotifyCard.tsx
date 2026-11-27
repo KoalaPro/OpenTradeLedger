@@ -25,7 +25,7 @@ export function BarkNotifyCard({
   )
   const [barkKey, setBarkKey] = useState('')
   const [outboundProxyUrl, setOutboundProxyUrl] = useState(settings.outbound_proxy_url || '')
-  const [testingNotify, setTestingNotify] = useState(false)
+  const [barkAction, setBarkAction] = useState<'' | 'test' | 'save' | 'clear'>('')
   const [showBarkGuide, setShowBarkGuide] = useState(false)
 
   useEffect(() => {
@@ -61,6 +61,11 @@ export function BarkNotifyCard({
           className={`otl-collapse-grid ${showBarkGuide ? 'is-open' : ''}`}
         >
           <div className="otl-collapse-inner">
+            <p className="m-0 py-2 text-[12px] text-[var(--fg-2)]">
+              {isZh
+                ? '个人合约账户每次同步新增的减仓、平仓记录合并提醒一次。公开带单员的空位和调仓提醒在「公开盯盘」中按人开启。'
+                : 'Each sync groups newly booked reductions and closes into one alert per account. Enable slot and trade alerts for each public trader in Public Watcher.'}
+            </p>
             <ol className="m-0 pt-1 pb-2 pl-4 space-y-1 list-decimal text-[12px] text-[var(--fg-2)] leading-relaxed">
               <li>
                 {isZh
@@ -74,8 +79,8 @@ export function BarkNotifyCard({
               </li>
               <li>
                 {isZh
-                  ? '点击「测试推送」即可自动保存并听手机响铃。'
-                  : 'Click "Test Push" directly to auto-save and verify delivery.'}
+                  ? '测试推送和保存新设备都会发送一条验证通知。Bark 确认接收后才启用新设备。'
+                  : 'Testing or saving a new device sends a verification push. The device becomes active after Bark accepts it.'}
               </li>
             </ol>
           </div>
@@ -86,6 +91,7 @@ export function BarkNotifyCard({
             type="text"
             aria-label={isZh ? 'Bark 服务器地址' : 'Bark Server URL'}
             data-testid="bark-server-url-input"
+            disabled={Boolean(barkAction)}
             value={barkServerUrl}
             onChange={e => setBarkServerUrl(e.target.value)}
             placeholder="https://api.day.app"
@@ -95,6 +101,7 @@ export function BarkNotifyCard({
             type="password"
             aria-label={isZh ? 'Bark 链接或专属 Key' : 'Bark App URL or Push Key'}
             data-testid="bark-push-key-input"
+            disabled={Boolean(barkAction)}
             value={barkKey}
             onChange={e => setBarkKey(e.target.value)}
             placeholder={
@@ -115,10 +122,13 @@ export function BarkNotifyCard({
             <button
               type="button"
               data-testid="clear-bark-key-btn"
+              disabled={Boolean(barkAction)}
               onClick={async () => {
+                setBarkAction('clear')
                 const cleared = await onUpdateSettings({
                   notifications: { clear_bark_push_key: true },
                 })
+                setBarkAction('')
                 if (cleared === false) return
                 setBarkKey('')
                 flashOk(
@@ -134,9 +144,9 @@ export function BarkNotifyCard({
           <button
             type="button"
             data-testid="test-notify-btn"
-            disabled={testingNotify}
+            disabled={Boolean(barkAction)}
             onClick={async () => {
-              setTestingNotify(true)
+              setBarkAction('test')
               setErrorMsg('')
               try {
                 const pendingNotifications = {
@@ -149,39 +159,41 @@ export function BarkNotifyCard({
                   if ((await onUpdateSettings({})) === false) return
                 }
                 setBarkKey('')
-                const sentList = (res.sent || []).join(', ')
                 flashOk(
                   isZh
-                    ? `配置已自动保存，测试推送已送达（${sentList}）`
-                    : `Saved & test alert delivered (${sentList})`,
+                    ? 'Bark 已接收测试通知，设备配置已保存'
+                    : 'Bark accepted the test alert. Device settings saved.',
                 )
               } catch (err) {
                 setErrorMsg(err instanceof Error ? err.message : 'Test notification failed')
               } finally {
-                setTestingNotify(false)
+                setBarkAction('')
               }
             }}
             className="otl-btn"
           >
             <Bell size={12} />
-            <span>{testingNotify ? (isZh ? '发送中…' : 'Sending…') : isZh ? '测试推送' : 'Test Push'}</span>
+            <span>{barkAction === 'test' ? (isZh ? '发送中…' : 'Sending…') : isZh ? '测试推送' : 'Test Push'}</span>
           </button>
           <button
             type="button"
+            disabled={Boolean(barkAction)}
             onClick={async () => {
+              setBarkAction('save')
               const saved = await onUpdateSettings({
                 notifications: {
                   bark_server_url: barkServerUrl.trim() || 'https://api.day.app',
                   bark_push_key: barkKey,
                 },
               })
+              setBarkAction('')
               if (saved === false) return
               setBarkKey('')
               flashOk(t('set_save_ok'), 2500)
             }}
             className="otl-btn otl-btn-primary"
           >
-            {t('save_config')}
+            {barkAction === 'save' ? (isZh ? '正在保存…' : 'Saving…') : (isZh ? '验证并保存配置' : 'Verify & Save')}
           </button>
         </div>
       </div>

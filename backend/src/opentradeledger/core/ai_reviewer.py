@@ -162,21 +162,21 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "taker_configured_gross_bps": r.get("taker_gross_bps") if r.get("taker_rate_source") == "configured" else None,
             "maker_gross_net_bps": (
                 f"{r.get('maker_gross_bps', 0)}/{r.get('maker_net_bps', 0)}"
-                if r.get("maker_bps_known", True)
+                if r.get("maker_bps_known", True) and r.get("total_fee_known", True)
                 else "unknown"
             ),
             "taker_gross_net_bps": (
                 f"{r.get('taker_gross_bps', 0)}/{r.get('taker_net_bps', 0)}"
-                if r.get("taker_bps_known", True)
+                if r.get("taker_bps_known", True) and r.get("total_fee_known", True)
                 else "unknown"
             ),
-            "blended_gross_bps": r.get("blended_gross_bps"),
-            "blended_net_bps": r.get("blended_net_bps"),
-            "gross_fee_usd": r.get("gross_fee_usd"),
-            "discount_saved_usd": r.get("discount_saved_usd"),
+            "blended_gross_bps": r.get("blended_gross_bps") if r.get("total_fee_known", True) else None,
+            "blended_net_bps": r.get("blended_net_bps") if r.get("total_fee_known", True) else None,
+            "gross_fee_usd": r.get("gross_fee_usd") if r.get("total_fee_known", True) else None,
+            "discount_saved_usd": r.get("discount_saved_usd") if r.get("total_fee_known", True) else None,
             "rebate_usd": r.get("rebate_usd"),
-            "net_fee_usd": r.get("net_fee_usd"),
-            "combined_relief_pct": r.get("combined_relief_pct") if r.get("gross_fee_usd") or r.get("discount_saved_usd") else None,
+            "net_fee_usd": r.get("net_fee_usd") if r.get("total_fee_known", True) else None,
+            "combined_relief_pct": r.get("combined_relief_pct") if r.get("total_fee_known", True) and (r.get("gross_fee_usd") or r.get("discount_saved_usd")) else None,
         }
         for r in (dashboard.get("fee_matrix") or [])
     ]
@@ -196,10 +196,10 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "venue": venue_display_by_id.get(str(r.get("venue_id") or "").lower()) or r.get("venue_name"),
             "symbol": r.get("symbol"),
             "trades": r.get("trade_count"),
-            "win_rate_pct": r.get("win_rate_pct"),
-            "gross_fee_usd": r.get("gross_fee_usd"),
+            "win_rate_pct": r.get("win_rate_pct") if r.get("net_pnl_known", True) else None,
+            "gross_fee_usd": r.get("gross_fee_usd") if r.get("total_fee_known", True) else None,
             "rebate_usd": r.get("rebate_usd"),
-            "net_pnl_usd": r.get("net_pnl_usd"),
+            "net_pnl_usd": r.get("net_pnl_usd") if r.get("net_pnl_known", True) else None,
         }
         for r in sym_sorted
     ]
@@ -255,11 +255,11 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "exit_mode": (t.get("exit_leg") or {}).get("mode_code"),
             "exit_bps": (t.get("exit_leg") or {}).get("fee_bps") if (t.get("exit_leg") or {}).get("fee_known", True) else None,
             "exit_gross_fee": (t.get("exit_leg") or {}).get("gross_fee_usd") if (t.get("exit_leg") or {}).get("fee_known", True) else None,
-            "total_fee_usd": t.get("total_fee_usd"),
-            "net_fee_usd": t.get("net_fee_usd"),
+            "total_fee_usd": t.get("total_fee_usd") if t.get("total_fee_known", True) else None,
+            "net_fee_usd": t.get("net_fee_usd") if t.get("total_fee_known", True) else None,
             "rebate_usd": t.get("total_rebate_usd"),
-            "discount_saved_usd": t.get("total_discount_saved_usd"),
-            "net_pnl_usd": t.get("net_pnl_usd"),
+            "discount_saved_usd": t.get("total_discount_saved_usd") if t.get("total_fee_known", True) else None,
+            "net_pnl_usd": t.get("net_pnl_usd") if t.get("net_pnl_known", True) else None,
             "tags": t.get("tags") or [],
             "note": t.get("note") or "",
         }
@@ -275,23 +275,23 @@ def build_ai_context_payload(dashboard: dict[str, Any]) -> dict[str, Any]:
             "whole_roi_pct": s.get("whole_roi_pct"),
             "range_whole_net_pnl_usd": s.get("range_whole_net_pnl_usd"),
             "range_whole_roi_pct": s.get("range_whole_roi_pct"),
-            "futures_net_pnl_usd": s.get("futures_net_pnl_usd"),
+            "futures_net_pnl_usd": s.get("futures_net_pnl_usd") if s.get("net_pnl_known", True) else None,
             "trade_count": s.get("trade_count"),
-            "win_rate_pct": s.get("win_rate_pct"),
+            "win_rate_pct": s.get("win_rate_pct") if s.get("net_pnl_known", True) else None,
             "long_trades": len(long_trades),
-            "long_win_rate_pct": long_wr,
+            "long_win_rate_pct": long_wr if all(t.get("net_pnl_known", True) for t in long_trades) else None,
             "short_trades": len(short_trades),
-            "short_win_rate_pct": short_wr,
-            "avg_win_hold_min": avg_win_min,
-            "avg_loss_hold_min": avg_loss_min,
+            "short_win_rate_pct": short_wr if all(t.get("net_pnl_known", True) for t in short_trades) else None,
+            "avg_win_hold_min": avg_win_min if s.get("net_pnl_known", True) else None,
+            "avg_loss_hold_min": avg_loss_min if s.get("net_pnl_known", True) else None,
             "entry_maker_ratio_pct": entry_maker_ratio,
             "exit_maker_ratio_pct": exit_maker_ratio,
-            "total_fee_usd": s.get("total_fee_usd"),
+            "total_fee_usd": s.get("total_fee_usd") if s.get("total_fee_known", True) else None,
             "total_rebate_usd": s.get("total_rebate_usd"),
-            "total_discount_saved_usd": s.get("total_discount_saved_usd"),
-            "net_fee_usd": s.get("net_fee_usd"),
-            "combined_relief_pct": s.get("combined_relief_pct"),
-            "potential_maker_savings_usd": s.get("potential_maker_savings_usd"),
+            "total_discount_saved_usd": s.get("total_discount_saved_usd") if s.get("total_fee_known", True) else None,
+            "net_fee_usd": s.get("net_fee_usd") if s.get("total_fee_known", True) else None,
+            "combined_relief_pct": s.get("combined_relief_pct") if s.get("total_fee_known", True) else None,
+            "potential_maker_savings_usd": s.get("potential_maker_savings_usd") if s.get("total_fee_known", True) else None,
             "max_drawdown_usd": s.get("max_drawdown_usd"),
         },
         "exchanges": exchanges,
@@ -357,7 +357,7 @@ def build_local_highlights(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
     avg_win_m = int(sum(win_holds) / len(win_holds) // 60) if win_holds else 0
     avg_loss_m = int(sum(loss_holds) / len(loss_holds) // 60) if loss_holds else 0
 
-    return [
+    highlights = [
         {
             "kind": "net_fee",
             "title": "Net Fee Burden & Relief",
@@ -390,6 +390,18 @@ def build_local_highlights(dashboard: dict[str, Any]) -> list[dict[str, Any]]:
             "body_zh": f"将可控吃单腿改为被动限价挂单，按各平台实测费率差预计可多留存 +{pot:.2f} USDT 纯利润。",
         },
     ]
+
+    if not s.get("total_fee_known", True):
+        highlights = [item for item in highlights if item["kind"] not in ("net_fee", "maker_upside")]
+    if not s.get("net_pnl_known", True):
+        highlights = [item for item in highlights if item["kind"] != "win_rate"]
+    if not s.get("total_fee_known", True) or not s.get("net_pnl_known", True):
+        highlights.append({
+            "kind": "incomplete_settlement", "title": "Settlement details", "title_zh": "待核对的交割数据",
+            "metric": "", "body": "Some trades lack fee conversion or verified net settlement. Open their details to see which amounts are available.",
+            "body_zh": "部分交易缺少手续费折算或可核实的净结算金额。各笔交割详情中可查看已有凭据。",
+        })
+    return highlights
 
 
 def resolve_range_labels(range_key: str) -> tuple[str, str, str]:
@@ -590,7 +602,10 @@ async def generate_ai_review(
         ai_error = "AI Base URL is configured without an API Key — generated locally without sending data."
         ai_error_zh = "已填写 AI 接口地址但尚未配置 API Key，本次未外发数据，已直接使用本地精算规则生成。"
 
-    if not commentary:
+    if not commentary and any(h["kind"] == "incomplete_settlement" for h in highlights):
+        commentary_zh = "\n\n".join(h["body_zh"] for h in highlights)
+        commentary = "\n\n".join(h["body"] for h in highlights)
+    elif not commentary:
         en_mk = ctx["summary"]["entry_maker_ratio_pct"]
         ex_mk = ctx["summary"]["exit_maker_ratio_pct"]
         mk_clause_zh = (

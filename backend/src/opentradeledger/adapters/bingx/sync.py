@@ -85,15 +85,11 @@ async def sync_bingx_venue(
         extract_bingx_snapshot_activity(raw_snap)
     snap = store.upsert_plugin_snapshot("bingx", raw_snap, merge_specs=BINGX_MERGE_SPECS)
     eq_usd, has_open, fp_after = extract_bingx_snapshot_activity(snap)
-    new_closed = 0
-    if len(fp_before) >= 2 and sum(fp_before) > 0 and len(fp_after) >= 2:
-        new_closed = max(0, int(fp_after[1]) - int(fp_before[1]))
     return VenueSyncOutcome(
         equity_usd=eq_usd,
         has_open_activity=has_open,
         fp_before=fp_before or fp_after,
         fp_after=fp_after,
-        new_closed_delta=new_closed,
         mode="venue_sync",
         warnings=list(snap.get("warnings") or []),
     )

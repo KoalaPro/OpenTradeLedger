@@ -1,9 +1,11 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '../i18n'
 import { CurrencyProvider, DEFAULT_FX } from '../lib/currency'
 import type { ClosedTrade, DashboardData } from '../lib/types'
 import { TradesPage } from '../pages/TradesPage'
+import { TradeDrilldownDrawer } from '../components/TradeDrilldownDrawer'
+import { api } from '../lib/api'
 
 function makeBaseDashboard(trades: ClosedTrade[]): DashboardData {
   return {
@@ -196,7 +198,7 @@ describe('Equity and commodity perpetual fee history on Trades', () => {
     }
     stocks.perpetuals = [
       gateEquity,
-      { ...gateEquity, symbol: 'XAU_USDT', category: 'Commodity Perp' },
+      { ...gateEquity, symbol: 'XAU_USDT', category: 'Commodity Perp', total_fee_known: false, net_pnl_known: false },
       {
         ...gateEquity, venue_id: 'binance', venue_name: 'Binance', venue_name_zh: '币安',
         trade_count: 0, qty: 0, maker_bps: 0, taker_bps: 0,
@@ -223,6 +225,7 @@ describe('Equity and commodity perpetual fee history on Trades', () => {
     expect(rows[1].textContent).toContain('-1.2000 / +0.2400')
     expect(rows[1].textContent).toContain('+45.20 U')
     expect(rows[2].textContent).toContain('XAU_USDT')
+    expect(within(rows[2]).getAllByText('Unknown')).toHaveLength(3)
     expect(rows[3].textContent).toContain('+0.0300')
 
     rerender(page('BINANCE', 'qcom_usdt', 'zh-CN'))
@@ -507,7 +510,7 @@ describe('Position lifecycle detail', () => {
     expect(within(events[1]).getByText(/9\.80/).className).toContain('sensitive')
   })
 
-  it('groups same-order fills into one opening and two exits with 4-decimal aligned fees and expandable source fills', () => {
+  it('groups same-order fills into one opening and two exits with source-precision fees and expandable source fills', () => {
     const makeExit = (qty: number, price: number, fee: number, remaining: number, order: string, index: number) => ({
       ...reduce, action: remaining ? 'REDUCE' as const : 'CLOSE' as const, time_ms: reduce.time_ms + index,
       order_id: order, qty, price, remaining_qty: remaining, fee_usd: fee,
@@ -526,13 +529,77 @@ describe('Position lifecycle detail', () => {
     const orders = ledger.getAllByRole('listitem')
     expect(orders).toHaveLength(3)
     expect(orders.map(row => row.querySelector('h4')?.textContent)).toEqual(['开仓', '减仓', '清仓'])
-    expect(within(orders[1]).getByText('-0.6189 U')).toBeTruthy()
-    expect(within(orders[2]).getByText('-1.5613 U')).toBeTruthy()
+    expect(within(orders[1]).getByText('-0.618912 U')).toBeTruthy()
+    expect(within(orders[2]).getByText('-1.561256345 U')).toBeTruthy()
     const fills = within(orders[1]).getByText('3 笔成交').closest('details')!
     fireEvent.click(within(fills).getByText('3 笔成交'))
     expect(fills.open).toBe(true)
-    expect(within(fills).getByText('-0.2261 U')).toBeTruthy()
-    expect(within(fills).getByText('-0.0568 U')).toBeTruthy()
+    expect(within(fills).getByText('-0.226128 U')).toBeTruthy()
+    expect(within(fills).getByText('-0.056784 U')).toBeTruthy()
+  })
+
+  it('uses each settlement day’s own fee/rebate and preserves unknown evidence for legacy split orders', () => {
+    const midnight = Date.parse('2026-11-17T16:00:00Z')
+    const split = [
+      first,
+      { ...reduce, time_ms: midnight - 1000, role: 'TAKER' as const, fee_bps: 2, rebate_usd: 0.01, net_fee_usd: 0.09 },
+      { ...close, order_id: reduce.order_id, time_ms: midnight + 1000, role: 'TAKER' as const,
+        fee_bps: 5, rebate_usd: 0.04, rebate_status: 'PENDING' as const, net_fee_usd: 0.16 },
+    ]
+    const batch = { ...leg, order_id: reduce.order_id, batch_index: 1, qty: 2,
+      gross_fee_usd: 0.3, rebate_usd: 0.05, net_fee_usd: 0.25, gross_pnl_usd: 20, net_pnl_usd: 19.4 }
+    const view = render(page([{ ...trade, position_events: split, exit_batches: [batch] }]))
+    const rows = screen.getAllByRole('listitem')
+    expect(rows[1].textContent).toContain('返 +0.0100 U (10%) · 净 -0.0900 U')
+    expect(rows[2].textContent).toContain('预估返 +0.0400 U (20%) · 净 -0.1600 U')
+    view.unmount()
+    render(page([{ ...trade, position_events: split.map(ev => ({ ...ev, rebate_usd: undefined, net_fee_usd: undefined })), exit_batches: [batch] }]))
+    expect(screen.getAllByRole('listitem')[1].textContent).toContain('返佣未知 · 净 未知')
+  })
+
+  it('preserves per-fill maker/taker and never substitutes allocated entry fee for the full opening', () => {
+    const rows = [{ ...first, role: 'MAKER' as const }, { ...add, role: 'TAKER' as const },
+      { ...reduce, remaining_qty: 2 }]
+    render(page([{ ...trade, position_events: rows, entry_leg: { ...leg, net_fee_usd: 0.05 } }]))
+    const orders = screen.getAllByRole('listitem')
+    expect(orders[0].textContent).toContain('挂单 Maker')
+    expect(orders[1].textContent).toContain('吃单 Taker')
+    expect(orders[0].textContent).toContain('净 未知')
+    expect(orders[0].textContent).toContain('本笔手续费-0.2000 U')
+    expect(orders[0].textContent).not.toContain('0.0500')
+  })
+
+  it('preserves high precision after currency conversion and masks every fill fee', () => {
+    render(<CurrencyProvider currency="HKD" fx={{ ...DEFAULT_FX, rates: { ...DEFAULT_FX.rates, HKD: 8 } }}>
+      {page([{ ...trade, position_events: [first, { ...reduce, fee_usd: 0.226128 }, close] }])}
+    </CurrencyProvider>)
+    expect(screen.getByText('-HK$1.809024').className).toContain('sensitive')
+  })
+
+  it('marks incomplete total fees unknown and displays a separately evidenced settlement adjustment', () => {
+    render(page([{ ...trade, total_fee_known: false, net_pnl_known: false, settlement_adjustment_usd: 0.125 }]))
+    expect(screen.getByTestId('trade-row-lifecycle').textContent).toContain('净 未知')
+    expect(screen.getByTestId('trade-row-lifecycle').textContent).toContain('返佣前 未知')
+    expect(screen.getByTestId('trade-settlement').textContent).toContain('最终实收净盈亏未知')
+    expect(screen.getByTestId('trade-settlement').textContent).toContain('进 + 出场先扣手续费合计未知')
+    expect(screen.getByTestId('trade-settlement').textContent).toContain('未归因结算差额+0.125 U')
+  })
+
+  it('includes the native fill summary at the drawer’s keyboard boundary', async () => {
+    const fills = [first, reduce, { ...reduce, time_ms: reduce.time_ms + 1 }, close]
+    const request = vi.spyOn(api, 'getDashboard').mockResolvedValue(makeBaseDashboard([{ ...trade, position_events: fills }]))
+    try {
+      render(<TradeDrilldownDrawer open venueId="okx" symbol="ETH_USDT" rangeKey="all" onClose={() => {}} onOpenInTrades={() => {}} />)
+      const summary = await screen.findByText('2 笔成交')
+      const firstAction = screen.getByRole('button', { name: '去合约页查看' })
+      firstAction.focus()
+      fireEvent.keyDown(firstAction, { key: 'Tab', shiftKey: true })
+      await waitFor(() => expect(document.activeElement).toBe(summary))
+      fireEvent.keyDown(summary, { key: 'Tab' })
+      expect(document.activeElement).toBe(firstAction)
+    } finally {
+      request.mockRestore()
+    }
   })
 
   it('keeps nonadjacent and cross-midnight fills separate, and requires all components for an order total', () => {

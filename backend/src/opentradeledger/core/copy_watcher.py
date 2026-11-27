@@ -1374,13 +1374,12 @@ class CopyWatcherService:
             self._updated_at_ms = int(time.time() * 1000)
             return self.get_status(demo_mode=False)
 
-    async def send_test_ring(self, portfolio_id: str = "") -> dict[str, Any]:
-        prefs = self.store.get_preferences()
-        n = prefs.notifications
+    async def send_test_ring(
+        self, portfolio_id: str = "", *, notifications: NotificationSettings | None = None
+    ) -> dict[str, Any]:
+        n = notifications or self.store.get_preferences().notifications
         state = self._load_state()
         pid = (portfolio_id or "").strip()
-        if not pid and state["targets"]:
-            pid = str(state["targets"][0].get("portfolio_id") or "")
 
         cached = state["snapshots"].get(pid) if pid and isinstance(state["snapshots"].get(pid), dict) else None
         if cached:
@@ -1410,7 +1409,7 @@ class CopyWatcherService:
         return await dispatch_notification(
             n,
             title="OpenTradeLedger · 推送通知已就绪",
-            body="测试验证成功！空余跟单名额、带单员调仓、新平仓入账及交易所同步异常将实时推送至此设备。",
+            body="这是设备验证通知。账本会按账户汇总新平仓入账，并报告同步异常；公开盯盘提醒按交易员设置发送。",
             bark_params={"sound": "bell", "level": "timeSensitive"},
             client=self._injected_client,
         )

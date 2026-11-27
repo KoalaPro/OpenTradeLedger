@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 
-const focusable = 'button, a[href], input, select, textarea, [tabindex]'
+const focusable = 'button, a[href], input, select, textarea, summary, [tabindex]'
 
 export function useDialogFocus(open: boolean, onClose: () => void) {
   const panel = useRef<HTMLDivElement>(null)

@@ -28,6 +28,7 @@ export function AnalyticsPage({
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
+  const SymbolAction = onInspectSymbol ? 'button' : 'span'
   const [attrMode, setAttrMode] = useState<'symbol' | 'business'>('symbol')
   const [calMonth, setCalMonth] = useState<string>('')
   const [editingGoal, setEditingGoal] = useState(false)
@@ -313,10 +314,10 @@ export function AnalyticsPage({
         />
         <KpiCard
           label={t('kpi_futures_pnl')}
-          value={cur.signedMoney(s.futures_net_pnl_usd)}
-          valueClass={pnlTone(s.futures_net_pnl_usd)}
+          value={s.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedMoney(s.futures_net_pnl_usd)}
+          valueClass={s.net_pnl_known === false ? 'txt-flat' : pnlTone(s.futures_net_pnl_usd)}
           sub={
-            s.trade_count > 0
+            s.trade_count > 0 && s.net_pnl_known !== false
               ? `${s.trade_count} ${locale === 'en' ? 'trades' : '笔交割'} · ${t('kpi_winrate')} ${s.win_rate_pct.toFixed(1)}%`
               : `${s.trade_count} ${locale === 'en' ? 'trades' : '笔交割'} · ${t('kpi_winrate')} —`
           }
@@ -330,9 +331,9 @@ export function AnalyticsPage({
         />
         <KpiCard
           label={t('kpi_fee_saved')}
-          value={cur.signedMoney(s.total_rebate_usd + s.total_discount_saved_usd)}
+          value={s.total_fee_known === false ? t('lifecycle_unknown') : cur.signedMoney(s.total_rebate_usd + s.total_discount_saved_usd)}
           valueClass="txt-pos"
-          sub={`${s.combined_relief_pct.toFixed(1)}%`}
+          sub={s.total_fee_known === false ? '—' : `${s.combined_relief_pct.toFixed(1)}%`}
         />
       </section>
 
@@ -353,6 +354,7 @@ export function AnalyticsPage({
         <div className="lg:col-span-5 py-6 px-5 lg:pl-7 lg:pr-5 border-t lg:border-t-0 border-[var(--border)]">
           <MonthlyCalendar
             days={data.calendar_days}
+            accounts={data.exchanges}
             availableMonths={data.available_months}
             selectedMonth={calMonth || (/^\d{4}-\d{2}$/.test(rangeKey) ? rangeKey : '')}
             onSelectMonth={setCalMonth}
@@ -394,10 +396,13 @@ export function AnalyticsPage({
                     onClick={() => onInspectSymbol?.(row.venue_id, row.symbol, row.venue_name)}
                   >
                     <td className="whitespace-nowrap">
-                      <span className="inline-flex items-center gap-2 font-semibold">
+                      <SymbolAction
+                        {...(onInspectSymbol ? { type: 'button' as const, 'aria-haspopup': 'dialog' as const } : {})}
+                        className="inline-flex items-center gap-2 font-semibold"
+                      >
                         <InstrumentMark instrument={row.symbol} exchange={row.venue_id.toUpperCase()} />
                         {row.symbol}
-                      </span>
+                      </SymbolAction>
                     </td>
                     <td>
                       <VenueBadge
@@ -406,15 +411,15 @@ export function AnalyticsPage({
                       />
                     </td>
                     <td className="text-right whitespace-nowrap">{row.trade_count}</td>
-                    <td className="text-right whitespace-nowrap">{row.win_rate_pct.toFixed(1)}%</td>
+                    <td className="text-right whitespace-nowrap">{row.net_pnl_known === false ? '—' : `${row.win_rate_pct.toFixed(1)}%`}</td>
                     <td className="text-right whitespace-nowrap text-[var(--fg-2)] sensitive">
-                      {Math.abs(row.gross_fee_usd) < 1e-9 ? cur.plainMoney(0) : `-${cur.plainMoney(row.gross_fee_usd)}`} /{' '}
+                      {row.total_fee_known === false ? t('lifecycle_unknown') : cur.signedPlainMoney(-row.gross_fee_usd)} /{' '}
                       <span className={Math.abs(row.rebate_usd) < 1e-9 ? 'txt-flat' : 'txt-pos'}>
                         {Math.abs(row.rebate_usd) < 1e-9 ? cur.plainMoney(0) : `+${cur.plainMoney(row.rebate_usd)}`}
                       </span>
                     </td>
                     <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(row.net_pnl_usd)}`}>
-                      {cur.signedMoney(row.net_pnl_usd)}
+                      {row.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedMoney(row.net_pnl_usd)}
                     </td>
                   </tr>
                 ))}

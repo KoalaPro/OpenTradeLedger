@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
-import type { DashboardData } from '../lib/types'
+import type { DashboardData, ExchangeSummary } from '../lib/types'
 import { VenueBadge } from './VenueBadge'
 import { pnlTone } from '../lib/format'
 
 interface CalendarProps {
   days: DashboardData['calendar_days']
+  accounts?: Pick<ExchangeSummary, 'venue_id' | 'display_name' | 'display_name_zh'>[]
   availableMonths: string[]
   selectedMonth: string
   onSelectMonth: (month: string) => void
@@ -14,6 +15,7 @@ interface CalendarProps {
 
 export function MonthlyCalendar({
   days,
+  accounts = [],
   availableMonths,
   selectedMonth,
   onSelectMonth,
@@ -79,6 +81,10 @@ export function MonthlyCalendar({
     : ''
   const selectedItem = selectedKey ? map.get(selectedKey) : undefined
   const tradeActivity = selectedItem?.trade_activity ?? []
+  const accountNames = new Map(accounts.map(account => [
+    account.venue_id,
+    locale === 'en' ? account.display_name : account.display_name_zh || account.display_name,
+  ]))
 
   return (
     <div className="flex flex-col gap-3.5 h-full">
@@ -196,7 +202,7 @@ export function MonthlyCalendar({
               {tradeActivity.map(row => (
                 <li key={`${row.venue_id}-${row.trade_id}`} className="flex flex-wrap items-baseline justify-between gap-2 text-[12px]">
                   <span className="flex flex-wrap items-center gap-2">
-                    <VenueBadge venueId={row.venue_id} name={row.venue_id.toUpperCase()} />
+                    <VenueBadge venueId={row.venue_id} name={accountNames.get(row.venue_id)} />
                     <b>{row.symbol}</b>
                     <span className="text-[var(--fg-3)]">
                       {row.side === 'LONG' ? t('side_long') : t('side_short')} · {row.exit_count > 0 ? `${row.exit_count} ${t('lifecycle_daily_exits')}` : t('lifecycle_daily_fees')}

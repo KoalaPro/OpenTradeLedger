@@ -58,6 +58,11 @@ class PositionEvent(BaseModel):
     time_ms: int
     action: Literal["OPEN", "ADD", "REDUCE", "CLOSE"]
     order_id: str
+    role: Literal["MAKER", "TAKER"] | None = None
+    rebate_status: Literal["PENDING", "SETTLED"] | None = None
+    fee_bps: float | None = None
+    net_fee_usd: float | None = None
+    rebate_usd: float | None = None
     qty_unit: Literal["base", "contracts"] = "base"
     qty: float
     price: float
@@ -89,6 +94,9 @@ class ClosedTrade(BaseModel):
     gross_pnl_usd: float = 0.0
     funding_pnl_usd: float = 0.0
     book_pnl_usd: float = 0.0
+    settlement_adjustment_usd: float = 0.0
+    total_fee_known: bool = True
+    net_pnl_known: bool = True
     total_fee_usd: float = 0.0
     total_rebate_usd: float = 0.0
     total_discount_saved_usd: float = 0.0
@@ -139,6 +147,7 @@ class ExchangeSummary(BaseModel):
 
 
 class VenueFeeRow(BaseModel):
+    total_fee_known: bool = True
     venue_id: str
     display_name: str
     color_token: str
@@ -179,7 +188,7 @@ class TradeDayActivity(BaseModel):
     venue_id: str
     symbol: str
     side: Literal["LONG", "SHORT"]
-    amount_usd: float
+    amount_usd: float | None
     exit_count: int
 
 
@@ -191,6 +200,8 @@ class CalendarDay(BaseModel):
 
 
 class SymbolAttribution(BaseModel):
+    net_pnl_known: bool = True
+    total_fee_known: bool = True
     venue_id: str
     venue_name: str
     color_token: str

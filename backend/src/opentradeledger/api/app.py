@@ -47,6 +47,7 @@ from opentradeledger.api.schemas import (
     WatcherPatchRequest,
     WatcherTargetsRequest,
 )
+from opentradeledger.config import NotificationSettings
 from opentradeledger.core.account_partition import parse_adapter_id
 from opentradeledger.core.ai_reviewer import (
     _normalize_ai_base,
@@ -411,7 +412,6 @@ def create_app(
         return prefs
 
     def _apply_settings_patch(patch: dict[str, Any]) -> None:
-        current = ledger_service.get_preferences().model_dump()
         target = patch.get("goal_target_usd")
         if target is not None:
             try:
@@ -431,44 +431,77 @@ def create_app(
         clear_ai_key = (patch.get("clear_ai_api_key") is True) or (
             str(patch.get("ai_api_key") or "").strip() == "__CLEAR__"
         )
-        top_clear_bark = patch.get("clear_bark_push_key") is True
-        patch = {k: v for k, v in patch.items() if k not in {"clear_ai_api_key", "clear_bark_push_key"}}
+        patch = {k: v for k, v in patch.items() if k != "clear_ai_api_key"}
         if clear_ai_key:
             patch = {**patch, "ai_api_key": ""}
         elif "ai_api_key" in patch and not str(patch["ai_api_key"] or "").strip():
             patch = {k: v for k, v in patch.items() if k != "ai_api_key"}
-        if isinstance(patch.get("notifications"), dict) or top_clear_bark:
-            n_patch = dict(patch.get("notifications") or {})
-            cur_notifs = dict(current.get("notifications") or {})
-            clear_bark_key = (
-                top_clear_bark
-                or (n_patch.get("clear_bark_push_key") is True)
-                or (str(n_patch.get("bark_push_key") or "").strip() == "__CLEAR__")
-            )
-            n_patch.pop("clear_bark_push_key", None)
-            raw_srv_in = str(
-                n_patch.get("bark_server_url") if "bark_server_url" in n_patch else cur_notifs.get("bark_server_url") or ""
-            )
-            if clear_bark_key:
-                norm_srv, _ = parse_bark_input(raw_srv_in, "")
-                n_patch["bark_server_url"] = norm_srv
-                n_patch["bark_push_key"] = ""
-            else:
-                # If user pasted a full Bark URL into either server or key box, split it before blank-key preservation
-                raw_key_in = str(n_patch.get("bark_push_key") or "")
-                norm_srv, norm_key = parse_bark_input(raw_srv_in, raw_key_in)
-                n_patch["bark_server_url"] = norm_srv
-                if norm_key:
-                    n_patch["bark_push_key"] = norm_key
-                else:
-                    n_patch.pop("bark_push_key", None)
-            patch = {**patch, "notifications": {**cur_notifs, **n_patch}}
         ledger_service.update_preferences(patch)
 
+    # A slower receipt must not resurrect a device after a newer edit or clear.
+    bark_edit_generation = 0
+
+    async def _save_settings(
+        patch: dict[str, Any], *, test_ring: bool = False, portfolio_id: str = ""
+    ) -> Response:
+        nonlocal bark_edit_generation
+        patch = dict(patch)
+        changes = patch.pop("notifications", {})
+        clear = patch.pop("clear_bark_push_key", False) is True
+        if not isinstance(changes, dict):
+            raise HTTPException(status_code=422, detail="Invalid notification settings")
+        clear = clear or changes.get("clear_bark_push_key") is True or changes.get("bark_push_key") == "__CLEAR__"
+        has_edit = clear or "bark_push_key" in changes or "bark_server_url" in changes
+        current = ledger_service.get_preferences().notifications
+        candidate = current
+        if has_edit:
+            raw_server = str(changes.get("bark_server_url", current.bark_server_url) or "")
+            server, key = parse_bark_input(raw_server, str(changes.get("bark_push_key") or ""))
+            if clear:
+                key = ""
+            elif not key:
+                if server != current.bark_server_url and current.bark_push_key:
+                    return JSONResponse(status_code=400, content={
+                        "detail": "Enter a device key for the new Bark server",
+                        "detail_zh": "更换 Bark 服务器时，请重新填写该服务器的设备 Key 或完整链接",
+                    })
+                key = current.bark_push_key
+            candidate = NotificationSettings(bark_server_url=server, bark_push_key=key)
+            bark_edit_generation += 1
+
+        generation = bark_edit_generation
+        receipt = None
+        if test_ring or (candidate != current and bark_configured(candidate)):
+            if not bark_configured(candidate):
+                return JSONResponse(status_code=400, content={
+                    "detail": "Configure a Bark device URL or key first",
+                    "detail_zh": "尚未配置 Bark，请先填写设备链接或 Key，再测试推送",
+                })
+            receipt = await copy_watcher.send_test_ring(portfolio_id if candidate == current else "", notifications=candidate)
+            if "bark" not in receipt["sent"]:
+                errors = receipt.get("errors") or {"bark": "No delivery receipt"}
+                err_summary = "; ".join(f"{ch}: {msg}" for ch, msg in errors.items())
+                return JSONResponse(status_code=502, content={
+                    "detail": f"Notification delivery failed — {err_summary}",
+                    "detail_zh": f"推送测试发送失败 — {err_summary}",
+                    "errors": errors,
+                })
+            if generation != bark_edit_generation:
+                return JSONResponse(status_code=409, content={
+                    "detail": "Bark settings changed while testing. Reload the saved device.",
+                    "detail_zh": "测试期间已有新的 Bark 配置操作，请刷新查看当前设备。",
+                })
+
+        if has_edit and current != candidate:
+            patch["notifications"] = candidate.model_dump()
+        if patch:
+            _apply_settings_patch(patch)
+        settings = await get_settings()
+        return JSONResponse(content={**receipt, "settings": settings} if test_ring else settings)
+
     @app.put("/api/v1/settings")
-    async def update_settings(patch: dict[str, Any]) -> dict[str, Any]:
-        _apply_settings_patch(patch)
-        return await get_settings()
+    async def update_settings(patch: dict[str, Any]) -> Response:
+        return await _save_settings(patch)
 
     @app.post("/api/v1/demo")
     async def set_demo_mode(body: DemoToggleRequest) -> dict[str, Any]:
@@ -621,29 +654,8 @@ def create_app(
 
     @app.post("/api/v1/extensions/copy-watcher/test-notify")
     async def test_copy_watcher_notify(body: TestNotifyRequest | None = None) -> Response:
-        if body and isinstance(body.notifications, dict):
-            _apply_settings_patch({"notifications": body.notifications})
-        prefs = ledger_service.get_preferences()
-        if not bark_configured(prefs.notifications):
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "detail": "Configure a Bark device URL or key first",
-                    "detail_zh": "尚未配置 Bark，请先填写设备链接或 Key，再测试推送",
-                },
-            )
-        res = await copy_watcher.send_test_ring(portfolio_id=body.portfolio_id if body else "")
-        if not res["sent"] and res["errors"]:
-            err_summary = "; ".join(f"{ch}: {msg}" for ch, msg in res["errors"].items())
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "detail": f"Notification delivery failed — {err_summary}",
-                    "detail_zh": f"推送测试发送失败 — {err_summary}",
-                    "errors": res["errors"],
-                },
-            )
-        return JSONResponse(content={**res, "settings": await get_settings()})
+        patch = {"notifications": body.notifications} if body and body.notifications is not None else {}
+        return await _save_settings(patch, test_ring=True, portfolio_id=body.portfolio_id if body else "")
 
     @app.get("/api/v1/instrument-logos/{venue}/{instrument}.png")
     async def get_instrument_logo(venue: str, instrument: str):

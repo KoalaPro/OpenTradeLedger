@@ -263,16 +263,16 @@ def merge_legacy_journal_entries(
 
 
 def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: int) -> dict[str, Any]:
-    gross_fee = round(float(raw.get("gross_fee_usd") or 0.0), 4)
+    gross_fee = float(raw.get("gross_fee_usd") or 0.0)
     disc_saved = round(float(raw.get("bnb_discount_saved_usd") or raw.get("discount_saved_usd") or 0.0), 4)
     if "rebate_usd" in raw and "settled_rebate_usd" not in raw:
-        rebate = round(float(raw.get("rebate_usd") or 0.0), 4)
+        rebate = float(raw.get("rebate_usd") or 0.0)
     else:
         settled_reb = float(raw.get("settled_rebate_usd") or 0.0)
         pending_reb = float(raw.get("pending_rebate_usd") or 0.0)
-        rebate = round(settled_reb + pending_reb, 4)
+        rebate = float(dec(settled_reb) + dec(pending_reb))
     native_net_fee = raw.get("net_fee_usd")
-    net_fee = round(float(native_net_fee) if native_net_fee is not None else gross_fee - rebate, 4)
+    net_fee = float(native_net_fee) if native_net_fee is not None else float(dec(gross_fee) - dec(rebate))
     mode_zh = str(raw.get("mode_zh") or "")
     raw_mode = str(raw.get("mode_code") or raw.get("mode") or "").upper()
     m_not_hint = float(raw.get("maker_notional_usd") or 0.0)
@@ -316,10 +316,10 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
         "notional_usd": None if "notional_usd" in raw and raw["notional_usd"] is None else notional_2dp,
         "maker_notional_usd": 0.0 if is_unknown_split else round(float(raw.get("maker_notional_usd") or (notional_2dp if is_maker else 0.0)), 2),
         "taker_notional_usd": 0.0 if is_unknown_split else round(float(raw.get("taker_notional_usd") or (0.0 if is_maker else notional_2dp)), 2),
-        "maker_fee_usd": 0.0 if is_unknown_split else round(float(raw.get("maker_fee_usd") or (gross_fee if is_maker else 0.0)), 4),
-        "taker_fee_usd": 0.0 if is_unknown_split else round(float(raw.get("taker_fee_usd") or (0.0 if is_maker else gross_fee)), 4),
-        "maker_rebate_usd": 0.0 if is_unknown_split else round(float(raw.get("maker_rebate_usd") or (rebate if is_maker else 0.0)), 4),
-        "taker_rebate_usd": 0.0 if is_unknown_split else round(float(raw.get("taker_rebate_usd") or (0.0 if is_maker else rebate)), 4),
+        "maker_fee_usd": 0.0 if is_unknown_split else float(raw.get("maker_fee_usd") or (gross_fee if is_maker else 0.0)),
+        "taker_fee_usd": 0.0 if is_unknown_split else float(raw.get("taker_fee_usd") or (0.0 if is_maker else gross_fee)),
+        "maker_rebate_usd": 0.0 if is_unknown_split else float(raw.get("maker_rebate_usd") or (rebate if is_maker else 0.0)),
+        "taker_rebate_usd": 0.0 if is_unknown_split else float(raw.get("taker_rebate_usd") or (0.0 if is_maker else rebate)),
         "gross_fee_usd": gross_fee,
         "discount_saved_usd": disc_saved,
         "discount_asset": str(raw.get("discount_asset") or raw.get("fee_asset") or ""),
@@ -389,9 +389,9 @@ def normalize_internal_record_to_public_trade(
     exit_leg = normalize_internal_leg_to_public(r.get("exit_leg") or {}, close_ms)
     settled_reb = float(r.get("settled_rebate_usd") or 0.0)
     pending_reb = float(r.get("pending_rebate_usd") or 0.0)
-    total_reb = round(settled_reb + pending_reb, 4)
+    total_reb = float(dec(settled_reb) + dec(pending_reb))
     total_disc = round(float(r.get("bnb_discount_saved_usd") or r.get("total_discount_saved_usd") or 0.0), 4)
-    total_fee = round(float(r.get("total_fee_usd") or 0.0), 4)
+    total_fee = float(r.get("total_fee_usd") or 0.0)
     if total_fee > 0 and entry_leg["gross_fee_usd"] <= 0 and exit_leg["gross_fee_usd"] <= 0:
         for unsplit_leg in (entry_leg, exit_leg):
             unsplit_leg["fee_known"] = False
@@ -408,7 +408,7 @@ def normalize_internal_record_to_public_trade(
         if (not entry_leg.get("fee_known", True) and not exit_leg.get("fee_known", True))
         else (entry_leg["net_fee_usd"] + exit_leg["net_fee_usd"])
     )
-    net_fee = round(float(r.get("net_fee_usd") if r.get("net_fee_usd") is not None else fallback_net_fee), 4)
+    net_fee = float(r.get("net_fee_usd") if r.get("net_fee_usd") is not None else fallback_net_fee)
     base_fee = total_fee + total_disc
     relief = round(((total_reb + total_disc) / base_fee) * 100.0, 1) if base_fee > 0 else 0.0
     reb_state = str(r.get("rebate_state") or r.get("rebate_status") or "SETTLED")
@@ -437,9 +437,12 @@ def normalize_internal_record_to_public_trade(
         "gross_pnl_usd": round(float(r.get("gross_pnl_usd") or 0.0), 4),
         "funding_pnl_usd": round(float(r.get("funding_pnl_usd") or 0.0), 4),
         "book_pnl_usd": round(float(r.get("book_pnl_usd") if r.get("book_pnl_usd") is not None else (r.get("gate_book_pnl_usd") or 0.0)), 4),
+        "total_fee_known": r.get("total_fee_known", True),
+        "net_pnl_known": r.get("net_pnl_known", True),
+        "settlement_adjustment_usd": float(r.get("settlement_adjustment_usd") or 0),
         "total_fee_usd": total_fee,
-        "settled_rebate_usd": round(settled_reb, 4),
-        "pending_rebate_usd": round(pending_reb, 4),
+        "settled_rebate_usd": settled_reb,
+        "pending_rebate_usd": pending_reb,
         "total_rebate_usd": total_reb,
         "total_discount_saved_usd": total_disc,
         "bnb_fee_qty": round(float(r.get("bnb_fee_qty") or 0.0), 6),
@@ -545,6 +548,10 @@ def build_venue_stock_perpetuals(
             },
         )
         b["trade_count"] += 1
+        if tr.get("total_fee_known") is False:
+            b["total_fee_known"] = False
+        if tr.get("net_pnl_known") is False:
+            b["net_pnl_known"] = False
         if tr.get("contract_count") is not None:
             b["contracts"] = b.get("contracts", Decimal("0")) + dec(tr["contract_count"])
             b["qty_unknown"] = b.get("qty_unknown", False) or tr.get("qty") is None
@@ -600,8 +607,6 @@ def build_venue_stock_perpetuals(
         m_bps = (b["m_fee"] / b["m_not"] * Decimal("10000")) if b["m_not"] > 0 else Decimal("0")
         t_bps = (b["t_fee"] / b["t_not"] * Decimal("10000")) if b["t_not"] > 0 else Decimal("0")
         net_fee = b["g_fee"] - b["reb"]
-        if "contracts" not in b:
-            net_fee = max(Decimal("0"), net_fee)
         rows.append(
             {
                 "venue_id": venue_id,
@@ -611,6 +616,8 @@ def build_venue_stock_perpetuals(
                 "category": b["category"],
                 "category_zh": b["category_zh"],
                 "trade_count": b["trade_count"],
+                "total_fee_known": b.get("total_fee_known", True),
+                "net_pnl_known": b.get("net_pnl_known", True),
                 "qty": None if b.get("qty_unknown") else f2(b["qty"], 6),
                 **({"contract_count": float(b["contracts"])} if "contracts" in b else {}),
                 "maker_bps": None if "contracts" in b and not b["m_not"] else f2(m_bps, 2),

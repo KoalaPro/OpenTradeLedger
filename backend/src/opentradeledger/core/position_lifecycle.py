@@ -72,7 +72,18 @@ def build_position_events(
         values = {"qty": qty, "price": price, "remaining_qty": holding, "avg_entry_price": average,
                   "cost_basis_price": basis, "fee_usd": fee, "gross_pnl_usd": gross,
                   "allocated_entry_fee_usd": allocated, "net_pnl_usd": net}
+        execution_terms = {}
+        role = str(fill.get("role") or "").upper()
+        if role in {"MAKER", "TAKER"}:
+            execution_terms["role"] = role
+        if fill.get("rebate_status") in {"PENDING", "SETTLED"}:
+            execution_terms["rebate_status"] = fill["rebate_status"]
+        for key in ("fee_bps", "rebate_usd", "net_fee_usd"):
+            amount = _number(fill.get(key))
+            if amount is not None:
+                execution_terms[key] = float(amount)
         result.append({
+            **execution_terms,
             "action": action, "time_ms": int(ts), "order_id": str(fill.get("order_id") or ""),
             "qty_unit": fill.get("qty_unit") or "base",
             **{k: float(v) if v is not None else None for k, v in values.items()},
@@ -104,11 +115,15 @@ def trade_daily_amounts(trade: Mapping[str, Any], total: Decimal, *, include_reb
     book net, excluding rebates reported separately). Never sum both parent and fills.
     """
     close_day = trade.get("close_date") or trade.get("close_date_bj")
-    if not close_day:
+    if not close_day or trade.get("net_pnl_known") is False:
         return {}
     amounts: dict[str, Decimal] = defaultdict(Decimal)
     events = trade.get("position_events") or ()
-    if events:
+    if trade.get("statement_net_by_day") is not None:
+        # Unpriced fills cannot split a verified settlement across days.
+        for day, amount in trade["statement_net_by_day"].items():
+            amounts[day] += Decimal(str(amount))
+    elif events:
         # Some closed-PnL endpoints charge only the consumed share of the entry fee
         # to their partial statement. The wallet paid the remaining share at entry.
         if events[-1]["remaining_qty"] and (trade.get("entry_leg") or {}).get("fee_known", True):

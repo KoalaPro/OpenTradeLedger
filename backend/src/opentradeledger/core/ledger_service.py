@@ -781,6 +781,7 @@ class LedgerService:
                 raw_fee_row = None
             fee_row = stamp_fee_row_for_account(raw_fee_row, bundle)
             if fee_row is not None:
+                fee_row["total_fee_known"] = all(t.get("total_fee_known", True) for t in v_range_sym_trades)
                 fee_matrix.append(fee_row)
 
             # Copy Trading aggregation
@@ -867,7 +868,7 @@ class LedgerService:
                 activity_by_day[day].append({
                     "trade_id": trade["trade_id"], "venue_id": trade["venue_id"],
                     "symbol": trade["symbol"], "side": trade["side"],
-                    "amount_usd": f2(daily.get(day, Decimal("0")), 6),
+                    "amount_usd": f2(daily.get(day, Decimal("0")), 6) if trade.get("net_pnl_known", True) else None,
                     "exit_count": counts.get(day, 0),
                 })
         for _, b in active_entries:
@@ -986,7 +987,8 @@ class LedgerService:
             ex_meta = ex_card_by_vid.get(s_vid)
             ad_obj = self.registry.get(parse_adapter_id(s_vid))
             meta_sb = ad_obj.meta if ad_obj else None
-            wins_cnt = sum(1 for x in grp if dec(x["net_pnl_usd"]) > 0)
+            known_results = [t for t in grp if t.get("net_pnl_known", True)]
+            wins_cnt = sum(1 for t in known_results if dec(t["net_pnl_usd"]) > 0)
             symbol_attribution.append(
                 {
                     "venue_id": s_vid,
@@ -1007,7 +1009,9 @@ class LedgerService:
                     ),
                     "symbol": s_sym,
                     "trade_count": len(grp),
-                    "win_rate_pct": f2(Decimal(wins_cnt) / Decimal(len(grp)) * Decimal("100"), 1) if grp else 0.0,
+                    "net_pnl_known": len(known_results) == len(grp),
+                    "total_fee_known": all(t.get("total_fee_known", True) for t in grp),
+                    "win_rate_pct": f2(Decimal(wins_cnt) / Decimal(len(known_results)) * Decimal("100"), 1) if known_results else 0.0,
                     "gross_fee_usd": f2(sum((dec(x["total_fee_usd"]) for x in grp), Decimal("0")), 2),
                     "rebate_usd": f2(sum((dec(x["total_rebate_usd"]) for x in grp), Decimal("0")), 2),
                     "discount_saved_usd": f2(sum((dec(x["total_discount_saved_usd"]) for x in grp), Decimal("0")), 2),
@@ -1019,8 +1023,9 @@ class LedgerService:
 
         # 7. Unified summary stats with exact 4-decimal intermediate precision
         t_cnt = len(trades)
-        t_wins = sum(1 for t in trades if dec(t["net_pnl_usd"]) > 0)
-        sum_win_rate = f2(Decimal(t_wins) / Decimal(t_cnt) * Decimal("100"), 1) if t_cnt > 0 else 0.0
+        known_results = [t for t in trades if t.get("net_pnl_known", True)]
+        t_wins = sum(1 for t in known_results if dec(t["net_pnl_usd"]) > 0)
+        sum_win_rate = f2(Decimal(t_wins) / Decimal(len(known_results)) * Decimal("100"), 1) if known_results else 0.0
         fee_dec = sum((dec(t["total_fee_usd"]) for t in trades), Decimal("0"))
         reb_dec = sum((dec(t["total_rebate_usd"]) for t in trades), Decimal("0"))
         disc_dec = sum((dec(t["total_discount_saved_usd"]) for t in trades), Decimal("0"))
@@ -1197,6 +1202,8 @@ class LedgerService:
                 "futures_net_pnl_usd": f2(fut_net_dec, 2),
                 "futures_book_pnl_usd": f2(fut_book_dec, 2),
                 "trade_count": t_cnt,
+                "net_pnl_known": len(known_results) == t_cnt,
+                "total_fee_known": all(t.get("total_fee_known", True) for t in trades),
                 "all_time_trade_count": len(venue_scoped_all_time_trades),
                 "win_rate_pct": sum_win_rate,
                 "total_fee_usd": f2(fee_dec, 2),

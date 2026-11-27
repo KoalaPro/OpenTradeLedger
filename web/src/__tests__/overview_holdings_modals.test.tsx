@@ -210,16 +210,19 @@ describe('Stocks & Spot Main-Page Detail Modals, Perp Separation & Blank-Page Pr
     expect(screen.queryByTestId('overview-open-watcher-btn')).toBeNull()
 
     // 1. Clicking ANT stock row when stocks module is OFF must NOT navigate to a blank page — opens detail modal!
-    fireEvent.click(screen.getByText('ANT'))
+    const stock = screen.getByRole('button', { name: 'ANT' })
+    expect(stock.closest('tr')?.querySelector('td:nth-child(5) .sensitive')?.textContent).toContain('83')
+    fireEvent.click(stock)
     expect(screen.getByTestId('overview-page')).toBeTruthy()
     const stockModal = await screen.findByTestId('stock-holding-detail-modal')
     expect(stockModal.textContent).toContain('Anthropic')
+    expect(within(stockModal).getByText(/^83(?:\.0+)?$/).closest('.sensitive')).toBeTruthy()
     expect(stockModal.textContent).toContain('-53.16 USDT')
     expect(screen.queryByTestId('stock-detail-open-ext-btn')).toBeNull()
 
     // Close stock modal via Escape, then click WLFI spot row -> opens spot detail modal!
     fireEvent.keyDown(window, { key: 'Escape' })
-    fireEvent.click(screen.getByText('WLFI'))
+    fireEvent.click(screen.getByRole('button', {name: 'WLFI'}))
     const spotModal = await screen.findByTestId('spot-holding-detail-modal')
     expect(spotModal.textContent).toContain('WLFI')
     expect(spotModal.textContent).toContain('60.570078')
@@ -234,6 +237,7 @@ describe('Stocks & Spot Main-Page Detail Modals, Perp Separation & Blank-Page Pr
     fireEvent.click(screen.getByTestId('nav-extensions'))
     const stockView = await screen.findByTestId('stock-module-view')
     expect(stockView.textContent).toContain('ANT')
+    expect(within(stockView).getByText('ANT').closest('tr')?.querySelector('td:nth-child(4) .sensitive')?.textContent).toContain('83')
     expect(stockView.textContent).not.toContain('QCOM_USDT')
     expect(screen.queryByTestId('stock-perps-fullwidth')).toBeNull()
   })

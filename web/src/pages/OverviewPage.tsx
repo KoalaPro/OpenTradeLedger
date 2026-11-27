@@ -45,6 +45,7 @@ export function OverviewPage({
 }) {
   const { locale, t } = useI18n()
   const cur = useCurrency()
+  const SymbolAction = onInspectSymbol ? 'button' : 'span'
   const warnings = useMemo(
     () => activeWarnings ?? collectActiveWarnings(data),
     [activeWarnings, data],
@@ -220,8 +221,8 @@ export function OverviewPage({
         <KpiCard
           testId="kpi-futures-pnl"
           label={t('kpi_futures_pnl')}
-          value={cur.signedMoney(s.futures_net_pnl_usd)}
-          valueClass={pnlTone(s.futures_net_pnl_usd)}
+          value={s.net_pnl_known === false ? t('lifecycle_unknown') : cur.signedMoney(s.futures_net_pnl_usd)}
+          valueClass={s.net_pnl_known === false ? 'txt-flat' : pnlTone(s.futures_net_pnl_usd)}
           sub={
             <span>
               <span className="whitespace-nowrap">
@@ -229,7 +230,7 @@ export function OverviewPage({
               </span>{' '}
               ·{' '}
               <span className="whitespace-nowrap">
-                {t('kpi_winrate')} {s.trade_count > 0 ? `${s.win_rate_pct.toFixed(1)}%` : '—'}
+                {t('kpi_winrate')} {s.trade_count > 0 && s.net_pnl_known !== false ? `${s.win_rate_pct.toFixed(1)}%` : '—'}
               </span>
             </span>
           }
@@ -238,16 +239,16 @@ export function OverviewPage({
         <KpiCard
           testId="kpi-fee-relief"
           label={t('kpi_fee_saved')}
-          value={cur.signedMoney(s.total_rebate_usd + s.total_discount_saved_usd)}
+          value={s.total_fee_known === false ? t('lifecycle_unknown') : cur.signedMoney(s.total_rebate_usd + s.total_discount_saved_usd)}
           valueClass="txt-pos"
           sub={
             <span>
               <span className="whitespace-nowrap">
-                {t('detail_relief_short')} {s.combined_relief_pct.toFixed(1)}%
+                {t('detail_relief_short')} {s.total_fee_known === false ? '—' : `${s.combined_relief_pct.toFixed(1)}%`}
               </span>{' '}
               ·{' '}
               <span className="whitespace-nowrap">
-                {t('kpi_net_fee_paid')} <span className="sensitive">{cur.signedMoney(-s.net_fee_usd)}</span>
+                {t('kpi_net_fee_paid')} <span className="sensitive">{s.total_fee_known === false ? t('lifecycle_unknown') : cur.signedMoney(-s.net_fee_usd)}</span>
               </span>
             </span>
           }
@@ -641,10 +642,13 @@ export function OverviewPage({
                       onClick={() => onInspectSymbol?.(pos.venue_id, pos.symbol, pos.venue_name)}
                     >
                       <td className="whitespace-nowrap">
-                        <span className="inline-flex items-center gap-2 font-semibold">
+                        <SymbolAction
+                          {...(onInspectSymbol ? { type: 'button' as const, 'aria-haspopup': 'dialog' as const } : {})}
+                          className="inline-flex items-center gap-2 font-semibold"
+                        >
                           <InstrumentMark instrument={pos.symbol} exchange={pos.venue_id.toUpperCase()} />
                           {pos.symbol}
-                        </span>
+                        </SymbolAction>
                       </td>
                       <td>
                         <VenueBadge venueId={pos.venue_id} name={pos.venue_name} />
@@ -658,7 +662,7 @@ export function OverviewPage({
                         {pos.contract_count != null ? fmtContractQty(pos, locale) : pos.qty} ({cur.money(pos.notional_usd, 0)})
                       </td>
                       <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
-                        {fmtPrice(pos.entry_price)} → {fmtPrice(pos.mark_price)}
+                        <span className="sensitive">{fmtPrice(pos.entry_price)}</span> → {fmtPrice(pos.mark_price)}
                       </td>
                       <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(pos.unrealized_pnl_usd)}`}>
                         {cur.signedMoney(pos.unrealized_pnl_usd)}
@@ -675,10 +679,10 @@ export function OverviewPage({
                       onClick={() => setSelectedStock(h)}
                     >
                       <td className="whitespace-nowrap">
-                        <span className="inline-flex items-center gap-2 font-semibold">
+                        <button type="button" aria-haspopup="dialog" className="inline-flex items-center gap-2 font-semibold">
                           <InstrumentMark instrument={h.symbol} exchange="US" stock />
                           {h.symbol}
-                        </span>
+                        </button>
                       </td>
                       <td>
                         <VenueBadge venueId={h.venue_id} name={h.venue_name} />
@@ -690,7 +694,7 @@ export function OverviewPage({
                         {h.shares} ({cur.money(h.market_value_usd)})
                       </td>
                       <td className="text-right whitespace-nowrap text-[var(--fg-2)]">
-                        {fmtPrice(h.avg_cost_usd)} → {fmtPrice(h.current_price_usd)}
+                        <span className="sensitive">{fmtPrice(h.avg_cost_usd)}</span> → {fmtPrice(h.current_price_usd)}
                       </td>
                       <td className={`text-right font-semibold whitespace-nowrap sensitive ${pnlTone(h.pnl_usd)}`}>
                         {cur.signedMoney(h.pnl_usd)} ({fmtSignedPct(h.pnl_pct)})
@@ -708,10 +712,10 @@ export function OverviewPage({
                         onClick={() => setSelectedSpot(sp)}
                       >
                         <td className="whitespace-nowrap">
-                          <span className="inline-flex items-center gap-2 font-semibold">
+                          <button type="button" aria-haspopup="dialog" className="inline-flex items-center gap-2 font-semibold">
                             <InstrumentMark instrument={`${sp.asset}_USDT`} exchange={sp.venue_id.toUpperCase()} />
                             {sp.asset}
-                          </span>
+                          </button>
                         </td>
                         <td>
                           <VenueBadge venueId={sp.venue_id} name={sp.venue_name} />
@@ -793,7 +797,7 @@ export function OverviewPage({
                 <div className="p-4 space-y-1">
                   <div className="text-[var(--fg-3)]">{locale === 'en' ? 'Avg Cost → Live' : '均价 → 现价'}</div>
                   <div className="text-[13.5px] font-semibold text-[var(--fg)]">
-                    {fmtPrice(selectedStock.avg_cost_usd)} → {fmtPrice(selectedStock.current_price_usd)}
+                    <span className="sensitive">{fmtPrice(selectedStock.avg_cost_usd)}</span> → {fmtPrice(selectedStock.current_price_usd)}
                   </div>
                 </div>
                 <div className="p-4 space-y-1">

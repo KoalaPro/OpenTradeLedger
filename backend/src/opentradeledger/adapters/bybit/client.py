@@ -614,7 +614,7 @@ class BybitReadOnlyClient:
             for r in closed_pnl
         )
         if gross_fee_sum <= 0:
-            gross_fee_sum = sum(abs(float(e.get("execFee") or 0.0)) for e in executions)
+            gross_fee_sum = sum(max(0, usd_fee(e.get("execFee"), e.get("feeCurrency") or "USDT") or 0) for e in executions)
         rebate_sum = sum(
             max(0.0, float(tx.get("cashFlow") or tx.get("change") or 0.0))
             for tx in tx_logs
@@ -828,14 +828,19 @@ def normalize_bybit_closed_trades(
             if earliest_en_ts > 0 and (open_ms <= 0 or earliest_en_ts < open_ms):
                 open_ms = earliest_en_ts
 
-        exit_gross_fee = sum(abs(float(e.get("execFee") or 0.0)) for e in exit_execs)
-        entry_gross_fee = sum(abs(float(e.get("execFee") or 0.0)) * sh for e, sh in matched_entry_slices)
-        open_fee_field = abs(float(row.get("openFee") or 0.0))
-        close_fee_field = abs(float(row.get("closeFee") or 0.0))
+        exit_fees = [usd_fee(e.get("execFee"), e.get("feeCurrency") or "USDT") for e in exit_execs]
+        entry_fees = [(usd_fee(e.get("execFee"), e.get("feeCurrency") or "USDT"), share)
+                      for e, share in matched_entry_slices]
+        entry_known = bool(entry_fees) and all(fee is not None for fee, _ in entry_fees)
+        exit_known = bool(exit_fees) and all(fee is not None for fee in exit_fees)
+        entry_gross_fee = sum(fee * share for fee, share in entry_fees if fee is not None)
+        exit_gross_fee = sum(fee for fee in exit_fees if fee is not None)
         if row.get("openFee") not in (None, ""):
-            entry_gross_fee = open_fee_field
+            entry_gross_fee = float(row["openFee"])
+            entry_known = True
         if row.get("closeFee") not in (None, ""):
-            exit_gross_fee = close_fee_field
+            exit_gross_fee = float(row["closeFee"])
+            exit_known = True
 
         row_drafts.append(
             {
@@ -853,9 +858,11 @@ def normalize_bybit_closed_trades(
                 "entry_execs": entry_execs,
                 "exit_execs": exit_execs,
                 "has_open_fee": row.get("openFee") not in (None, ""),
+                "entry_known": entry_known,
+                "exit_known": exit_known,
                 "entry_gross_fee": entry_gross_fee,
                 "exit_gross_fee": exit_gross_fee,
-                "closed_pnl": float(row.get("closedPnl") or 0.0),
+                "closed_pnl": float(row["closedPnl"]) if row.get("closedPnl") not in (None, "") else None,
                 "cycle_anchor": cycle_anchor,
                 "cycle": cycle,
             }
@@ -910,11 +917,13 @@ def normalize_bybit_closed_trades(
         entry_gross_fee = sum(d["entry_gross_fee"] for d in grp)
         exit_gross_fee = sum(d["exit_gross_fee"] for d in grp)
 
-        # Detect MNT token fee discount (25% UTA fee discount -> saved = paid * (0.25 / 0.75))
+        entry_known = all(d["entry_known"] for d in grp)
+        exit_known = all(d["exit_known"] for d in grp)
+
+        # The execution currency proves how a fee was paid. It does not prove
+        # the pre-discount rate or a dollar discount, even on a fully settled leg.
         entry_mnt = any(str(e.get("feeCurrency") or "").upper() == "MNT" for e in entry_execs)
         exit_mnt = any(str(e.get("feeCurrency") or "").upper() == "MNT" for e in exit_execs)
-        entry_disc = round(entry_gross_fee * (0.25 / 0.75), 6) if entry_mnt and entry_gross_fee > 0 else 0.0
-        exit_disc = round(exit_gross_fee * (0.25 / 0.75), 6) if exit_mnt and exit_gross_fee > 0 else 0.0
 
         en_makers = any(bool(e.get("isMaker")) for e in entry_execs)
         en_takers = any(not bool(e.get("isMaker")) for e in entry_execs)
@@ -955,25 +964,34 @@ def normalize_bybit_closed_trades(
                 rebate_receipts.append((rts, rb["_val"]))
                 settled_ts = max(settled_ts, rts)
 
-        if matched_reb_amt > 0 and total_fee > 0:
-            eff_ratio = min(0.95, matched_reb_amt / total_fee)
-            entry_rebate = round(matched_reb_amt * (entry_gross_fee / total_fee), 6)
+        chargeable_fees = max(0.0, entry_gross_fee) + max(0.0, exit_gross_fee)
+        if matched_reb_amt > 0 and chargeable_fees > 0:
+            eff_ratio = min(0.95, matched_reb_amt / chargeable_fees)
+            entry_rebate = round(matched_reb_amt * max(0.0, entry_gross_fee) / chargeable_fees, 6)
             exit_rebate = round(matched_reb_amt - entry_rebate, 6)
             settled_str = _fmt_bj_ms(settled_ts)
         else:
             eff_ratio = max(0.0, min(1.0, rebate_ratio))
-            entry_rebate = round(entry_gross_fee * eff_ratio, 6)
-            exit_rebate = round(exit_gross_fee * eff_ratio, 6)
+            entry_rebate = round(max(0.0, entry_gross_fee) * eff_ratio, 6)
+            exit_rebate = round(max(0.0, exit_gross_fee) * eff_ratio, 6)
             settled_str = ""
 
-        entry_net_fee = round(max(0.0, entry_gross_fee - entry_rebate), 6)
-        exit_net_fee = round(max(0.0, exit_gross_fee - exit_rebate), 6)
+        entry_net_fee = round(entry_gross_fee - entry_rebate, 6)
+        exit_net_fee = round(exit_gross_fee - exit_rebate, 6)
 
-        raw_closed_pnl = sum(d["closed_pnl"] for d in grp)
         total_rebate = round(entry_rebate + exit_rebate, 6)
-        gross_pnl = round(raw_closed_pnl + total_fee, 6)
-        book_pnl = round(raw_closed_pnl + funding_pnl, 6)
-        net_pnl = round(book_pnl + total_rebate, 6)
+        for draft in grp:
+            if draft["closed_pnl"] is not None and draft["entry_known"] and draft["exit_known"]:
+                draft["gross_pnl"] = draft["closed_pnl"] + draft["entry_gross_fee"] + draft["exit_gross_fee"]
+            else:
+                draft["gross_pnl"] = (draft["exit_notional"] - draft["entry_notional"]) * (1 if side == "LONG" else -1)
+        gross_pnl = round(sum(d["gross_pnl"] for d in grp), 6)
+        for draft in grp:
+            if draft["closed_pnl"] is None and draft["entry_known"] and draft["exit_known"]:
+                draft["closed_pnl"] = draft["gross_pnl"] - draft["entry_gross_fee"] - draft["exit_gross_fee"]
+        net_known = all(d["closed_pnl"] is not None for d in grp)
+        book_pnl = round(sum(d["closed_pnl"] for d in grp) + funding_pnl, 6) if net_known else 0.0
+        net_pnl = round(book_pnl + total_rebate, 6) if net_known else 0.0
         remaining = cycle["remaining"] if cycle else 0
         is_partial_bb = remaining > 1e-9 or len(grp) > 1 or any(d["qty"] < d["row_qty"] for d in grp)
 
@@ -986,16 +1004,15 @@ def normalize_bybit_closed_trades(
                 b_exs = d_it["exit_execs"]
                 b_fee = float(d_it["exit_gross_fee"])
                 b_mnt = any(str(e.get("feeCurrency") or "").upper() == "MNT" for e in b_exs)
-                b_disc = round(b_fee * (0.25 / 0.75), 4) if b_mnt and b_fee > 0 else 0.0
-                b_reb = round(b_fee * ex_reb_rate, 4)
-                b_net_f = round(max(0.0, b_fee - b_reb), 4)
+                b_reb = round(max(0.0, b_fee) * ex_reb_rate, 4)
+                b_net_f = round(b_fee - b_reb, 4)
                 b_mk = any(bool(e.get("isMaker")) for e in b_exs)
                 b_tk = any(not bool(e.get("isMaker")) for e in b_exs)
                 b_role = "MAKER" if (b_mk and not b_tk) else "TAKER"
                 b_mode = "MIXED" if (b_mk and b_tk) else ("LIMIT_MAKER" if b_mk else "MARKET_TAKER")
                 b_not = float(d_it["exit_notional"])
                 b_bps = round(b_fee / b_not * 10_000, 2) if b_not > 0 else 0.0
-                b_gpnl = rem_bb_gpnl if b_last else (float(d_it["closed_pnl"]) + float(d_it["entry_gross_fee"]) + b_fee)
+                b_gpnl = rem_bb_gpnl if b_last else d_it["gross_pnl"]
                 rem_bb_gpnl -= b_gpnl
                 b_ts = int(d_it["close_ms"])
                 bb_exit_batches.append(
@@ -1005,19 +1022,19 @@ def normalize_bybit_closed_trades(
                         "qty": round(float(d_it["qty"]), 6),
                         "role": b_role,
                         "mode_code": b_mode,
-                        "fee_known": True,
-                        "fee_bps": b_bps,
+                        "fee_known": d_it["exit_known"],
+                        "fee_bps": b_bps if d_it["exit_known"] else None,
                         "time_ms": b_ts,
                         "time_str": _fmt_bj_ms(b_ts),
                         "avg_price": round(float(d_it["exit_px"]), 6),
                         "notional_usd": round(b_not, 2),
                         "gross_fee_usd": round(b_fee, 4),
-                        "discount_saved_usd": b_disc,
+                        "discount_saved_usd": 0.0,
                         "discount_asset": "MNT" if b_mnt else "",
                         "rebate_usd": b_reb,
                         "net_fee_usd": b_net_f,
                         "gross_pnl_usd": round(b_gpnl, 4),
-                        "net_pnl_usd": round(b_gpnl - b_net_f, 4),
+                        "net_pnl_usd": round(b_gpnl - b_net_f, 4) if d_it["exit_known"] else None,
                     }
                 )
 
@@ -1042,8 +1059,12 @@ def normalize_bybit_closed_trades(
                 "funding_by_day": dated_cash(funding_receipts),
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_usd": round(total_fee, 4),
+                "net_pnl_known": net_known,
+                **({"statement_net_by_day": dated_cash([(d["close_ms"], d["closed_pnl"]) for d in grp])}
+                   if net_known and not (entry_known and exit_known) else {}),
+                "total_fee_known": entry_known and exit_known,
                 "total_rebate_usd": round(total_rebate, 4),
-                "total_discount_saved_usd": round(entry_disc + exit_disc, 4),
+                "total_discount_saved_usd": 0.0,
                 "net_fee_usd": round(entry_net_fee + exit_net_fee, 4),
                 "net_pnl_usd": round(net_pnl, 4),
                 "rebate_status": "SETTLED",
@@ -1051,12 +1072,13 @@ def normalize_bybit_closed_trades(
                 "entry_leg": {
                     "role": "MAKER" if entry_is_maker else "TAKER",
                     "mode_code": entry_mode_code,
-                    "fee_bps": round(entry_bps, 2),
+                    "fee_known": entry_known,
+                    "fee_bps": round(entry_bps, 2) if entry_known else None,
                     "time_ms": open_ms,
                     "avg_price": round(entry_px, 6),
                     "notional_usd": round(entry_notional, 2),
                     "gross_fee_usd": round(entry_gross_fee, 4),
-                    "discount_saved_usd": round(entry_disc, 4),
+                    "discount_saved_usd": 0.0,
                     "discount_asset": "MNT" if entry_mnt else "",
                     "rebate_usd": round(entry_rebate, 4),
                     "rebate_pct": round((entry_rebate / entry_gross_fee) * 100.0, 2) if entry_gross_fee > 0 else round(eff_ratio * 100.0, 2),
@@ -1067,12 +1089,13 @@ def normalize_bybit_closed_trades(
                 "exit_leg": {
                     "role": "MAKER" if exit_is_maker else "TAKER",
                     "mode_code": exit_mode_code,
-                    "fee_bps": round(exit_bps, 2),
+                    "fee_known": exit_known,
+                    "fee_bps": round(exit_bps, 2) if exit_known else None,
                     "time_ms": close_ms,
                     "avg_price": round(exit_px, 6),
                     "notional_usd": round(exit_notional, 2),
                     "gross_fee_usd": round(exit_gross_fee, 4),
-                    "discount_saved_usd": round(exit_disc, 4),
+                    "discount_saved_usd": 0.0,
                     "discount_asset": "MNT" if exit_mnt else "",
                     "rebate_usd": round(exit_rebate, 4),
                     "rebate_pct": round((exit_rebate / exit_gross_fee) * 100.0, 2) if exit_gross_fee > 0 else round(eff_ratio * 100.0, 2),

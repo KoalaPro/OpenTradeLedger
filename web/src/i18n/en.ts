@@ -214,6 +214,7 @@ export const en: Record<MessageKey, string> = {
   polarity_cn: 'Red Up',
   polarity_global: 'Green Up',
   set_currency: 'Display Currency',
+  set_fx_cached: 'Last available FX rate',
   set_fx_live: 'Live FX rate',
   set_fx_offline: 'Offline reference FX rate',
   set_privacy_default: 'Hide balances by default',

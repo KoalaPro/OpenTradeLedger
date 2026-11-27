@@ -291,7 +291,7 @@ def _build_easicoin_closed_records(
             t_open = min(norm_sec(uf.get("exec_time")) for uf, _ in matched_slices)
             entry_fill_count = len(matched_slices)
             for uf, take_sh in matched_slices:
-                f_fee = abs(dec(uf.get("exec_fee"))) * take_sh
+                f_fee = dec(uf.get("exec_fee")) * take_sh
                 f_val = (abs(dec(uf.get("exec_value"))) or (abs(dec(uf.get("exec_qty"))) * dec(uf.get("exec_price")))) * take_sh
                 liq = str(uf.get("liquidity_type") or "taker").lower()
                 entry_roles.add(liq)
@@ -308,7 +308,7 @@ def _build_easicoin_closed_records(
         exit_taker_notional = Decimal("0")
         exit_roles: set[str] = set()
         for ef in efs:
-            f_fee = abs(dec(ef.get("exec_fee")))
+            f_fee = dec(ef.get("exec_fee"))
             f_val = abs(dec(ef.get("exec_value"))) or (abs(dec(ef.get("exec_qty"))) * dec(ef.get("exec_price")))
             liq = str(ef.get("liquidity_type") or "taker").lower()
             exit_roles.add(liq)
@@ -323,16 +323,17 @@ def _build_easicoin_closed_records(
         has_any_fills = bool(efs) or entry_fill_count > 0
         if has_any_fills:
             total_fee = entry_gross_fee + exit_gross_fee
-            funding_pnl = closed_pnl - (gross_pnl - total_fee)
         else:
             inferred_fee = max(Decimal("0"), gross_pnl - closed_pnl)
             entry_gross_fee = inferred_fee / Decimal("2")
             exit_gross_fee = inferred_fee - entry_gross_fee
             total_fee = inferred_fee
-            funding_pnl = closed_pnl - (gross_pnl - total_fee)
             entry_fill_count = 1
             entry_taker_notional = cum_entry_val
             exit_taker_notional = cum_exit_val
+
+        funding_pnl = dec(c_row.get("funding_fee"))
+        settlement_adjustment = closed_pnl - (gross_pnl + funding_pnl - total_fee)
 
         if (entry_maker_notional + entry_taker_notional) <= 0 and cum_entry_val > 0:
             if entry_roles == {"maker"}:
@@ -345,8 +346,8 @@ def _build_easicoin_closed_records(
             else:
                 exit_taker_notional = cum_exit_val
 
-        entry_taker_fee = max(Decimal("0"), entry_gross_fee - entry_maker_fee)
-        exit_taker_fee = max(Decimal("0"), exit_gross_fee - exit_maker_fee)
+        entry_taker_fee = entry_gross_fee - entry_maker_fee
+        exit_taker_fee = exit_gross_fee - exit_maker_fee
 
         stop_type = str(ord_obj.get("stop_order_type") or "")
         entry_mode, entry_mode_zh = _classify_ec_leg_mode(entry_roles, is_exit=False)
@@ -424,6 +425,7 @@ def _build_easicoin_closed_records(
                 "_raw_exit_val": cum_exit_val,
                 "_raw_gross_pnl": gross_pnl,
                 "_raw_funding_pnl": funding_pnl,
+                "settlement_adjustment_usd": float(settlement_adjustment),
                 "qty_base": f2(qty_base, 6),
                 "open_time_sec": int(t_open),
                 "close_time_sec": int(t_close),
@@ -569,7 +571,7 @@ def _build_easicoin_closed_records(
             "time_bj": fmt_bj(open_s, "%m-%d %H:%M:%S") if open_s > 0 else "—",
             "gross_fee_usd": f2(tot_en_fee, 4),
             "maker_fee_usd": f2(tot_en_mf, 4),
-            "taker_fee_usd": f2(max(Decimal("0"), tot_en_fee - tot_en_mf), 4),
+            "taker_fee_usd": f2(tot_en_fee - tot_en_mf, 4),
             "fee_bps": f2(en_bps_g, 2),
             "net_fee_usd": f2(tot_en_fee, 4),
         }
@@ -587,7 +589,7 @@ def _build_easicoin_closed_records(
             "time_bj": fmt_bj(close_s, "%m-%d %H:%M:%S") if close_s > 0 else "—",
             "gross_fee_usd": f2(tot_ex_fee, 4),
             "maker_fee_usd": f2(tot_ex_mf, 4),
-            "taker_fee_usd": f2(max(Decimal("0"), tot_ex_fee - tot_ex_mf), 4),
+            "taker_fee_usd": f2(tot_ex_fee - tot_ex_mf, 4),
             "fee_bps": f2(ex_bps_g, 2),
             "net_fee_usd": f2(tot_ex_fee, 4),
         }
@@ -623,6 +625,7 @@ def _build_easicoin_closed_records(
                 "position_events": events,
                 "gross_pnl_usd": f2(tot_gpnl, 4),
                 "funding_pnl_usd": f2(tot_fpnl, 4),
+                "settlement_adjustment_usd": sum(r["settlement_adjustment_usd"] for r in grp),
                 "total_fee_usd": f2(tot_fee_g, 4),
                 "net_fee_usd": f2(tot_fee_g, 4),
                 "gate_book_pnl_usd": f2(tot_cpnl, 4),
@@ -857,7 +860,7 @@ def _reconcile_easicoin_rebates_and_principal(
                 bp_dec = bf_dec * p_ratio_ec
                 b_obj["settled_rebate_usd"] = f2(bs_dec, 4)
                 b_obj["pending_rebate_usd"] = f2(bp_dec, 4)
-                b_obj["net_fee_usd"] = f2(max(Decimal("0"), bf_dec - bs_dec - bp_dec), 4)
+                b_obj["net_fee_usd"] = f2(bf_dec - bs_dec - bp_dec, 4)
 
         rec_eff = rec_settled + rec_pending
         if rec_pending > 0 and rec_settled > 0:
