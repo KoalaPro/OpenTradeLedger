@@ -6,6 +6,9 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.adapters.cycle_evidence import event_fill, project_live_reduction, usd_fee
+from opentradeledger.core.open_reductions import open_reduction_key
+from opentradeledger.core.position_lifecycle import build_position_events, trade_daily_amounts
 from opentradeledger.adapters.base import (
     AdapterMeta,
     VenueCopyBundle,
@@ -100,19 +103,80 @@ def _classify_ec_leg_mode(
     return ("MARKET_TAKER", "市价吃单") if not roles else ("MIXED", "混合成交")
 
 
+def _easicoin_cycles(
+    fills: Sequence[Mapping[str, Any]], orders: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[tuple[str, str, str], dict[str, Any]]]:
+    """Index close orders by the nonzero inventory interval they actually reduced."""
+    active: dict[tuple[str, str, str], dict[str, Any]] = {}
+    by_close: dict[tuple[str, str], dict[str, Any]] = {}
+    ordered = sorted(fills, key=lambda f: (norm_ms(f.get("exec_time")), str(f.get("exec_id") or "")))
+    for index, f in enumerate(ordered):
+        if f.get("exec_type") != "Trade":
+            continue
+        qty = abs(dec(f.get("exec_qty")))
+        closed = abs(dec(f.get("closed_size")))
+        token = str(f.get("side") or "").lower()
+        if not qty or token not in {"buy", "sell"}:
+            continue
+        symbol = str(f.get("symbol") or "").upper()
+        oid = str(f.get("order_id") or "")
+        link = str(f.get("pz_link_id") or (orders.get(oid) or {}).get("pz_link_id") or "")
+        entry_side = "long" if token == "buy" else "short"
+        close_side = "short" if entry_side == "long" else "long"
+        ts = norm_ms(f.get("exec_time"))
+        px = f.get("exec_price")
+        fee = usd_fee(f.get("exec_fee"), f.get("fee_currency") or f.get("exec_fee_currency") or "USDT")
+        role = str(f.get("liquidity_type") or "").lower()
+        if closed:
+            bucket = (symbol, close_side, link)
+            cycle = active.get(bucket)
+            if cycle and closed <= qty and closed <= cycle["remaining"]:
+                cycle["fills"].append(event_fill(ts, closed, px, False,
+                                                fee * float(closed / qty) if fee is not None else None, oid,
+                                                role=role, gross=f.get("exec_pnl")))
+                take = closed / cycle["remaining"]
+                allocations = cycle["allocation"].setdefault(oid, {})
+                for idx, slot in enumerate(cycle["entries"]):
+                    entry, remaining_share = slot
+                    consumed = take * remaining_share
+                    if consumed:
+                        previous = allocations.get(idx, (entry, Decimal("0")))[1]
+                        allocations[idx] = (entry, previous + consumed)
+                        slot[1] -= consumed
+                cycle["remaining"] -= closed
+                cycle["closed"] += closed
+                if oid:
+                    by_close[(symbol, oid)] = cycle
+                if not cycle["remaining"]:
+                    active.pop(bucket)
+            else:
+                active.pop(bucket, None)
+        if qty > closed:
+            opened = qty - closed
+            cycle = active.setdefault((symbol, entry_side, link), {
+                "anchor": f"fills_{index}", "entries": [], "fills": [], "allocation": {},
+                "remaining": Decimal("0"), "closed": Decimal("0"),
+            })
+            cycle["remaining"] += opened
+            cycle["entries"].append([f, opened / qty])
+            cycle["fills"].append(event_fill(ts, opened, px, True,
+                                            fee * float(opened / qty) if fee is not None else None, oid, role=role))
+    return by_close, active
+
+
 def _build_easicoin_closed_records(
     *,
     closed_pnl_rows: Sequence[Mapping[str, Any]],
     fills: Sequence[Mapping[str, Any]],
     orders: Sequence[Mapping[str, Any]],
     journals: Mapping[str, Mapping[str, Any]],
+    positions: Sequence[Mapping[str, Any]] = (),
 ) -> list[dict[str, Any]]:
-    if not closed_pnl_rows:
-        return []
 
     order_map: dict[str, Mapping[str, Any]] = {
         str(o.get("order_id")): o for o in orders if o.get("order_id")
     }
+    cycles_by_order, active = _easicoin_cycles(fills, order_map)
     exit_fills_by_order: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     entry_fills_by_pz: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     unlinked_entries_by_sym: dict[str, list[tuple[int, Mapping[str, Any]]]] = defaultdict(list)
@@ -182,26 +246,17 @@ def _build_easicoin_closed_records(
         t_open = t_close
         unlinked_anchor = ""
 
-        if pz_id and entry_fills_by_pz.get(pz_id):
+        cycle = cycles_by_order.get((raw_sym, oid))
+        matched_slices: list[tuple[Mapping[str, Any], Decimal]] = []
+        if cycle:
+            matched_slices = list(cycle["allocation"].get(oid, {}).values())
+        elif pz_id and entry_fills_by_pz.get(pz_id):
             pz_entries = entry_fills_by_pz[pz_id]
             tot_pz_qty = sum((abs(dec(ef.get("exec_qty"))) for ef in pz_entries), Decimal("0"))
             share = min(Decimal("1"), qty_base / tot_pz_qty) if tot_pz_qty > 0 else Decimal("1")
-            t_open = min(norm_sec(ef.get("exec_time")) for ef in pz_entries)
-            entry_fill_count = len(pz_entries)
-            for ef in pz_entries:
-                f_fee = abs(dec(ef.get("exec_fee"))) * share
-                f_val = (abs(dec(ef.get("exec_value"))) or (abs(dec(ef.get("exec_qty"))) * dec(ef.get("exec_price")))) * share
-                liq = str(ef.get("liquidity_type") or "taker").lower()
-                entry_roles.add(liq)
-                entry_gross_fee += f_fee
-                if liq == "maker":
-                    entry_maker_fee += f_fee
-                    entry_maker_notional += f_val
-                else:
-                    entry_taker_notional += f_val
+            matched_slices = [(ef, share) for ef in pz_entries]
         else:
             want_entry_side = "Sell" if pos_side == "short" else "Buy"
-            matched_slices: list[tuple[Mapping[str, Any], Decimal]] = []
             rem_need = qty_base
             anchor_ids: list[str] = []
             for slot in unlinked_pool_by_sym.get(raw_sym, []):
@@ -232,19 +287,20 @@ def _build_easicoin_closed_records(
                     break
             if matched_slices:
                 unlinked_anchor = f"ul_{raw_sym}_{anchor_ids[0]}"
-                t_open = min(norm_sec(uf.get("exec_time")) for uf, _ in matched_slices)
-                entry_fill_count = len(matched_slices)
-                for uf, take_sh in matched_slices:
-                    f_fee = abs(dec(uf.get("exec_fee"))) * take_sh
-                    f_val = (abs(dec(uf.get("exec_value"))) or (abs(dec(uf.get("exec_qty"))) * dec(uf.get("exec_price")))) * take_sh
-                    liq = str(uf.get("liquidity_type") or "taker").lower()
-                    entry_roles.add(liq)
-                    entry_gross_fee += f_fee
-                    if liq == "maker":
-                        entry_maker_fee += f_fee
-                        entry_maker_notional += f_val
-                    else:
-                        entry_taker_notional += f_val
+        if matched_slices:
+            t_open = min(norm_sec(uf.get("exec_time")) for uf, _ in matched_slices)
+            entry_fill_count = len(matched_slices)
+            for uf, take_sh in matched_slices:
+                f_fee = abs(dec(uf.get("exec_fee"))) * take_sh
+                f_val = (abs(dec(uf.get("exec_value"))) or (abs(dec(uf.get("exec_qty"))) * dec(uf.get("exec_price")))) * take_sh
+                liq = str(uf.get("liquidity_type") or "taker").lower()
+                entry_roles.add(liq)
+                entry_gross_fee += f_fee
+                if liq == "maker":
+                    entry_maker_fee += f_fee
+                    entry_maker_notional += f_val
+                else:
+                    entry_taker_notional += f_val
 
         exit_gross_fee = Decimal("0")
         exit_maker_fee = Decimal("0")
@@ -360,8 +416,9 @@ def _build_easicoin_closed_records(
                 "contract": contract,
                 "side": pos_side.upper(),
                 "is_partial_close": False,
-                "_pz_id": pz_id,
-                "_group_anchor": pz_id or unlinked_anchor,
+                "_cycle": cycle,
+                "_close_order_id": oid,
+                "_group_anchor": cycle["anchor"] if cycle else pz_id or unlinked_anchor,
                 "_raw_qty": qty_base,
                 "_raw_entry_val": cum_entry_val,
                 "_raw_exit_val": cum_exit_val,
@@ -404,7 +461,6 @@ def _build_easicoin_closed_records(
     groups_by_key: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     ordered_groups: list[list[dict[str, Any]]] = []
     for idx_r, r_ec in enumerate(out):
-        r_ec.pop("_pz_id", None)
         anchor = str(r_ec.pop("_group_anchor", "") or "")
         if anchor:
             gk = (str(r_ec["contract"]), str(r_ec["side"]), anchor)
@@ -431,8 +487,27 @@ def _build_easicoin_closed_records(
 
     consolidated: list[dict[str, Any]] = []
     for grp in ordered_groups:
+        cycles = [r.pop("_cycle", None) for r in grp]
+        cycle = cycles[0]
+        total_closed = sum((r["_raw_qty"] for r in grp), Decimal("0"))
+        same_cycle = all(c is cycle for c in cycles)
+        evidence = cycle["fills"] if cycle and same_cycle else []
+        if cycle and cycle["closed"] > total_closed:
+            last_close = max(r["close_time_ms"] for r in grp)
+            evidence = [f for f in evidence if f["time_ms"] <= last_close]
+        matched_qty = sum((f["qty"] for f in evidence if not f["is_entry"]), Decimal("0"))
+        events = build_position_events(evidence, side=grp[0]["side"]) if matched_qty == total_closed else []
         if len(grp) == 1:
             single = grp[0]
+            single.pop("_close_order_id", None)
+            if events:
+                saved = merge_legacy_journal_entries(
+                    journals, single["record_key"], [open_reduction_key("easicoin", single["contract"], single["side"], events)]
+                )
+                single["tags"] = list(saved.get("tags") or [])
+                single["note"] = str(saved.get("note") or "")
+            single["position_events"] = events
+            single["is_partial_close"] = bool(events and events[-1]["remaining_qty"] > 0)
             for tmp_k in ("_raw_qty", "_raw_entry_val", "_raw_exit_val", "_raw_gross_pnl", "_raw_funding_pnl"):
                 single.pop(tmp_k, None)
             consolidated.append(single)
@@ -442,6 +517,8 @@ def _build_easicoin_closed_records(
         last_rec = grp[-1]
         primary_rk = str(last_rec["record_key"])
         legacy_rks = [str(x["record_key"]) for x in grp]
+        if events:
+            legacy_rks.append(open_reduction_key("easicoin", last_rec["contract"], last_rec["side"], events))
         j_merged = merge_legacy_journal_entries(journals, primary_rk, legacy_rks)
 
         tot_q = sum((dec(x.pop("_raw_qty", x["qty_base"])) for x in grp), Decimal("0"))
@@ -520,6 +597,7 @@ def _build_easicoin_closed_records(
                 {
                     **sub_r["exit_leg"],
                     "batch_index": b_i + 1,
+                    "order_id": sub_r.pop("_close_order_id", ""),
                     "qty": sub_r["qty_base"],
                     "gross_pnl_usd": sub_r["gross_pnl_usd"],
                 }
@@ -542,6 +620,7 @@ def _build_easicoin_closed_records(
                 "entry_leg": merged_en_leg,
                 "exit_leg": merged_ex_leg,
                 "exit_batches": ec_raw_batches,
+                "position_events": events,
                 "gross_pnl_usd": f2(tot_gpnl, 4),
                 "funding_pnl_usd": f2(tot_fpnl, 4),
                 "total_fee_usd": f2(tot_fee_g, 4),
@@ -559,6 +638,26 @@ def _build_easicoin_closed_records(
                 "note": str(j_merged.get("note") or ""),
             }
         )
+    for pos in positions:
+        symbol = str(pos.get("symbol") or "").upper()
+        position_idx = str(pos.get("position_idx") or "")
+        token = str(pos.get("side") or "").lower()
+        side = "short" if token in {"sell", "short"} or (not token and position_idx == "2") else "long"
+        link = str(pos.get("pz_link_id") or "")
+        candidates = [cycle for (sym, direction, pz), cycle in active.items()
+                      if sym == symbol and direction == side and (not link or link == pz)]
+        if len(candidates) != 1:
+            continue
+        raw = project_live_reduction(
+            venue="easicoin", symbol=normalize_contract_symbol(symbol), side=side.upper(), fills=candidates[0]["fills"],
+            remaining_qty=pos.get("size") or pos.get("qty"), avg_entry_price=pos.get("entry_price") or pos.get("avg_price"),
+            journals=journals, history=consolidated,
+        )
+        if raw:
+            raw["_raw_closed_pnl"] = raw["gate_book_pnl_usd"]
+            raw["_raw_entry_fee"] = raw["entry_leg"]["gross_fee_usd"]
+            raw["_raw_exit_fee"] = raw["exit_leg"]["gross_fee_usd"]
+            consolidated.append(raw)
     return consolidated
 
 
@@ -812,6 +911,7 @@ def build_easicoin_venue_ledger(
         fills=fills,
         orders=orders,
         journals=journals,
+        positions=ec_lb.get("futures_positions") or [],
     )
 
     # Spot / Funding 1:1 Tokenized Stocks on EasiCoin
@@ -1112,10 +1212,9 @@ def build_easicoin_venue_ledger(
     daily_pnl: dict[str, Decimal] = defaultdict(Decimal)
     daily_comp: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     for ec_r in ec_closed_records:
-        d_ec = ec_r["close_date_bj"]
-        v_ec = dec(ec_r["realized_net_pnl_usd"])
-        daily_pnl[d_ec] += v_ec
-        daily_comp[d_ec]["easicoin_futures"] += v_ec
+        for day, amount in trade_daily_amounts(ec_r, dec(ec_r["realized_net_pnl_usd"])).items():
+            daily_pnl[day] += amount
+            daily_comp[day]["easicoin_futures"] += amount
     if ec_unrealized_usd != 0:
         daily_pnl[today_bj_str] += ec_unrealized_usd
         daily_comp[today_bj_str]["easicoin_futures"] += ec_unrealized_usd

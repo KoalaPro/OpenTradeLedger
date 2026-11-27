@@ -18,6 +18,9 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, usd_fee
+from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
+
 from opentradeledger.security.readonly_guard import assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
@@ -760,14 +763,18 @@ def normalize_htx_closed_trades(
         mid_id: str,
         is_partial: bool,
         exit_batches: list[dict[str, Any]] | None = None,
+        journal_keys: list[str] | None = None,
+        position_events: list[dict[str, Any]] | None = None,
     ) -> None:
         funding_pnl = 0.0
+        funding_receipts = []
         for fl in funding_by_sym.get(sym, []):
             if fl["_id"] in consumed_fund:
                 continue
             if open_ms - 5_000 <= fl["ts"] <= close_ms + 5_000:
                 consumed_fund.add(fl["_id"])
                 funding_pnl += float(fl["amt"])
+                funding_receipts.append((fl["ts"], fl["amt"]))
 
         total_fee = round(en_fee + ex_fee, 6)
         total_rebate = round(en_reb + ex_reb, 6)
@@ -781,7 +788,8 @@ def normalize_htx_closed_trades(
 
         records.append(
             {
-                "trade_id": f"htx_{mid_id}_{close_ms}",
+                **cycle_journal_keys(journal_keys or [f"htx_{mid_id}_{close_ms}"], is_partial),
+                "position_events": position_events or [],
                 "venue_id": "htx",
                 "venue_name": "HTX",
                 "venue_name_zh": "火币 HTX",
@@ -793,6 +801,7 @@ def normalize_htx_closed_trades(
                 "close_time_ms": close_ms,
                 "gross_pnl_usd": round(offset_pl, 4),
                 "funding_pnl_usd": round(funding_pnl, 4),
+                "funding_by_day": dated_cash(funding_receipts),
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_usd": round(total_fee, 4),
                 "total_rebate_usd": round(total_rebate, 4),
@@ -856,6 +865,12 @@ def normalize_htx_closed_trades(
         ex_px = (ex_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
         ex_fee = sum(float(x["fee_paid"]) for x in exits)
         ex_reb = sum(float(x["maker_rebate"]) for x in exits) + (ex_fee * rebate_ratio)
+        evidence = lot["event_fills"]
+        units = {f["qty_unit"] for f in evidence}
+        events = build_position_events(evidence, side=trade_side, linear=units == {"base"}) if len(units) == 1 else []
+        for fill, event in zip(exits, (e for e in events if e["action"] in {"REDUCE", "CLOSE"})):
+            if event["gross_pnl_usd"] is not None:
+                fill["offset_pl"] = event["gross_pnl_usd"]
         offset_pl_sum = sum(float(x["offset_pl"]) for x in exits)
         has_turnover_all = all(x["has_turnover"] for x in exits)
         c_cnt = sum(float(x["vol"]) for x in exits) if has_turnover_all else None
@@ -884,6 +899,7 @@ def normalize_htx_closed_trades(
                 htx_batches.append(
                     {
                         "batch_index": b_i + 1,
+                        "order_id": str(g_e[0].get("oid") or ""),
                         "qty": round(bq, 6),
                         **({"contract_count": bvol} if bvol is not None else {}),
                         "role": "MAKER" if (bmk and not btk) else "TAKER",
@@ -927,6 +943,8 @@ def normalize_htx_closed_trades(
             mid_id=str(exits[-1]["mid_id"]),
             is_partial=is_partial,
             exit_batches=htx_batches,
+            journal_keys=[f"htx_{x['mid_id']}_{x['ts']}" for x in exits],
+            position_events=events,
         )
 
     for idx, m in enumerate(sorted_matches):
@@ -952,6 +970,9 @@ def normalize_htx_closed_trades(
         oid_str = str(m.get("order_id") or m.get("order_id_str") or "").strip()
         mid_id = htx_match_unique_key(m, fallback_idx=idx)
 
+        charged = usd_fee(-raw_fee if m.get("trade_fee") not in (None, "") else None, m.get("fee_asset") or "USDT")
+        unit = "base" if turnover > 0 else "contracts"
+
         is_open = offset == "open" and abs(offset_pl) <= 1e-9
         if is_open:
             trade_side = "LONG" if direction == "buy" else "SHORT"
@@ -966,12 +987,14 @@ def normalize_htx_closed_trades(
                     "open_ms": float(ts),
                     "maker_notional": 0.0,
                     "taker_notional": 0.0,
+                    "event_fills": [],
                     "exits": [],
                 },
             )
             if (lot["qty"] - lot["closed_qty"]) <= 1e-12 and not lot["exits"]:
                 lot["open_ms"] = float(ts)
             notional_m = turnover if turnover > 0 else (px * qty)
+            lot["event_fills"].append(event_fill(ts, qty, px, True, charged, oid_str, qty_unit=unit))
             lot["qty"] += qty
             lot["notional"] += notional_m
             lot["fee"] += fee_paid
@@ -988,6 +1011,13 @@ def normalize_htx_closed_trades(
         rem_open_q = (float(lot["qty"]) - float(lot["closed_qty"])) if lot else 0.0
         ex_notional = turnover if turnover > 0 else (px * qty)
         if lot and rem_open_q > 1e-12:
+            # Oversized explicit closes indicate that earlier inventory is missing.
+            if qty > rem_open_q + 1e-9:
+                lot["event_fills"].clear()
+            lot["event_fills"].append(event_fill(ts, qty, px, False, charged, oid_str,
+                                                gross=offset_pl if any(m.get(k) not in (None, "") for k in
+                                                                       ("real_profit", "offset_profitloss", "profit")) else None,
+                                                qty_unit=unit))
             lot["exits"].append(
                 {
                     "qty": min(qty, rem_open_q) if qty > rem_open_q + 1e-9 else qty,

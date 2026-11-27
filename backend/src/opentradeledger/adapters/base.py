@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from pydantic import BaseModel
 
 from opentradeledger.core.account_partition import AccountIdentityError
+from opentradeledger.core.position_lifecycle import align_exit_batch_net
 from opentradeledger.core.venue_health import is_transient_upstream_error
 from opentradeledger.security.vault import ExchangeCredentialRecord
 
@@ -291,6 +292,10 @@ class VenueLedgerBundle:
     stocks: VenueStockBundle = field(default_factory=VenueStockBundle)
     fee_context: dict[str, Any] = field(default_factory=dict)
     spot_wallet_balances: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        for trade in self.trades:
+            align_exit_batch_net(trade)
 
 
 class BaseExchangeAdapter(ABC):

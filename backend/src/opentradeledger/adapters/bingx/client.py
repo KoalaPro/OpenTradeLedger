@@ -18,6 +18,9 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, usd_fee
+from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
+
 from opentradeledger.security.readonly_guard import assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
@@ -608,6 +611,15 @@ class BingxReadOnlyClient:
         return out_snap
 
 
+def _bingx_fee_cost(fill: dict[str, Any]) -> float | None:
+    # Swap fill fees are a wallet movement: a negative amount is a debit.
+    raw = fill.get("commission")
+    if raw in (None, ""):
+        raw = fill.get("fee")
+    movement = usd_fee(raw, fill.get("commissionAsset") or fill.get("feeAsset") or fill.get("currency") or "USDT")
+    return -movement if movement is not None else None
+
+
 def normalize_bingx_closed_trades(
     fills: list[dict[str, Any]],
     income_rows: Optional[list[dict[str, Any]]] = None,
@@ -619,7 +631,7 @@ def normalize_bingx_closed_trades(
         if isinstance(inc, dict)
         and any(tok in str(inc.get("incomeType") or "").upper() for tok in ("REBATE", "COMMISSION_REBATE", "CASHBACK"))
     )
-    fees_total = sum(abs(float(f.get("commission") or f.get("fee") or 0.0)) for f in fills if isinstance(f, dict))
+    fees_total = sum(max(0.0, _bingx_fee_cost(f) or 0.0) for f in fills if isinstance(f, dict))
     rebate_ratio = min(0.95, rebates_total / fees_total) if fees_total > 0 and rebates_total > 0 else 0.0
 
     funding_by_sym: dict[str, list[dict[str, Any]]] = {}
@@ -662,20 +674,27 @@ def normalize_bingx_closed_trades(
         realized_pnl: float,
         oid_id: str,
         is_partial: bool,
+        en_credit: float = 0.0,
+        ex_credit: float = 0.0,
+        ex_known: bool = True,
         exit_batches: list[dict[str, Any]] | None = None,
+        journal_keys: list[str] | None = None,
+        position_events: list[dict[str, Any]] | None = None,
     ) -> None:
         total_fee = round(en_fee + ex_fee, 6)
-        en_reb = round(en_fee * rebate_ratio, 6)
-        ex_reb = round(ex_fee * rebate_ratio, 6)
+        en_reb = round(en_credit + en_fee * rebate_ratio, 6)
+        ex_reb = round(ex_credit + ex_fee * rebate_ratio, 6)
         total_rebate = round(en_reb + ex_reb, 6)
 
         funding_pnl = 0.0
+        funding_receipts = []
         for fl in funding_by_sym.get(sym, []):
             if fl["_id"] in consumed_fund:
                 continue
             if open_ms - 5_000 <= fl["time"] <= close_ms + 5_000:
                 consumed_fund.add(fl["_id"])
                 funding_pnl += float(fl["val"])
+                funding_receipts.append((fl["time"], fl["val"]))
 
         book_pnl = round(realized_pnl - total_fee + funding_pnl, 6)
         net_pnl = round(book_pnl + total_rebate, 6)
@@ -687,7 +706,8 @@ def normalize_bingx_closed_trades(
 
         records.append(
             {
-                "trade_id": f"bingx_{oid_id}_{close_ms}",
+                **cycle_journal_keys(journal_keys or [f"bingx_{oid_id}_{close_ms}"], is_partial),
+                "position_events": position_events or [],
                 "venue_id": "bingx",
                 "venue_name": "BingX",
                 "venue_name_zh": "BingX",
@@ -698,6 +718,7 @@ def normalize_bingx_closed_trades(
                 "close_time_ms": close_ms,
                 "gross_pnl_usd": round(realized_pnl, 4),
                 "funding_pnl_usd": round(funding_pnl, 4),
+                "funding_by_day": dated_cash(funding_receipts),
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_usd": round(total_fee, 4),
                 "total_rebate_usd": round(total_rebate, 4),
@@ -726,8 +747,8 @@ def normalize_bingx_closed_trades(
                 "exit_leg": {
                     "role": "MAKER" if ex_maker else "TAKER",
                     "mode_code": ex_mode,
-                    "fee_known": True,
-                    "fee_bps": round((ex_fee / ex_notional) * 10_000, 2) if ex_notional > 0 else 0.0,
+                    "fee_known": ex_known,
+                    "fee_bps": round((ex_fee / ex_notional) * 10_000, 2) if ex_known and ex_notional > 0 else None,
                     "time_ms": close_ms,
                     "avg_price": round(ex_px, 6),
                     "notional_usd": round(ex_notional, 2),
@@ -759,6 +780,10 @@ def normalize_bingx_closed_trades(
         ex_notional = sum(float(x["notional"]) for x in exits)
         ex_px = (ex_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
         ex_fee = sum(float(x["fee"]) for x in exits)
+        events = build_position_events(lot["event_fills"], side=trade_side, linear=True)
+        for fill, event in zip(exits, (e for e in events if e["action"] in {"REDUCE", "CLOSE"})):
+            if event["gross_pnl_usd"] is not None:
+                fill["realized_pnl"] = event["gross_pnl_usd"]
         rpnl_sum = sum(float(x["realized_pnl"]) for x in exits)
         distinct_oids = {str(x["oid_raw"]) for x in exits if x.get("oid_raw")}
         distinct_ts = {int(x["ts"]) for x in exits}
@@ -775,7 +800,7 @@ def normalize_bingx_closed_trades(
                 bnot = sum(float(y["notional"]) for y in g_e)
                 bpx = (bnot / bq) if bq > 0 else float(g_e[-1]["px"])
                 bfee = sum(float(y["fee"]) for y in g_e)
-                breb = round(bfee * rebate_ratio, 4)
+                breb = round(sum(y["credit"] for y in g_e) + bfee * rebate_ratio, 4)
                 bnetf = round(max(0.0, bfee - breb), 4)
                 bgpnl = sum(float(y["realized_pnl"]) for y in g_e)
                 bmk = any(bool(y["is_maker"]) for y in g_e)
@@ -784,10 +809,11 @@ def normalize_bingx_closed_trades(
                 bx_batches.append(
                     {
                         "batch_index": b_i + 1,
+                        "order_id": str(g_e[0].get("oid_raw") or ""),
                         "qty": round(bq, 8),
                         "role": "MAKER" if (bmk and not btk) else "TAKER",
                         "mode_code": "MIXED" if (bmk and btk) else ("LIMIT_MAKER" if bmk else "MARKET_TAKER"),
-                        "fee_known": True,
+                        "fee_known": all(y["fee_known"] for y in g_e),
                         "fee_bps": round(bfee / bnot * 10_000, 2) if bnot > 0 else 0.0,
                         "time_ms": bts,
                         "time_str": _fmt_bj_ms(bts),
@@ -814,7 +840,10 @@ def normalize_bingx_closed_trades(
             ex_notional=ex_notional,
             en_fee=en_fee,
             ex_fee=ex_fee,
-            en_known=True,
+            en_credit=lot["credit"] * ratio,
+            ex_credit=sum(x["credit"] for x in exits),
+            en_known=lot["fee_known"],
+            ex_known=all(x["fee_known"] for x in exits),
             en_makers=bool(lot["maker_notional"] > 0),
             en_takers=bool(lot["taker_notional"] > 0),
             ex_makers=any(bool(x["is_maker"]) for x in exits),
@@ -823,6 +852,8 @@ def normalize_bingx_closed_trades(
             oid_id=str(exits[-1]["oid_id"]),
             is_partial=is_partial,
             exit_batches=bx_batches,
+            journal_keys=[f"bingx_{x['oid_id']}_{x['ts']}" for x in exits],
+            position_events=events,
         )
 
     for idx, f in enumerate(sorted_fills):
@@ -834,8 +865,11 @@ def normalize_bingx_closed_trades(
         qty = abs(float(f.get("qty") or f.get("executedQty") or f.get("volume") or 0.0))
         if px <= 0 or qty <= 0:
             continue
-        fee = abs(float(f.get("commission") or f.get("fee") or 0.0))
-        realized_pnl = float(f.get("realizedPnl") or f.get("profit") or 0.0)
+        charged = _bingx_fee_cost(f)
+        fee = max(0.0, charged or 0.0)
+        credit = max(0.0, -(charged or 0.0))
+        native_gross = f.get("realizedPnl") if f.get("realizedPnl") not in (None, "") else f.get("profit")
+        realized_pnl = float(native_gross or 0)
         side_raw = str(f.get("side") or "").upper()
         pos_side = str(f.get("positionSide") or "").upper()
         role_raw = str(f.get("role") or ("MAKER" if f.get("maker") else "TAKER")).upper()
@@ -847,7 +881,8 @@ def normalize_bingx_closed_trades(
             trade_side = pos_side
             is_open = (pos_side == "LONG" and side_raw == "BUY") or (pos_side == "SHORT" and side_raw == "SELL")
         else:
-            is_open = abs(realized_pnl) <= 1e-9
+            opposing_side = "SHORT" if side_raw == "BUY" else "LONG"
+            is_open = (sym, opposing_side) not in open_lots and abs(realized_pnl) <= 1e-9
             trade_side = "LONG" if (side_raw == "BUY" if is_open else side_raw == "SELL") else "SHORT"
 
         lot_key = (sym, trade_side)
@@ -859,17 +894,23 @@ def normalize_bingx_closed_trades(
                     "closed_qty": 0.0,
                     "notional": 0.0,
                     "fee": 0.0,
+                    "credit": 0.0,
+                    "fee_known": True,
                     "open_ms": float(ts),
                     "maker_notional": 0.0,
                     "taker_notional": 0.0,
+                    "event_fills": [],
                     "exits": [],
                 },
             )
             if (lot["qty"] - lot["closed_qty"]) <= 1e-12 and not lot["exits"]:
                 lot["open_ms"] = float(ts)
+            lot["event_fills"].append(event_fill(ts, qty, px, True, charged, oid_raw))
             lot["qty"] += qty
             lot["notional"] += px * qty
             lot["fee"] += fee
+            lot["credit"] += credit
+            lot["fee_known"] = lot["fee_known"] and charged is not None
             if is_maker:
                 lot["maker_notional"] += px * qty
             else:
@@ -879,12 +920,16 @@ def normalize_bingx_closed_trades(
         lot = open_lots.get(lot_key)
         rem_open_q = (float(lot["qty"]) - float(lot["closed_qty"])) if lot else 0.0
         if lot and rem_open_q > 1e-12:
+            event_gross = realized_pnl if native_gross not in (None, "") else None
             if qty <= rem_open_q + 1e-9:
+                lot["event_fills"].append(event_fill(ts, qty, px, False, charged, oid_raw, gross=event_gross))
                 lot["exits"].append(
                     {
                         "qty": qty,
                         "px": px,
                         "notional": px * qty,
+                        "fee_known": charged is not None,
+                        "credit": credit,
                         "fee": fee,
                         "realized_pnl": realized_pnl,
                         "is_maker": is_maker,
@@ -900,11 +945,16 @@ def normalize_bingx_closed_trades(
             else:
                 close_sh = rem_open_q / qty
                 open_sh = 1.0 - close_sh
+                lot["event_fills"].append(event_fill(ts, rem_open_q, px, False,
+                                                    charged * close_sh if charged is not None else None,
+                                                    oid_raw, gross=event_gross))
                 lot["exits"].append(
                     {
                         "qty": rem_open_q,
                         "px": px,
                         "notional": px * rem_open_q,
+                        "fee_known": charged is not None,
+                        "credit": credit * close_sh,
                         "fee": fee * close_sh,
                         "realized_pnl": realized_pnl,
                         "is_maker": is_maker,
@@ -923,10 +973,14 @@ def normalize_bingx_closed_trades(
                         "qty": rem_q,
                         "closed_qty": 0.0,
                         "notional": px * rem_q,
+                        "fee_known": charged is not None,
+                        "credit": credit * open_sh,
                         "fee": fee * open_sh,
                         "open_ms": float(ts),
                         "maker_notional": (px * rem_q) if is_maker else 0.0,
                         "taker_notional": 0.0 if is_maker else (px * rem_q),
+                        "event_fills": [event_fill(ts, rem_q, px, True,
+                                                   charged * open_sh if charged is not None else None, oid_raw)],
                         "exits": [],
                     }
         else:
@@ -944,6 +998,8 @@ def normalize_bingx_closed_trades(
                 en_notional=en_px * qty,
                 ex_notional=px * qty,
                 en_fee=0.0,
+                ex_credit=credit,
+                ex_known=charged is not None,
                 ex_fee=fee,
                 en_known=False,
                 en_makers=False,

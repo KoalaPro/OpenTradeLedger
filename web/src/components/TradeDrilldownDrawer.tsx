@@ -10,6 +10,7 @@ import { fmtContractQty, fmtLegRate, fmtDuration, fmtPrice, fmtSignedPct, pnlTon
 import type { ClosedTrade, OpenPosition, TradeExitBatch, TradeLegFee } from '../lib/types'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { InstrumentMark } from './InstrumentMark'
+import { BatchNetResult, PartialSettlement, PositionTimeline } from './PositionTimeline'
 import { VenueBadge } from './VenueBadge'
 
 interface TradeDrilldownDrawerProps {
@@ -75,7 +76,7 @@ function CompactLegRow({
         <div>
           <div className="text-[var(--fg-3)]">{t('leg_gross_fee')}</div>
           <div className={`font-semibold sensitive ${feeUnknown ? 'text-[var(--fg-3)]' : ''}`}>
-            {feeUnknown ? t('leg_fee_unknown') : leg.gross_fee_usd > 0 ? `-${cur.money(leg.gross_fee_usd, 3)}` : cur.money(0, 3)}
+            {feeUnknown ? t('leg_fee_unknown') : cur.signedMoney(-leg.gross_fee_usd, 3)}
           </div>
         </div>
         <div>
@@ -85,7 +86,7 @@ function CompactLegRow({
               ? '—'
               : leg.rebate_usd > 0
                 ? `+${cur.money(leg.rebate_usd, 3)}${leg.gross_fee_usd > 0 ? ` (${leg.rebate_pct.toFixed(0)}%)` : ''}`
-                : leg.gross_fee_usd <= 0 ? t('leg_zero_fee') : cur.money(0, 3)}
+                : leg.gross_fee_usd === 0 ? t('leg_zero_fee') : cur.money(0, 3)}
           </div>
           {!feeUnknown && leg.discount_saved_usd > 0.0001 && (
             <div className="txt-pos mt-0.5 sensitive whitespace-nowrap">
@@ -124,7 +125,7 @@ function CompactMultiBatchLedger({
         <div className="min-w-0 space-y-0.5">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-[var(--fg)] whitespace-nowrap">
-              {locale === 'en' ? 'Entry' : '开仓进场'}
+              {trade.position_events?.length ? t('lifecycle_entry_total') : locale === 'en' ? 'Entry' : '开仓进场'}
             </span>
             {(trade.qty != null || trade.contract_count != null) && (
               <span className="text-[var(--fg)] sensitive whitespace-nowrap">
@@ -151,7 +152,7 @@ function CompactMultiBatchLedger({
             ) : (
               <>
                 {locale === 'en' ? 'Gross ' : '先扣 '}
-                {enLeg.gross_fee_usd > 0 ? `-${cur.plainMoney(enLeg.gross_fee_usd, 4)}` : cur.plainMoney(0, 4)}
+                {cur.signedPlainMoney(-enLeg.gross_fee_usd, 4)}
                 {enLeg.rebate_usd > 0 && (
                   <>
                     {' · '}
@@ -193,9 +194,9 @@ function CompactMultiBatchLedger({
                     @ <span className="sensitive">{fmtPrice(b.avg_price)}</span>
                   </span>
                 )}
-                <span className={`font-medium whitespace-nowrap sensitive ${pnlTone(b.gross_pnl_usd)}`}>
+                <span className={`font-medium whitespace-nowrap sensitive ${pnlTone(b.gross_pnl_usd ?? 0)}`}>
                   {locale === 'en' ? 'Spread ' : '价差 '}
-                  {cur.signedMoney(b.gross_pnl_usd)}
+                  {b.gross_pnl_usd == null ? t('lifecycle_unknown') : cur.signedMoney(b.gross_pnl_usd)}
                 </span>
               </div>
               <div className="text-[var(--fg-3)]">
@@ -213,7 +214,7 @@ function CompactMultiBatchLedger({
                 ) : (
                   <>
                     {locale === 'en' ? 'Gross ' : '先扣 '}
-                    {b.gross_fee_usd > 0 ? `-${cur.plainMoney(b.gross_fee_usd, 4)}` : cur.plainMoney(0, 4)}
+                    {cur.signedPlainMoney(-b.gross_fee_usd, 4)}
                     {b.rebate_usd > 0 && (
                       <>
                         {' · '}
@@ -229,6 +230,7 @@ function CompactMultiBatchLedger({
               <div className="font-semibold text-[var(--fg)] whitespace-nowrap sensitive">
                 {t('leg_exit_net')} {bFeeUnknown ? '—' : cur.signedMoney(-b.net_fee_usd, 4)}
               </div>
+              <BatchNetResult batch={b} />
             </div>
           </div>
         )
@@ -515,8 +517,8 @@ export function TradeDrilldownDrawer({
                           </span>
                         </div>
                         <div className="text-[12px] text-[var(--fg-3)] mt-0.5 sensitive">
-                          {t('fee_entry_short')} {tr.entry_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.entry_leg.gross_fee_usd, 2)}`} ·{' '}
-                          {t('fee_exit_short')} {tr.exit_leg.fee_known === false ? t('leg_fee_unknown') : `-${cur.plainMoney(tr.exit_leg.gross_fee_usd, 2)}`} ·{' '}
+                          {t('fee_entry_short')} {tr.entry_leg.fee_known === false ? t('leg_fee_unknown') : cur.signedPlainMoney(-tr.entry_leg.gross_fee_usd, 2)} ·{' '}
+                          {t('fee_exit_short')} {tr.exit_leg.fee_known === false ? t('leg_fee_unknown') : cur.signedPlainMoney(-tr.exit_leg.gross_fee_usd, 2)} ·{' '}
                           {t('fee_net_short')} {cur.signedMoney(-tr.net_fee_usd, 2)}
                         </div>
                       </div>
@@ -544,22 +546,24 @@ export function TradeDrilldownDrawer({
                       open={isExp}
                       innerClassName="px-6 pb-4 bg-[var(--surface-2)]"
                     >
-                      {tr.exit_batches && tr.exit_batches.length > 1 ? (
-                        <CompactMultiBatchLedger trade={tr} batches={tr.exit_batches} />
-                      ) : (
-                        <>
-                          <CompactLegRow
-                            title={t('leg_entry')}
-                            netLabel={t('leg_entry_net')}
-                            leg={tr.entry_leg}
-                          />
-                          <CompactLegRow
-                            title={t('leg_exit')}
-                            netLabel={t('leg_exit_net')}
-                            leg={tr.exit_leg}
-                          />
-                        </>
-                      )}
+                      <PositionTimeline trade={tr}>
+                        {tr.exit_batches && tr.exit_batches.length > 1 ? (
+                          <CompactMultiBatchLedger trade={tr} batches={tr.exit_batches} />
+                        ) : (
+                          <>
+                            <CompactLegRow
+                              title={t('leg_entry')}
+                              netLabel={t('leg_entry_net')}
+                              leg={tr.entry_leg}
+                            />
+                            <CompactLegRow
+                              title={t('leg_exit')}
+                              netLabel={t('leg_exit_net')}
+                              leg={tr.exit_leg}
+                            />
+                          </>
+                        )}
+                      </PositionTimeline>
                       <div className="pt-2.5 border-t border-[var(--border)] space-y-1 text-[12px] tabular-nums">
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_gross_pnl')}</span>
@@ -584,7 +588,7 @@ export function TradeDrilldownDrawer({
                         <div className="flex justify-between">
                           <span className="text-[var(--fg-2)]">{t('wf_total_fee')}</span>
                           <span className="sensitive">
-                            -{cur.money(tr.total_fee_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}
+                            {cur.signedMoney(-tr.total_fee_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}
                           </span>
                         </div>
                         <div className="flex justify-between">
@@ -593,6 +597,7 @@ export function TradeDrilldownDrawer({
                             +{cur.money(tr.total_rebate_usd, tr.exit_batches && tr.exit_batches.length > 1 ? 4 : 3)}
                           </span>
                         </div>
+                        <PartialSettlement trade={tr} />
                         {tr.total_discount_saved_usd > 0.0001 && (
                           <div className="flex justify-between text-[var(--fg-3)]">
                             <span>

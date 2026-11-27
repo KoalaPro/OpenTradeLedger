@@ -58,7 +58,7 @@ async def test_okx_cursor_pagination_c2c_bills_copy_and_per_trade_rebate_matchin
                                 "posId": "p1",
                                 "instId": "ETH-USDT-SWAP",
                                 "direction": "short",
-                                "type": "2",  # partial close
+                                "type": "1",  # OKX partial close
                                 "cTime": "1732280000000",
                                 "uTime": "1732290000000",
                                 "openAvgPx": "3000",

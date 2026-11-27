@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from opentradeledger.config import UserPreferences
+from opentradeledger.core.position_lifecycle import align_exit_batch_net, build_position_events, exit_counts_by_day, trade_daily_amounts
+from opentradeledger.core.venue_primitives import dec
 
 _DEMO_EXCHANGES: list[dict[str, Any]] = [
     {
@@ -145,7 +147,7 @@ def _make_demo_trade(
     base_before_relief = total_fee + total_disc
     relief_pct = round(((total_reb + total_disc) / base_before_relief) * 100.0, 1) if base_before_relief > 0 else 0.0
 
-    return {
+    trade = {
         "trade_id": f"demo_{venue_id}_{symbol}_{idx}",
         "venue_id": venue_id,
         "venue_name": venue_name,
@@ -251,7 +253,15 @@ def _make_demo_trade(
         "tags": tags or [],
         "note": "",
     }
-
+    exits = trade["exit_batches"] or [dict(trade["exit_leg"], qty=qty)]
+    fills = [dict(time_ms=open_ms, qty=qty, price=entry_px, is_entry=True, fee_usd=en_gross_fee)]
+    for batch_index, batch in enumerate(exits, 1):
+        batch["order_id"] = str(batch_index)
+        fills.append(dict(time_ms=batch["time_ms"], qty=batch["qty"], price=batch["avg_price"], is_entry=False,
+                          fee_usd=batch["gross_fee_usd"], order_id=str(batch_index)))
+    trade["position_events"] = build_position_events(fills, side=side)
+    align_exit_batch_net(trade)
+    return trade
 
 def _demo_trades() -> list[dict[str, Any]]:
     return [
@@ -331,12 +341,18 @@ def build_demo_dashboard(
     relief_pct = round(((total_reb + total_disc) / base_fee) * 100.0, 1) if base_fee > 0 else 0.0
 
     # Equity curve & calendar days
-    day_deltas: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    day_activity: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for tr in all_trades:
-        day_deltas[tr["close_date"]].append(tr)
+        counts = exit_counts_by_day(tr)
+        for day, amount in trade_daily_amounts(tr, dec(tr["net_pnl_usd"])).items():
+            day_activity[day].append({
+                "trade_id": tr["trade_id"], "venue_id": tr["venue_id"], "symbol": tr["symbol"],
+                "side": tr["side"], "amount_usd": float(amount), "exit_count": counts.get(day, 0),
+            })
     calendar_days = [
-        {"date": day, "net_pnl_usd": round(sum(t["net_pnl_usd"] for t in items), 2), "trade_count": len(items)}
-        for day, items in sorted(day_deltas.items())
+        {"date": day, "net_pnl_usd": round(sum(t["amount_usd"] for t in items), 2),
+         "trade_count": sum(1 for t in items if t["exit_count"]), "trade_activity": items}
+        for day, items in sorted(day_activity.items())
     ]
     period_days: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for tr in filtered:

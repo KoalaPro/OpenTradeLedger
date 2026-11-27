@@ -6,6 +6,8 @@ from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.core.open_reductions import carry_open_reduction_notes, open_reduction_record
+from opentradeledger.core.position_lifecycle import dated_cash, trade_daily_amounts
 from opentradeledger.adapters.base import (
     AdapterMeta,
     VenueCopyBundle,
@@ -17,6 +19,7 @@ from opentradeledger.adapters.stock_channels import (
     classify_spot_stock_token,
     reconstruct_spot_cost_basis,
 )
+from opentradeledger.core.position_batch_pnl import position_fill_accounting, reported_amount
 from opentradeledger.core.venue_primitives import (
     USD_CASH_ASSETS,
     aggregate_trade_legs_decimal,
@@ -49,10 +52,10 @@ def pair_futures_trades_with_rebates(
     """Pair individual Gate `my_trades` fills 1-to-1 with `FUTURES` USDT partner rebates."""
     fee_fills: list[tuple[str, float, Decimal, str]] = []
     for idx, t in enumerate(trades):
-        fee = abs(dec(t.get("fee")))
+        fee = dec(t.get("fee"))
         if fee <= 0:
             continue
-        t_key = str(t.get("id") or f"{t.get('order_id')}_{t.get('create_time')}_{idx}")
+        t_key = str(t.get("id") or t.get("trade_id") or f"{t.get('order_id')}_{t.get('create_time')}_{idx}")
         ts = norm_sec(t.get("create_time"))
         role = str(t.get("role") or "taker").lower()
         fee_fills.append((t_key, ts, fee, role))
@@ -266,7 +269,7 @@ def _summarize_leg(
             continue
         sz = abs(dec(f.get("size"))) * share
         px = dec(f.get("price"))
-        fee = abs(dec(f.get("fee"))) * share
+        fee = dec(f.get("fee")) * share
         f_sec = norm_sec(f.get("create_time"))
         role = str(f.get("role") or "taker").lower()
         if f_sec > latest_fill_sec:
@@ -599,8 +602,8 @@ def build_gate_venue_ledger(
     trades_by_contract: dict[str, list[tuple[str, Mapping[str, Any], float]]] = defaultdict(list)
     for idx, t in enumerate(futures_trades):
         c = str(t.get("contract") or "")
-        t_key = str(t.get("id") or f"{t.get('order_id')}_{t.get('create_time')}_{idx}")
-        trades_by_contract[c].append((t_key, t, norm_sec(t.get("create_time"))))
+        t_key = str(t.get("id") or t.get("trade_id") or f"{t.get('order_id')}_{t.get('create_time')}_{idx}")
+        trades_by_contract[c].append((t_key, t, norm_sec(t.get("create_time_ms") or t.get("create_time"))))
     for c_list in trades_by_contract.values():
         c_list.sort(key=lambda x: (x[2], int(dec(x[0], "0")) if x[0].isdigit() else 0, x[0]))
 
@@ -621,6 +624,7 @@ def build_gate_venue_ledger(
         en_fills_w: Sequence[tuple[str, Mapping[str, Any], Decimal]],
         ex_fills_w: Sequence[tuple[str, Mapping[str, Any], Decimal]],
         ex_batches: Sequence[dict[str, Any]] = (),
+        events: Sequence[dict[str, Any]],
         en_px_fb: Decimal,
         ex_px_fb: Decimal,
         g_pnl: Decimal,
@@ -706,6 +710,11 @@ def build_gate_venue_ledger(
                 "entry_leg": entry_leg,
                 "exit_leg": exit_leg,
                 "exit_batches": list(ex_batches),
+                "position_events": list(events),
+                "rebates_by_day": dated_cash([
+                    (norm_ms(paired_rebates[k]["commission_time"]), dec(paired_rebates[k]["rebate_usd"]) * share)
+                    for k, _, share in (*en_fills_w, *ex_fills_w) if k in paired_rebates
+                ]),
                 "gross_pnl_usd": f2(g_pnl, 4),
                 "funding_pnl_usd": f2(f_pnl, 4),
                 "total_fee_usd": f2(total_fee, 4),
@@ -742,17 +751,23 @@ def build_gate_venue_ledger(
         exit_px_fb = long_px if side == "short" else short_px
 
         gross_pnl_tot = dec(c_row.get("pnl_pnl"))
-        book_fee_tot = abs(dec(c_row.get("pnl_fee")))
+        book_fee_tot = -dec(c_row.get("pnl_fee"))
         funding_pnl_tot = dec(c_row.get("pnl_fund"))
         gate_book_pnl_tot = dec(c_row.get("pnl"))
 
         seq_events: list[tuple[str, float, str, str, Decimal, Decimal, Mapping[str, Any], Decimal]] = []
+        # History timestamps can be whole seconds while the executions retain fractions.
+        # Stop at the proven final close, including when another position opens in that second.
+        closed_contracts = Decimal("0")
         for t_key, tr, tr_sec in trades_by_contract.get(contract, []):
-            if tr_sec < (t_open - 2.0) or tr_sec > (t_close + 2.0):
+            if total_contracts_closed and closed_contracts >= total_contracts_closed:
+                break
+            after_end = int(tr_sec) > t_close if t_close.is_integer() else tr_sec > t_close
+            if tr_sec < t_open or after_end:
                 continue
             close_sz = dec(tr.get("close_size"))
             sz = dec(tr.get("size"))
-            oid_g = str(tr.get("order_id") or t_key).strip()
+            oid_g = str(tr.get("order_id") or "").strip()
 
             if sz == 0:
                 if abs(tr_sec - t_close) <= abs(tr_sec - t_open) and t_key not in used_exit_trade_keys:
@@ -770,6 +785,7 @@ def build_gate_venue_ledger(
 
             if is_exit_dir and abs_csz > 0 and t_key not in used_exit_trade_keys:
                 eff_contracts = min(abs_sz, abs_csz)
+                closed_contracts += eff_contracts
                 share_f = eff_contracts / abs_sz
                 used_exit_trade_keys.add(t_key)
                 seq_events.append(("EXIT", tr_sec, t_key, oid_g, eff_contracts, dec(tr.get("price")), tr, share_f))
@@ -781,20 +797,29 @@ def build_gate_venue_ledger(
 
         distinct_exit_oids: list[str] = []
         for kind_e, _, _, oid_e, _, _, _, _ in seq_events:
-            if kind_e == "EXIT" and oid_e not in distinct_exit_oids:
+            if kind_e == "EXIT" and oid_e and oid_e not in distinct_exit_oids:
                 distinct_exit_oids.append(oid_e)
 
         en_w = [(e[2], e[6], e[7]) for e in seq_events if e[0] == "ENTRY"]
         ex_w = [(e[2], e[6], e[7]) for e in seq_events if e[0] == "EXIT"]
         is_partial = len(distinct_exit_oids) > 1
         gate_exit_batches: list[dict[str, Any]] = []
-        if is_partial:
-            en_tot_c = sum((e[4] for e in seq_events if e[0] == "ENTRY"), Decimal("0"))
-            en_avg_ref = (
-                (sum((e[4] * e[5] for e in seq_events if e[0] == "ENTRY"), Decimal("0")) / en_tot_c)
-                if en_tot_c > 0
-                else entry_px_fb
-            )
+        native_mult = dec((contract_specs.get(contract) or {}).get("quanto_multiplier"))
+        fill_mult = native_mult if native_mult > 0 else Decimal("1")
+        fill_inputs = []
+        for kind, timestamp, _, oid, contracts, price, trade, share in seq_events:
+            raw_fee = reported_amount(trade.get("fee"))
+            fill_inputs.append({
+                "time_ms": norm_ms(timestamp), "is_entry": kind == "ENTRY",
+                "order_id": oid, "qty": contracts * fill_mult, "price": price,
+                "qty_unit": "base" if native_mult > 0 else "contracts",
+                "fee_usd": raw_fee * share if raw_fee is not None else None,
+            })
+        events, order_pnl = position_fill_accounting(
+            fill_inputs, side=side, closed_qty=total_contracts_closed * fill_mult,
+            gross_pnl=c_row.get("pnl_pnl"), linear=native_mult > 0,
+        )
+        if is_partial and all(e[3] for e in seq_events if e[0] == "EXIT"):
             by_oid_events: dict[str, list[tuple[str, float, str, str, Decimal, Decimal, Mapping[str, Any], Decimal]]] = {}
             for ev in seq_events:
                 if ev[0] == "EXIT":
@@ -803,9 +828,7 @@ def build_gate_venue_ledger(
                 by_oid_events.values(),
                 key=lambda grp: (max(x[1] for x in grp), grp[0][2]),
             )
-            rem_batch_gpnl = gross_pnl_tot
             for b_i, b_evs in enumerate(ordered_oid_groups):
-                b_last = b_i == len(ordered_oid_groups) - 1
                 b_contracts = sum((x[4] for x in b_evs), Decimal("0"))
                 b_qty = b_contracts * mult
                 b_w = [(x[2], x[6], x[7]) for x in b_evs]
@@ -822,20 +845,21 @@ def build_gate_venue_ledger(
                     now_sec=now_s,
                     override_qty_base=b_qty if b_qty > 0 else None,
                     pos_side=side,
-                    entry_ref_price=en_avg_ref,
+                    entry_ref_price=next(
+                        (dec(e["cost_basis_price"]) for e in events
+                         if e["order_id"] == b_evs[0][3] and e["cost_basis_price"] is not None),
+                        entry_px_fb,
+                    ),
                 )
-                b_px = dec(b_leg["avg_price"]) if dec(b_leg["avg_price"]) > 0 else exit_px_fb
-                if b_last:
-                    b_gpnl = rem_batch_gpnl
-                else:
-                    b_gpnl = ((b_px - en_avg_ref) * b_qty) if side == "long" else ((en_avg_ref - b_px) * b_qty)
-                    rem_batch_gpnl -= b_gpnl
+                b_gpnl = order_pnl.get(b_evs[0][3])
                 gate_exit_batches.append(
                     {
                         **b_leg,
+                        "order_id": str(b_evs[0][6].get("order_id") or ""),
                         "batch_index": b_i + 1,
                         "qty": f2(b_qty, 6),
-                        "gross_pnl_usd": f2(b_gpnl, 4),
+                        "gross_pnl_usd": f2(b_gpnl, 4) if b_gpnl is not None else None,
+                        "time_ms": norm_ms(max(ev[1] for ev in b_evs)),
                     }
                 )
         legacy_suffixes = tuple(f"_{side}_{oid}" for oid in distinct_exit_oids if oid)
@@ -863,6 +887,7 @@ def build_gate_venue_ledger(
             en_fills_w=en_w,
             ex_fills_w=ex_w,
             ex_batches=gate_exit_batches,
+            events=events,
             en_px_fb=entry_px_fb,
             ex_px_fb=exit_px_fb,
             g_pnl=gross_pnl_tot,
@@ -873,6 +898,33 @@ def build_gate_venue_ledger(
             is_partial=is_partial,
             override_leg_qty=qty_base_total if qty_base_total > 0 else None,
         )
+
+    for pos in live_bundle.get("futures_positions") or []:
+        symbol = str(pos.get("contract") or "")
+        size = dec(pos.get("size"))
+        mult = dec((contract_specs.get(symbol) or {}).get("quanto_multiplier"))
+        if not size or mult <= 0:
+            continue
+        side = "LONG" if size > 0 else "SHORT"
+        fills = []
+        for tid, raw, ts in trades_by_contract.get(symbol, ()):
+            signed, closed = dec(raw.get("size")), abs(dec(raw.get("close_size")))
+            if not signed or raw.get("close_size") in (None, ""):
+                continue
+            entry = (signed > 0) == (size > 0)
+            contracts = abs(signed) - closed if entry else closed
+            if contracts <= 0 or tid in (used_entry_trade_keys if entry else used_exit_trade_keys):
+                continue
+            fee = reported_amount(raw.get("fee"))
+            fills.append({"time_ms": norm_ms(ts), "is_entry": entry, "qty": contracts * mult,
+                          "price": raw.get("price"), "fee_usd": fee * contracts / abs(signed) if fee is not None else None,
+                          "order_id": str(raw.get("order_id") or ""), "role": raw.get("role")})
+        record = open_reduction_record(venue="gate", symbol=symbol, side=side, fills=fills,
+                                       remaining_qty=abs(size) * mult, avg_entry_price=pos.get("entry_price"),
+                                       journals=journals, history=internal_records)
+        if record:
+            internal_records.append(record)
+    carry_open_reduction_notes(internal_records, "gate", journals)
 
     public_trades = [
         normalize_internal_record_to_public_trade(
@@ -1386,10 +1438,10 @@ def build_gate_venue_ledger(
 
     if not has_spot_settle:
         for rec in internal_records:
-            d_close = rec["close_date_bj"]
             m_val = dec(rec["gate_book_pnl_usd"]) + dec(rec["settled_rebate_usd"])
-            daily_realized_ledger[d_close] += m_val
-            daily_comp_realized[d_close]["manual_futures"] += m_val
+            for day, amount in trade_daily_amounts(rec, m_val).items():
+                daily_realized_ledger[day] += amount
+                daily_comp_realized[day]["manual_futures"] += amount
 
     eod_snap_by_day: dict[str, dict[str, Decimal]] = {}
     for snap in sorted(eod_snapshots, key=lambda s: float(dec(s.get("ts_sec")))):

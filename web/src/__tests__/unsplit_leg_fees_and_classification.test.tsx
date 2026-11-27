@@ -421,6 +421,7 @@ describe('Consolidated partial take-profit trade UI', () => {
     expect(batch1Row.textContent).toContain('先扣 -0.6189')
     expect(batch1Row.textContent).toContain('+0.4951 (80%)')
     expect(batch1Row.textContent).toContain('价差 +18.42 U')
+    expect(batch1Row.textContent).toContain('扣出场费后 +18.2962 U')
     expect(batch2Row.textContent).toContain('平仓第 2 笔')
     expect(batch2Row.textContent).toContain('止盈市价')
     expect(batch2Row.textContent).not.toContain('止损市价')
@@ -429,5 +430,143 @@ describe('Consolidated partial take-profit trade UI', () => {
     expect(batch2Row.textContent).toContain('价差 +46.37 U')
     expect(within(ledger).getByText('1,680.00').className).toContain('sensitive')
     expect(screen.getByTestId('trade-detail-panel').textContent).toContain('-3.4106 U')
+  })
+})
+
+describe('Position lifecycle detail', () => {
+  const leg: ClosedTrade['entry_leg'] = {
+    role: 'MAKER', mode_code: 'LIMIT_MAKER', fee_bps: 1, fee_known: true,
+    time_ms: 1, time_str: '11-17 20:00', avg_price: 100, notional_usd: 200,
+    gross_fee_usd: 0.3, rebate_usd: 0, rebate_pct: 0, discount_saved_usd: 0,
+    discount_asset: '', net_fee_usd: 0.3, rebate_status: 'NONE', settled_at: '',
+  }
+  const first = {
+    action: 'OPEN' as const, time_ms: Date.parse('2026-11-17T12:00:00Z'), order_id: '101',
+    qty: 2, price: 100, remaining_qty: 2, avg_entry_price: 100, cost_basis_price: null,
+    fee_usd: 0.2, gross_pnl_usd: null, allocated_entry_fee_usd: null, net_pnl_usd: null,
+  }
+  const reduce = { ...first, action: 'REDUCE' as const, order_id: '102', time_ms: first.time_ms + 20000,
+    qty: 1, price: 110, remaining_qty: 1, cost_basis_price: 100, fee_usd: 0.1,
+    gross_pnl_usd: 10, allocated_entry_fee_usd: 0.1, net_pnl_usd: 9.8 }
+  const add = { ...first, action: 'ADD' as const, order_id: '103', time_ms: first.time_ms + 60000,
+    qty: 1, price: 130, remaining_qty: 2, avg_entry_price: 115, fee_usd: 0.1 }
+  const close = { ...reduce, action: 'CLOSE' as const, order_id: '104', time_ms: first.time_ms + 8 * 86400000,
+    qty: 2, price: 120, remaining_qty: 0, avg_entry_price: null, cost_basis_price: 115,
+    fee_usd: 0.2, gross_pnl_usd: 10, allocated_entry_fee_usd: 0.2, net_pnl_usd: 9.6 }
+  const trade: ClosedTrade = {
+    trade_id: 'lifecycle', venue_id: 'okx', venue_name: 'OKX', color_token: 'okx', symbol: 'ETH_USDT',
+    side: 'LONG', qty: 3, open_time_ms: first.time_ms, close_time_ms: close.time_ms,
+    open_time_str: '11-17 20:00', close_time_str: '11-25 20:00', close_date: '2026-11-25',
+    holding_sec: 691200, is_partial_close: true, gross_pnl_usd: 20, funding_pnl_usd: 0,
+    book_pnl_usd: 19.4, total_rebate_usd: 0, total_fee_usd: 0.6, total_discount_saved_usd: 0,
+    net_fee_usd: 0.6, net_pnl_usd: 19.4, effective_relief_pct: 0, rebate_status: 'NONE',
+    entry_leg: leg, exit_leg: leg, tags: [], note: 'risk journal', position_events: [first, reduce, add, close],
+  }
+  const page = (rows: ClosedTrade[]) => <TradesPage data={makeBaseDashboard(rows)} venueFilter="ALL"
+    symbolFilter="ALL" onVenueChange={() => {}} onSymbolChange={() => {}} onSaveJournal={async () => {}} />
+
+  it('shows the actual inventory before each exit, both fees, time and the correct net in one position', () => {
+    render(page([trade]))
+    const panel = within(screen.getByTestId('trade-detail-panel'))
+    const timeline = panel.getByRole('list', { name: '持仓时间线' })
+    const events = within(timeline).getAllByRole('listitem')
+    expect(events.map(row => row.querySelector('h4')?.textContent)).toEqual(['开仓', '减仓', '加仓', '清仓'])
+    expect(events[0].textContent).toContain('11-17 20:00:00')
+    expect(events[0].textContent).toContain('剩余仓位2 ETH')
+    expect(events[1].textContent).toContain('分摊开仓费-0.1000')
+    expect(events[1].textContent).toContain('扣费后已实现+9.80')
+    expect(events[2].textContent).toContain('持仓均价115.000')
+    expect(events[3].textContent).toContain('平仓前均价115.000')
+    expect(events[3].textContent).toContain('剩余仓位0 ETH')
+    expect(events[3].textContent).toContain('扣费后已实现+9.60')
+    expect(panel.getByText('已清仓')).toBeTruthy()
+    expect(panel.getByDisplayValue('risk journal')).toBeTruthy()
+    expect(within(events[1]).getByText(/9\.80/).className).toContain('sensitive')
+  })
+
+  it('groups same-order fills into one opening and two exits with exact fees and expandable source quantities', () => {
+    const makeExit = (qty: number, price: number, fee: number, remaining: number, order: string, index: number) => ({
+      ...reduce, action: remaining ? 'REDUCE' as const : 'CLOSE' as const, time_ms: reduce.time_ms + index,
+      order_id: order, qty, price, remaining_qty: remaining, fee_usd: fee,
+      gross_pnl_usd: qty * 10, allocated_entry_fee_usd: qty * 0.1, net_pnl_usd: qty * 9.9 - fee,
+    })
+    const split = { ...trade, position_events: [
+      { ...first, qty: 2, remaining_qty: 2 }, { ...add, order_id: first.order_id, time_ms: first.time_ms + 1, qty: 1.684, remaining_qty: 3.684 },
+      makeExit(0.673, 1680, 0.226128, 3.011, 'exit-a', 0),
+      makeExit(1, 1680, 0.336, 2.011, 'exit-a', 1),
+      makeExit(0.169, 1680, 0.056784, 1.842, 'exit-a', 2),
+      makeExit(0.955, 1695.18, 0.80944845, 0.887, 'exit-b', 3),
+      makeExit(0.887, 1695.17, 0.751807895, 0, 'exit-b', 4),
+    ] }
+    render(page([split]))
+    const ledger = within(screen.getByRole('list', { name: '持仓时间线' }))
+    const orders = ledger.getAllByRole('listitem')
+    expect(orders).toHaveLength(3)
+    expect(orders.map(row => row.querySelector('h4')?.textContent)).toEqual(['开仓', '减仓', '清仓'])
+    expect(within(orders[1]).getByText('-0.618912 U')).toBeTruthy()
+    expect(within(orders[2]).getByText('-1.561256345 U')).toBeTruthy()
+    const fills = within(orders[1]).getByText('3 笔成交').closest('details')!
+    fireEvent.click(within(fills).getByText('3 笔成交'))
+    expect(fills.open).toBe(true)
+    expect(within(fills).getByText('-0.226128 U')).toBeTruthy()
+    expect(within(fills).getByText('-0.056784 U')).toBeTruthy()
+  })
+
+  it('keeps nonadjacent and cross-midnight fills separate, and requires all components for an order total', () => {
+    const midnight = Date.parse('2026-11-17T16:00:00Z')
+    const rows = [first,
+      { ...reduce, order_id: 'same', time_ms: midnight - 1 },
+      { ...reduce, order_id: 'same', time_ms: midnight, fee_usd: null, net_pnl_usd: null },
+      { ...reduce, order_id: 'same', time_ms: midnight + 1 },
+      { ...add, order_id: 'same', time_ms: midnight + 2 },
+      { ...reduce, order_id: 'same', time_ms: midnight + 3 },
+      { ...reduce, order_id: '', time_ms: midnight + 4 },
+      { ...close, order_id: '', time_ms: midnight + 5 },
+    ]
+    render(page([{ ...trade, position_events: rows }]))
+    const ledger = within(screen.getByRole('list', { name: '持仓时间线' }))
+    const orders = ledger.getAllByRole('listitem')
+    expect(orders).toHaveLength(7)
+    expect(orders[2].textContent).toContain('本笔手续费未知')
+    expect(orders[2].textContent).toContain('扣费后已实现未知')
+    expect(orders[2].textContent).toContain('已实现价差+20.00')
+  })
+
+  it('keeps a missing fee and net unknown in historical order details and the collapsed fee summary', () => {
+    const batch = { ...leg, batch_index: 1, qty: 1, gross_pnl_usd: 10, net_pnl_usd: 9.8,
+      net_basis: 'round_trip' as const, gross_fee_usd: 0.1 }
+    render(page([{ ...trade, position_events: [], exit_batches: [batch,
+      { ...batch, batch_index: 2, gross_pnl_usd: null, fee_known: false, gross_fee_usd: 0, net_pnl_usd: null },
+    ] }]))
+    expect(screen.getByTestId('trade-row-lifecycle').textContent).toContain('-0.1000 / 未知')
+    expect(screen.getByTestId('exit-batch-row-1').textContent).toContain('扣费后已实现 +9.80')
+    const unknown = screen.getByTestId('exit-batch-row-2')
+    expect(unknown.textContent).toContain('价差 未知')
+    expect(unknown.textContent).toContain('扣费后已实现 未知')
+  })
+
+  it('separates realized reductions from the entry fees carried by a remaining position', () => {
+    const openTrade = { ...trade, position_events: [first, reduce, add] }
+    render(page([openTrade]))
+    const settlement = screen.getByTestId('trade-detail-panel').querySelector('.otl-trade-settlement')!
+    expect(settlement.textContent).toContain('已平部分扣费后合计+9.80')
+    expect(settlement.textContent).toContain('剩余仓位分摊开仓费-0.2000')
+  })
+
+  it('distinguishes partial exits and a new position, with explicit missing monetary evidence and contract units', () => {
+    const partial = { ...trade, trade_id: 'partial', qty: null, contract_count: 1, close_time_ms: reduce.time_ms,
+      position_events: [first, { ...reduce, fee_usd: null, net_pnl_usd: null, gross_pnl_usd: 0 }] }
+    render(page([partial, { ...trade, trade_id: 'reopen', position_events: [first] }]))
+    fireEvent.click(screen.getByTestId('trade-row-partial'))
+    const panel = within(screen.getByTestId('trade-detail-panel'))
+    expect(panel.getByText('已减仓 · 仍持有')).toBeTruthy()
+    const rows = within(panel.getByRole('list', { name: '持仓时间线' })).getAllByRole('listitem')
+    expect(rows[1].textContent).toContain('剩余仓位1 张')
+    expect(rows[1].textContent).toContain('本笔手续费未知')
+    expect(rows[1].textContent).toContain('扣费后已实现未知')
+    expect(rows[1].textContent).toContain('已实现价差0.00')
+    fireEvent.click(screen.getByTestId('trade-row-reopen'))
+    expect(panel.getByText('持仓中')).toBeTruthy()
+    expect(within(panel.getByRole('list', { name: '持仓时间线' })).getAllByRole('listitem')).toHaveLength(1)
   })
 })

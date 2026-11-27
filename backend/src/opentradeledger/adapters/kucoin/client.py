@@ -20,6 +20,10 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, project_live_reduction, usd_fee
+from opentradeledger.core.position_lifecycle import build_position_events
+from opentradeledger.core.venue_primitives import normalize_internal_record_to_public_trade
+
 from opentradeledger.security.readonly_guard import assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
@@ -645,10 +649,24 @@ def kucoin_position_unique_key(r: dict[str, Any], *, fallback_idx: int = 0) -> s
     return f"pos_{sym}_{fallback_idx}"
 
 
+def _kucoin_event(
+    fill: dict[str, Any], open_side: str, linear_symbol: bool, multiplier: float, gross: float | None = None,
+) -> dict[str, Any]:
+    count = abs(float(fill.get("size") or fill.get("qty") or 0))
+    fee = usd_fee(fill.get("fee"), fill.get("feeCurrency") or ("USDT" if linear_symbol else ""))
+    return event_fill(
+        _kucoin_ts_ms(fill.get("createdAt") or fill.get("tradeTime")), count * multiplier if multiplier else count,
+        fill.get("price"), str(fill.get("side") or "").lower() == open_side, fee, str(fill.get("orderId") or ""),
+        gross=gross, qty_unit="base" if multiplier else "contracts", role=str(fill.get("liquidity") or ""),
+        linear_cost_basis=linear_symbol,
+    )
+
+
 def normalize_kucoin_closed_trades(
     history_positions: list[dict[str, Any]],
     fills: list[dict[str, Any]],
     tx_history: Optional[list[dict[str, Any]]] = None,
+    *, positions: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Normalizes KuCoin Futures closed positions with per-leg Maker/Taker fees, funding, and rebates."""
     fills_by_sym: dict[str, list[dict[str, Any]]] = {}
@@ -744,6 +762,7 @@ def normalize_kucoin_closed_trades(
                 "exit_px": exit_px,
                 "qty": qty,
                 "mult": mult,
+                "known_multiplier": float(row.get("multiplier") or 0) > 0,
                 "eff_coin_qty": eff_coin_qty,
                 "entry_notional": entry_notional,
                 "exit_notional": exit_notional,
@@ -788,6 +807,10 @@ def normalize_kucoin_closed_trades(
             best_choice: tuple[int, int, int] | None = None
             for g_idx, g_side, g_open, g_close in cand_groups:
                 if g_open <= 0 or not (g_open - 5_000 <= f_ts <= g_close + 5_000):
+                    continue
+                if f.get("positionId") and kc_groups[g_idx][0]["position_id"] not in {"", str(f["positionId"])}:
+                    continue
+                if str(f.get("positionSide") or "").upper() in {"LONG", "SHORT"} and f["positionSide"].upper() != g_side:
                     continue
                 open_tok = "buy" if g_side == "LONG" else "sell"
                 is_en = f_side == open_tok
@@ -865,8 +888,31 @@ def normalize_kucoin_closed_trades(
         en_bps = (en_fee / entry_notional * 10_000) if (fee_known and entry_notional > 0) else None
         ex_bps = (ex_fee / exit_notional * 10_000) if (fee_known and exit_notional > 0) else None
         sym = normalize_kucoin_symbol(raw_sym)
-        pos_id = last_pr["position_id"] or last_pr["close_id"]
+        keys = [f"kucoin_{p['position_id'] or p['close_id']}_{p['close_ms']}" for p in grp]
         settled_str = _fmt_bj_ms(close_ms) if total_rebate > 0 else ""
+
+        linear_symbol = raw_sym.endswith(("USDTM", "USDCM"))
+        base_units = linear_symbol and all(p["known_multiplier"] and p["mult"] == mult for p in grp)
+        events = []
+        closed_contracts = sum(abs(float(f.get("size") or f.get("qty") or 0.0)) for f in ex_fills)
+        if en_fills and ex_fills and abs(closed_contracts - qty) <= 1e-9:
+            by_time: dict[int, list[dict[str, Any]]] = {}
+            for pr in grp:
+                by_time.setdefault(pr["close_ms"], []).append(pr)
+            evidence = []
+            for f in win_fills:
+                ts = _kucoin_ts_ms(f.get("createdAt") or f.get("tradeTime"))
+                count = abs(float(f.get("size") or f.get("qty") or 0.0))
+                is_entry = str(f.get("side") or "").lower() == open_side_tok
+                matching = by_time.get(ts, [])
+                gross = None
+                if (not is_entry and linear_symbol and len(matching) == 1 and matching[0]["has_explicit_gross"]
+                        and abs(matching[0]["qty"] - count) <= 1e-9):
+                    gross = matching[0]["gross_pnl"]
+                evidence.append(_kucoin_event(f, open_side_tok, linear_symbol, mult if base_units else 0, gross))
+            events = build_position_events(evidence, side=side, linear=base_units)
+        if events and events[-1]["remaining_qty"] > 0:
+            is_partial_kc = True
 
         kc_exit_batches: list[dict[str, Any]] = []
         if len(grp) > 1:
@@ -891,6 +937,7 @@ def normalize_kucoin_closed_trades(
                     rem_kc_ex_fee -= b_fee
                 b_mk = any(str(f.get("liquidity") or "").lower() == "maker" for f in p_efs)
                 b_tk = any(str(f.get("liquidity") or "").lower() != "maker" for f in p_efs)
+                order_ids = {str(f.get("orderId") or "") for f in p_efs}
                 b_role = ("MAKER" if (b_mk and not b_tk) else "TAKER") if fee_known else "UNKNOWN"
                 b_mode = (
                     ("MIXED" if (b_mk and b_tk) else ("LIMIT_MAKER" if b_mk else "MARKET_TAKER"))
@@ -906,6 +953,7 @@ def normalize_kucoin_closed_trades(
                 kc_exit_batches.append(
                     {
                         "batch_index": b_i + 1,
+                        "order_id": next(iter(order_ids)) if len(order_ids) == 1 else "",
                         "qty": round(float(p_it["eff_coin_qty"]), 8),
                         **({"contract_count": float(p_it["qty"])} if mult != 1.0 else {}),
                         "role": b_role,
@@ -928,7 +976,8 @@ def normalize_kucoin_closed_trades(
 
         records.append(
             {
-                "trade_id": f"kucoin_{pos_id}_{close_ms}",
+                **cycle_journal_keys(keys, is_partial_kc),
+                "position_events": events,
                 "venue_id": "kucoin",
                 "venue_name": "KuCoin",
                 "venue_name_zh": "KuCoin",
@@ -985,5 +1034,36 @@ def normalize_kucoin_closed_trades(
                 "exit_batches": kc_exit_batches,
             }
         )
+    for pos in positions or ():
+        raw_sym = str(pos.get("symbol") or "").upper()
+        signed_qty = float(pos.get("currentQty") or 0)
+        if not signed_qty or not pos.get("isOpen", True):
+            continue
+        side = "LONG" if signed_qty > 0 else "SHORT"
+        token = "buy" if side == "LONG" else "sell"
+        linear_symbol = raw_sym.endswith(("USDTM", "USDCM"))
+        multiplier = abs(float(pos.get("multiplier") or 0)) if linear_symbol else 0
+        opened = _kucoin_ts_ms(pos.get("openingTimestamp") or pos.get("openTime"))
+        pid = str(pos.get("id") or pos.get("positionId") or "")
+        live_fills = []
+        for f in fills_by_sym.get(raw_sym, []):
+            if f.get("positionId") and pid and str(f["positionId"]) != pid:
+                continue
+            f_side = str(f.get("positionSide") or "").upper()
+            if f_side in {"LONG", "SHORT"} and f_side != side:
+                continue
+            ev = _kucoin_event(f, token, linear_symbol, multiplier)
+            if ev["time_ms"] >= opened:
+                live_fills.append(ev)
+        symbol = normalize_kucoin_symbol(raw_sym)
+        raw = project_live_reduction(
+            venue="kucoin", symbol=symbol, side=side, fills=live_fills,
+            remaining_qty=abs(signed_qty) * (multiplier or 1), avg_entry_price=pos.get("avgEntryPrice"),
+            journals={}, history=records, linear=bool(multiplier),
+        )
+        if raw:
+            records.append({**normalize_internal_record_to_public_trade(
+                raw, venue_id="kucoin", venue_name="KuCoin", venue_name_zh="KuCoin", color_token="",
+            ), "_journal_keys": raw.get("_journal_keys", [])})
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)
     return records

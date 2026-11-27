@@ -6,6 +6,8 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.core.open_reductions import carry_open_reduction_notes, open_reduction_record
+from opentradeledger.core.position_lifecycle import trade_daily_amounts
 from opentradeledger.adapters.base import (
     AdapterMeta,
     VenueCopyBundle,
@@ -17,6 +19,7 @@ from opentradeledger.adapters.stock_channels import (
     classify_spot_stock_token,
     reconstruct_spot_cost_basis,
 )
+from opentradeledger.core.position_batch_pnl import position_fill_accounting, reported_amount
 from opentradeledger.core.venue_primitives import (
     DEFAULT_CONTRACTS_MULTIPLIER,
     aggregate_trade_legs_decimal,
@@ -57,6 +60,7 @@ def extract_mexc_spot_prices(store: "LedgerStore") -> dict[str, float]:
 def _build_mexc_closed_records(
     *,
     mexc_positions_history: Sequence[Mapping[str, Any]],
+    open_positions: Sequence[Mapping[str, Any]] = (),
     mexc_deals: Sequence[Mapping[str, Any]],
     mexc_orders: Sequence[Mapping[str, Any]],
     mexc_transfers: Sequence[Mapping[str, Any]],
@@ -210,11 +214,13 @@ def _build_mexc_closed_records(
         p_close_ms = norm_ms(hp.get("updateTime") or hp.get("createTime"))
 
         p_deals = list(deals_by_pid.get(pid) or [])
-        if not p_deals and unlinked_by_sym.get(sym):
+        if unlinked_by_sym.get(sym):
             for udl in unlinked_by_sym[sym]:
                 uid_d = str(udl.get("id") or "")
                 uts = norm_ms(udl.get("timestamp"))
-                if uid_d not in used_unlinked_ids and (p_open_ms - 5000) <= uts <= (p_close_ms + 5000):
+                if int(dec(udl.get("side"))) not in ((2, 3) if is_short else (1, 4)):
+                    continue
+                if uid_d not in used_unlinked_ids and p_open_ms <= uts <= p_close_ms:
                     p_deals.append(udl)
                     if uid_d:
                         used_unlinked_ids.add(uid_d)
@@ -261,7 +267,7 @@ def _build_mexc_closed_records(
                     reb_usd = fee_usd
                     f_asset = "MXPOINT"
                 else:
-                    fee_usd = fval
+                    fee_usd = dec(dl.get("fee"))
                     f_asset = "USDT"
 
             ts_ms = norm_ms(dl.get("timestamp"))
@@ -280,7 +286,12 @@ def _build_mexc_closed_records(
                 "mx_saved": mx_saved,
                 "mx_qty": mx_qty,
                 "fee_asset": f_asset,
-                "profit": dec(dl.get("profit")),
+                "profit": reported_amount(dl.get("profit")),
+                "fill_id": str(dl.get("id") or ""),
+                "fee_known": reported_amount(dl.get("fee")) is not None and (
+                    fcur in {"USD", "USDT", "USDC"} or fval == 0 or
+                    (fcur in {"MX", "MXPOINT"} and dlist_map.get(fcur, (0, 0))[0] > 0)
+                ),
                 "ts_ms": ts_ms,
                 "ts_sec": norm_sec(ts_ms),
             }
@@ -421,15 +432,30 @@ def _build_mexc_closed_records(
                 sliced_entries = [en_it for en_it in entry_items_raw if en_it["vol"] > Decimal("1e-12")]
 
             exit_grp = close_items_all
-            gpnl = sum((x["profit"] for x in exit_grp), Decimal("0"))
-            if gpnl == 0 and dec(hp.get("closeProfitLoss")) != 0:
-                gpnl = dec(hp.get("closeProfitLoss"))
+            parent_gross = reported_amount(hp.get("closeProfitLoss"))
+            native_mult = dec((specs.get(sym) or {}).get("contractSize"))
+            fill_mult = native_mult if native_mult > 0 else Decimal("1")
+            fill_inputs = [
+                {"time_ms": x["ts_ms"], "qty": x["vol"] * fill_mult,
+                 "qty_unit": "base" if native_mult > 0 else "contracts", "price": x["px"],
+                 "order_id": x["order_id"], "fill_id": x["fill_id"],
+                 "is_entry": x["side_code"] in (1, 3), "gross_pnl_usd": x["profit"],
+                 "fee_usd": x["fee_usd"] if x["fee_known"] else None}
+                for x in enriched
+            ]
+            events, order_pnl = position_fill_accounting(
+                fill_inputs, side=side_str, closed_qty=abs(dec(hp.get("closeVol"))) * fill_mult,
+                gross_pnl=parent_gross, linear=native_mult > 0,
+            )
+            gpnl = parent_gross if parent_gross is not None else sum(
+                (value for value in order_pnl.values() if value is not None), Decimal("0")
+            )
             fund_u = pos_hold_fee
 
             en_leg = _build_mx_leg(sliced_entries, is_exit=False, is_win_hint=(gpnl > 0))
             ex_leg = _build_mx_leg(exit_grp, is_exit=True, is_win_hint=(gpnl > 0))
             mx_exit_batches: list[dict[str, Any]] = []
-            if is_partial_pos:
+            if is_partial_pos and all(x["order_id"] for x in exit_grp):
                 mx_by_oid: dict[str, list[dict[str, Any]]] = {}
                 for x_it in exit_grp:
                     oid_k = x_it["order_id"] or f"ts_{x_it['ts_ms']}"
@@ -438,23 +464,19 @@ def _build_mexc_closed_records(
                     mx_by_oid.values(),
                     key=lambda g_it: max(y["ts_ms"] for y in g_it),
                 )
-                rem_mx_gpnl = gpnl
                 for b_i, g_items in enumerate(ordered_mx_grps):
-                    b_last = b_i == len(ordered_mx_grps) - 1
                     b_vol = sum((y["vol"] for y in g_items), Decimal("0"))
-                    if b_last:
-                        b_gpnl = rem_mx_gpnl
-                    else:
-                        b_raw_p = sum((y["profit"] for y in g_items), Decimal("0"))
-                        b_gpnl = b_raw_p if b_raw_p != 0 else (gpnl * (b_vol / tot_close_vol) if tot_close_vol > 0 else Decimal("0"))
-                        rem_mx_gpnl -= b_gpnl
-                    b_leg_mx = _build_mx_leg(g_items, is_exit=True, is_win_hint=(b_gpnl > 0))
+                    first = g_items[0]
+                    b_gpnl = order_pnl.get(first["order_id"] or f"ts_{first['ts_ms']}")
+                    b_leg_mx = _build_mx_leg(g_items, is_exit=True, is_win_hint=(b_gpnl is not None and b_gpnl > 0))
                     mx_exit_batches.append(
                         {
                             **b_leg_mx,
+                            "order_id": first["order_id"],
                             "batch_index": b_i + 1,
                             "qty": f2(b_vol * mult, 6),
-                            "gross_pnl_usd": f2(b_gpnl, 4),
+                            "gross_pnl_usd": f2(b_gpnl, 4) if b_gpnl is not None else None,
+                            "time_ms": max(x["ts_ms"] for x in g_items),
                         }
                     )
 
@@ -511,6 +533,7 @@ def _build_mexc_closed_records(
                     "entry_leg": en_leg,
                     "exit_leg": ex_leg,
                     "exit_batches": mx_exit_batches,
+                    "position_events": events,
                     "gross_pnl_usd": f2(gpnl, 4),
                     "funding_pnl_usd": f2(fund_u, 4),
                     "total_fee_usd": f2(tot_fee, 4),
@@ -672,6 +695,36 @@ def _build_mexc_closed_records(
         "ext_net_principal_usd": ext_net_principal_usd,
         "avg_mx_fee_px": avg_mx_fee_px,
     }
+    for pos in open_positions:
+        symbol = normalize_contract_symbol(str(pos.get("symbol") or ""))
+        pid = str(pos.get("positionId") or "")
+        mult = dec((specs.get(symbol) or {}).get("contractSize"))
+        if mult <= 0 or not symbol.endswith(("_USDT", "_USDC")):
+            continue
+        short = int(dec(pos.get("positionType"))) == 2
+        fills = []
+        candidates = list(deals_by_pid.get(pid, ())) + list(unlinked_by_sym.get(symbol, ()))
+        candidates.sort(key=lambda d: (norm_ms(d.get("timestamp")), dec(d.get("id"))))
+        for deal in candidates:
+            code = int(dec(deal.get("side")))
+            if code not in ((2, 3) if short else (1, 4)) or str(deal.get("id") or "") in used_unlinked_ids:
+                continue
+            ts = norm_ms(deal.get("timestamp"))
+            fee = reported_amount(deal.get("fee"))
+            if str(deal.get("feeCurrency") or "USDT").upper() not in ("USDT", "USDC", "USD") and fee:
+                fee = None
+            fills.append({"time_ms": ts, "is_entry": code in (1, 3), "qty": abs(dec(deal.get("vol"))) * mult,
+                          "price": deal.get("price"), "fee_usd": fee, "gross_pnl_usd": deal.get("profit"),
+                          "role": "TAKER" if deal.get("taker", True) else "MAKER",
+                          "order_id": str(deal.get("orderId") or "")})
+        record = open_reduction_record(venue="mexc", symbol=symbol, side="SHORT" if short else "LONG",
+                                       fills=fills, remaining_qty=abs(dec(pos.get("holdVol"))) * mult,
+                                       avg_entry_price=pos.get("holdAvgPrice") or pos.get("openAvgPrice"),
+                                       journals=journals, history=records)
+        if record:
+            records.append(record)
+    carry_open_reduction_notes(records, "mexc", journals)
+
     return records, mx_meta
 
 
@@ -850,6 +903,7 @@ def build_mexc_venue_ledger(
 
     mx_closed_records, mx_meta = _build_mexc_closed_records(
         mexc_positions_history=pos_hist,
+        open_positions=mx_lb.get("futures_positions") or (),
         mexc_deals=deals,
         mexc_orders=orders,
         mexc_transfers=transfers,
@@ -1027,10 +1081,9 @@ def build_mexc_venue_ledger(
     daily_pnl: dict[str, Decimal] = defaultdict(Decimal)
     daily_comp: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     for mx_r in mx_closed_records:
-        d_mx = mx_r["close_date_bj"]
-        v_mx = dec(mx_r["realized_net_pnl_usd"])
-        daily_pnl[d_mx] += v_mx
-        daily_comp[d_mx]["mexc_futures"] += v_mx
+        for day, amount in trade_daily_amounts(mx_r, dec(mx_r["realized_net_pnl_usd"])).items():
+            daily_pnl[day] += amount
+            daily_comp[day]["mexc_futures"] += amount
     if mx_unrealized_usd != 0:
         daily_pnl[today_bj_str] += mx_unrealized_usd
         daily_comp[today_bj_str]["mexc_futures"] += mx_unrealized_usd

@@ -6,6 +6,8 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.core.open_reductions import open_reduction_key
+from opentradeledger.core.position_lifecycle import trade_daily_amounts
 from opentradeledger.adapters.base import (
     AdapterMeta,
     VenueCopyBundle,
@@ -22,6 +24,7 @@ from opentradeledger.core.venue_primitives import (
     clamp_reconcile_streams_to_target,
     dec,
     fmt_ms,
+    merge_legacy_journal_entries,
     is_tokenized_stock_symbol,
 )
 
@@ -180,6 +183,7 @@ def build_bybit_venue_ledger(
         snap.get("closed_pnl") or [],
         snap.get("executions") or [],
         tx_logs=snap.get("tx_logs") or [],
+        positions=snap.get("positions") or [],
         rebate_ratio=float(snap.get("observed_rebate_ratio") or 0.0),
     )
     trades: list[dict[str, Any]] = []
@@ -202,14 +206,14 @@ def build_bybit_venue_ledger(
         rt["entry_leg"].setdefault("settled_at", "")
         rt["exit_leg"]["time_str"] = fmt_ms(rt["exit_leg"]["time_ms"], "%m-%d %H:%M")
         rt["exit_leg"].setdefault("settled_at", "")
-        j = journals.get(rt["trade_id"]) or {}
+        aliases = [*rt.pop("_journal_keys", ()), open_reduction_key("bybit", rt["symbol"], rt["side"], rt.get("position_events") or [])]
+        j = merge_legacy_journal_entries(journals, rt["trade_id"], aliases)
         rt["tags"] = list(j.get("tags") or [])
         rt["note"] = str(j.get("note") or "")
         trades.append(rt)
-        if rt["close_date"]:
-            v_dec = dec(rt["net_pnl_usd"])
-            daily_pnl[rt["close_date"]] += v_dec
-            daily_comp[rt["close_date"]]["bybit_futures"] += v_dec
+        for day, amount in trade_daily_amounts(rt, dec(rt["net_pnl_usd"])).items():
+            daily_pnl[day] += amount
+            daily_comp[day]["bybit_futures"] += amount
 
     equity_2dp = round(equity_usd, 2)
     net_pnl = round(equity_2dp - principal_usd, 2) if principal_usd != 0 else round(sum(t["net_pnl_usd"] for t in trades), 2)

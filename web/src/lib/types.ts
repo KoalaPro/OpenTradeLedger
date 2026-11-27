@@ -77,6 +77,7 @@ export interface TradeLegFee {
 
 export interface TradeExitBatch {
   batch_index: number
+  net_basis?: 'exit_only' | 'round_trip'
   qty: number | null
   contract_count?: number
   role: 'MAKER' | 'TAKER' | 'UNKNOWN'
@@ -93,8 +94,24 @@ export interface TradeExitBatch {
   rebate_usd: number
   rebate_pct?: number
   net_fee_usd: number
-  gross_pnl_usd: number
-  net_pnl_usd: number
+  gross_pnl_usd: number | null
+  net_pnl_usd: number | null
+}
+
+export interface PositionEvent {
+  time_ms: number
+  action: 'OPEN' | 'ADD' | 'REDUCE' | 'CLOSE'
+  qty: number
+  qty_unit?: 'base' | 'contracts'
+  price: number
+  remaining_qty: number
+  avg_entry_price: number | null
+  cost_basis_price: number | null
+  fee_usd: number | null
+  gross_pnl_usd: number | null
+  allocated_entry_fee_usd: number | null
+  net_pnl_usd: number | null
+  order_id: string
 }
 
 export interface ClosedTrade {
@@ -127,6 +144,7 @@ export interface ClosedTrade {
   entry_leg: TradeLegFee
   exit_leg: TradeLegFee
   exit_batches?: TradeExitBatch[]
+  position_events?: PositionEvent[]
   tags: string[]
   note: string
 }
@@ -301,6 +319,14 @@ export interface DashboardData {
     date: string
     net_pnl_usd: number
     trade_count: number
+    trade_activity?: Array<{
+      trade_id: string
+      venue_id: string
+      symbol: string
+      side: string
+      amount_usd: number | null
+      exit_count: number
+    }>
   }>
   symbol_attribution: Array<{
     venue_id: string

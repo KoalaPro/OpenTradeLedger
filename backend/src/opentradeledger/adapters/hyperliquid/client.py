@@ -14,6 +14,9 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, usd_fee
+from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
+
 from opentradeledger.core.account_partition import AccountIdentityError, normalize_evm_address
 from opentradeledger.security.readonly_guard import assert_readonly_request
 
@@ -672,14 +675,18 @@ def normalize_hyperliquid_closed_trades(
         tid_str: str,
         is_partial: bool,
         exit_batches: list[dict[str, Any]] | None = None,
+        journal_keys: list[str] | None = None,
+        position_events: list[dict[str, Any]] | None = None,
     ) -> None:
         funding_pnl = 0.0
+        funding_receipts = []
         for fl in funding_by_coin.get(coin_key, []):
             if fl["_id"] in consumed_funding:
                 continue
             if open_ms - 5_000 <= fl["time"] <= close_ms + 5_000:
                 consumed_funding.add(fl["_id"])
                 funding_pnl += float(fl["usdc"])
+                funding_receipts.append((fl["time"], fl["usdc"]))
 
         total_fee = round(entry_gross_fee + exit_gross_fee, 6)
         total_rebate = round(entry_rebate + exit_rebate, 6)
@@ -698,7 +705,8 @@ def normalize_hyperliquid_closed_trades(
 
         records.append(
             {
-                "trade_id": f"hl_{tid_str}_{close_ms}",
+                **cycle_journal_keys(journal_keys or [f"hl_{tid_str}_{close_ms}"], is_partial),
+                "position_events": position_events or [],
                 "venue_id": "hyperliquid",
                 "venue_name": "Hyperliquid",
                 "venue_name_zh": "Hyperliquid",
@@ -709,6 +717,7 @@ def normalize_hyperliquid_closed_trades(
                 "close_time_ms": close_ms,
                 "gross_pnl_usd": round(closed_pnl, 4),
                 "funding_pnl_usd": round(funding_pnl, 4),
+                "funding_by_day": dated_cash(funding_receipts),
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_usd": round(total_fee, 4),
                 "total_rebate_usd": round(total_rebate, 4),
@@ -776,6 +785,13 @@ def normalize_hyperliquid_closed_trades(
         exit_px = (exit_notional / closed_q) if closed_q > 0 else float(exits[-1]["px"])
         exit_gross_fee = sum(float(x["fee_paid"]) for x in exits)
         exit_rebate = sum(float(x["maker_rebate"]) for x in exits)
+        events = (
+            build_position_events(lot["event_fills"], side=str(exits[-1]["trade_side"]), linear=True)
+            if lot["from_flat"] else []
+        )
+        for fill, event in zip(exits, (e for e in events if e["action"] in {"REDUCE", "CLOSE"})):
+            if event["gross_pnl_usd"] is not None:
+                fill["closed_pnl"] = event["gross_pnl_usd"]
         closed_pnl_sum = sum(float(x["closed_pnl"]) for x in exits)
         distinct_oids = {str(x["oid"]) for x in exits if x.get("oid")}
         distinct_ts = {int(x["ts"]) for x in exits}
@@ -801,6 +817,7 @@ def normalize_hyperliquid_closed_trades(
                 hl_batches.append(
                     {
                         "batch_index": b_i + 1,
+                        "order_id": str(g_e[0].get("oid") or ""),
                         "qty": round(bq, 8),
                         "role": "MAKER" if (bmk and not btk) else "TAKER",
                         "mode_code": "MIXED" if (bmk and btk) else ("LIMIT_MAKER" if bmk else "MARKET_TAKER"),
@@ -843,6 +860,8 @@ def normalize_hyperliquid_closed_trades(
             tid_str=str(exits[-1]["tid_str"]),
             is_partial=is_partial,
             exit_batches=hl_batches,
+            journal_keys=[f"hl_{x['tid_str']}_{x['ts']}" for x in exits],
+            position_events=events,
         )
 
     for idx, fill in enumerate(sorted_fills):
@@ -865,6 +884,8 @@ def normalize_hyperliquid_closed_trades(
         tid_str = str(fill.get("tid") or fill.get("oid") or idx)
         oid_str = str(fill.get("oid") or "").strip()
 
+        charged = usd_fee(fill.get("fee"), fill.get("feeToken") or "USDC")
+
         is_close = ("Close" in dir_str) or (">" in dir_str) or (abs(closed_pnl) > 1e-9)
         if not is_close:
             lot = open_lots.setdefault(
@@ -879,12 +900,15 @@ def normalize_hyperliquid_closed_trades(
                     "open_ms": float(ts),
                     "maker_notional": 0.0,
                     "taker_notional": 0.0,
+                    "from_flat": abs(float(fill.get("startPosition") or 0.0)) <= 1e-12,
+                    "event_fills": [],
                     "exits": [],
                 },
             )
             if (lot["qty"] - lot["closed_qty"]) <= 1e-12 and not lot["exits"]:
                 lot["open_ms"] = float(ts)
             lot["raw_coin"] = raw_coin
+            lot["event_fills"].append(event_fill(ts, sz, px, True, charged, oid_str))
             lot["qty"] += sz
             lot["notional"] += px * sz
             lot["gross_fee"] += fee_paid
@@ -906,7 +930,9 @@ def normalize_hyperliquid_closed_trades(
         lot = open_lots.get(coin_key)
         rem_open_q = (float(lot["qty"]) - float(lot["closed_qty"])) if lot else 0.0
         if lot and rem_open_q > 1e-12:
+            event_gross = closed_pnl if fill.get("closedPnl") not in (None, "") else None
             if sz <= rem_open_q + 1e-9:
+                lot["event_fills"].append(event_fill(ts, sz, px, False, charged, oid_str, gross=event_gross))
                 lot["exits"].append(
                     {
                         "sz": sz,
@@ -929,6 +955,9 @@ def normalize_hyperliquid_closed_trades(
             else:
                 close_sh = rem_open_q / sz
                 open_sh = 1.0 - close_sh
+                lot["event_fills"].append(event_fill(ts, rem_open_q, px, False,
+                                                    charged * close_sh if charged is not None else None,
+                                                    oid_str, gross=event_gross))
                 lot["exits"].append(
                     {
                         "sz": rem_open_q,
@@ -957,6 +986,9 @@ def normalize_hyperliquid_closed_trades(
                     "open_ms": float(ts),
                     "maker_notional": (px * rem_sz) if not crossed else 0.0,
                     "taker_notional": (px * rem_sz) if crossed else 0.0,
+                    "from_flat": True,
+                    "event_fills": [event_fill(ts, rem_sz, px, True,
+                                               charged * open_sh if charged is not None else None, oid_str)],
                     "exits": [],
                 }
         else:

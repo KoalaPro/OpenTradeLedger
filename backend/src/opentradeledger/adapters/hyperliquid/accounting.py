@@ -6,6 +6,7 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.core.position_lifecycle import trade_daily_amounts
 from opentradeledger.adapters.base import (
     AdapterMeta,
     VenueCopyBundle,
@@ -24,6 +25,7 @@ from opentradeledger.core.venue_primitives import (
     clamp_reconcile_streams_to_target,
     dec,
     fmt_ms,
+    merge_legacy_journal_entries,
     spot_holdings_from_wallets,
 )
 
@@ -222,14 +224,13 @@ def build_hyperliquid_venue_ledger(
         )
         rt["entry_leg"]["time_str"] = fmt_ms(rt["entry_leg"]["time_ms"], "%m-%d %H:%M")
         rt["exit_leg"]["time_str"] = fmt_ms(rt["exit_leg"]["time_ms"], "%m-%d %H:%M")
-        j = journals.get(rt["trade_id"]) or {}
+        j = merge_legacy_journal_entries(journals, rt["trade_id"], rt.pop("_journal_keys", ()))
         rt["tags"] = list(j.get("tags") or [])
         rt["note"] = str(j.get("note") or "")
         trades.append(rt)
-        if rt["close_date"]:
-            v_dec = dec(rt["net_pnl_usd"])
-            daily_pnl[rt["close_date"]] += v_dec
-            daily_comp[rt["close_date"]]["hyperliquid_futures"] += v_dec
+        for day, amount in trade_daily_amounts(rt, dec(rt["net_pnl_usd"])).items():
+            daily_pnl[day] += amount
+            daily_comp[day]["hyperliquid_futures"] += amount
 
     open_upl_sum = sum(float(p["unrealized_pnl_usd"]) for p in open_positions)
     closed_net_sum = sum(float(t["net_pnl_usd"]) for t in trades)

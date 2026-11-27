@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useI18n } from '../i18n'
 import { useCurrency } from '../lib/currency'
+import type { DashboardData } from '../lib/types'
+import { VenueBadge } from './VenueBadge'
 import { pnlTone } from '../lib/format'
 
 interface CalendarProps {
-  days: Array<{ date: string; net_pnl_usd: number; trade_count: number }>
+  days: DashboardData['calendar_days']
   availableMonths: string[]
   selectedMonth: string
   onSelectMonth: (month: string) => void
@@ -45,7 +47,7 @@ export function MonthlyCalendar({
   }, [activeMonth, daysInMonth])
 
   const map = useMemo(() => {
-    const m = new Map<string, { net_pnl_usd: number; trade_count: number }>()
+    const m = new Map<string, DashboardData['calendar_days'][number]>()
     days.forEach(d => m.set(d.date, d))
     return m
   }, [days])
@@ -76,6 +78,7 @@ export function MonthlyCalendar({
     ? `${activeMonth}-${String(effectiveSelectedDay).padStart(2, '0')}`
     : ''
   const selectedItem = selectedKey ? map.get(selectedKey) : undefined
+  const tradeActivity = selectedItem?.trade_activity ?? []
 
   return (
     <div className="flex flex-col gap-3.5 h-full">
@@ -177,14 +180,35 @@ export function MonthlyCalendar({
       </div>
 
       {effectiveSelectedDay !== null && (
-        <div className="otl-panel-swap flex items-center justify-between text-[12px] text-[var(--fg-2)]">
-          <span>
-            {selectedKey}{' '}
-            {locale === 'en' ? 'Daily Portfolio Net Change' : '单日全账户净值变动'}
-          </span>
-          <strong className={`sensitive ${pnlTone(selectedItem?.net_pnl_usd ?? 0)}`}>
-            {cur.signedMoney(selectedItem?.net_pnl_usd ?? 0)}
-          </strong>
+        <div className="space-y-2">
+          <div className="otl-panel-swap flex items-center justify-between text-[12px] text-[var(--fg-2)]">
+            <span>
+              {selectedKey}{' '}
+              {locale === 'en' ? 'Daily Portfolio Net Change' : '单日全账户净值变动'}
+            </span>
+            <strong className={`sensitive ${pnlTone(selectedItem?.net_pnl_usd ?? 0)}`}>
+              {cur.signedMoney(selectedItem?.net_pnl_usd ?? 0)}
+            </strong>
+          </div>
+          {tradeActivity.length > 0 && <>
+            <h3 className="m-0 pt-2 border-t border-[var(--border)] text-[12px] font-medium text-[var(--fg-2)]">{t('lifecycle_day')}</h3>
+            <ul aria-label={t('lifecycle_day')} className="m-0 p-0 space-y-2">
+              {tradeActivity.map(row => (
+                <li key={`${row.venue_id}-${row.trade_id}`} className="flex flex-wrap items-baseline justify-between gap-2 text-[12px]">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <VenueBadge venueId={row.venue_id} name={row.venue_id.toUpperCase()} />
+                    <b>{row.symbol}</b>
+                    <span className="text-[var(--fg-3)]">
+                      {row.side === 'LONG' ? t('side_long') : t('side_short')} · {row.exit_count > 0 ? `${row.exit_count} ${t('lifecycle_daily_exits')}` : t('lifecycle_daily_fees')}
+                    </span>
+                  </span>
+                  <strong className={`sensitive tabular-nums ${pnlTone(row.amount_usd ?? 0)}`}>
+                    {row.amount_usd == null ? t('lifecycle_unknown') : cur.signedMoney(row.amount_usd)}
+                  </strong>
+                </li>
+              ))}
+            </ul>
+          </>}
         </div>
       )}
     </div>

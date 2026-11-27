@@ -271,7 +271,8 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
         settled_reb = float(raw.get("settled_rebate_usd") or 0.0)
         pending_reb = float(raw.get("pending_rebate_usd") or 0.0)
         rebate = round(settled_reb + pending_reb, 4)
-    net_fee = round(max(0.0, gross_fee - rebate), 4)
+    native_net_fee = raw.get("net_fee_usd")
+    net_fee = round(float(native_net_fee) if native_net_fee is not None else gross_fee - rebate, 4)
     mode_zh = str(raw.get("mode_zh") or "")
     raw_mode = str(raw.get("mode_code") or raw.get("mode") or "").upper()
     m_not_hint = float(raw.get("maker_notional_usd") or 0.0)
@@ -308,11 +309,11 @@ def normalize_internal_leg_to_public(raw: Mapping[str, Any], default_time_ms: in
         "role": "UNKNOWN" if is_unknown_split else ("MAKER" if is_maker else "TAKER"),
         "mode_code": mode_code,
         "fee_known": fee_known,
-        "fee_bps": round(float(raw.get("fee_bps") or 0.0), 2),
+        "fee_bps": None if "fee_bps" in raw and raw["fee_bps"] is None else round(float(raw.get("fee_bps") or 0.0), 2),
         "time_ms": t_ms,
         "time_str": str(raw.get("time_str") or raw.get("time_bj") or fmt_ms(t_ms, "%m-%d %H:%M")),
         "avg_price": float(raw.get("avg_price") or 0.0),
-        "notional_usd": notional_2dp,
+        "notional_usd": None if "notional_usd" in raw and raw["notional_usd"] is None else notional_2dp,
         "maker_notional_usd": 0.0 if is_unknown_split else round(float(raw.get("maker_notional_usd") or (notional_2dp if is_maker else 0.0)), 2),
         "taker_notional_usd": 0.0 if is_unknown_split else round(float(raw.get("taker_notional_usd") or (0.0 if is_maker else notional_2dp)), 2),
         "maker_fee_usd": 0.0 if is_unknown_split else round(float(raw.get("maker_fee_usd") or (gross_fee if is_maker else 0.0)), 4),
@@ -339,11 +340,11 @@ def normalize_exit_batch_to_public(
     raw_qty = raw.get("qty") if raw.get("qty") is not None else raw.get("qty_base")
     qty_val = float(raw_qty) if raw_qty is not None else None
     c_cnt = float(raw["contract_count"]) if raw.get("contract_count") is not None else None
-    gpnl = round(float(raw.get("gross_pnl_usd") or 0.0), 4)
+    gpnl = round(float(raw["gross_pnl_usd"]), 4) if raw.get("gross_pnl_usd") is not None else None
     if raw.get("net_pnl_usd") is not None:
         npnl = round(float(raw["net_pnl_usd"]), 4)
     else:
-        npnl = round(gpnl - float(leg["net_fee_usd"]), 4)
+        npnl = round(gpnl - float(leg["net_fee_usd"]), 4) if gpnl is not None and leg["fee_known"] else None
     reb_pct = (
         leg["rebate_pct"]
         if leg["rebate_pct"] > 0
@@ -351,6 +352,8 @@ def normalize_exit_batch_to_public(
     )
     return {
         "batch_index": int(raw.get("batch_index") or batch_index),
+        "order_id": str(raw.get("order_id") or ""),
+        "net_basis": raw.get("net_basis", "exit_only"),
         "qty": qty_val,
         **({"contract_count": c_cnt} if c_cnt is not None else {}),
         "role": leg["role"],
@@ -409,6 +412,7 @@ def normalize_internal_record_to_public_trade(
     base_fee = total_fee + total_disc
     relief = round(((total_reb + total_disc) / base_fee) * 100.0, 1) if base_fee > 0 else 0.0
     reb_state = str(r.get("rebate_state") or r.get("rebate_status") or "SETTLED")
+    base_qty = r.get("qty") if r.get("qty") is not None else r.get("qty_base")
     return {
         "trade_id": str(r.get("trade_id") or r.get("record_key")),
         "venue_id": venue_id,
@@ -417,7 +421,8 @@ def normalize_internal_record_to_public_trade(
         "color_token": color_token,
         "symbol": str(r.get("symbol") or r.get("contract") or ""),
         "side": "SHORT" if str(r.get("side") or "").upper() == "SHORT" else "LONG",
-        "qty": float(r.get("qty") if r.get("qty") is not None else (r.get("qty_base") or 0.0)),
+        "qty": None if base_qty is None and r.get("contract_count") is not None else float(base_qty or 0.0),
+        **({"contract_count": r["contract_count"]} if r.get("contract_count") is not None else {}),
         "open_time_ms": open_ms,
         "close_time_ms": close_ms,
         "open_time_str": str(r.get("open_time_str") or r.get("open_datetime_bj") or fmt_ms(open_ms))[:16],
@@ -445,6 +450,10 @@ def normalize_internal_record_to_public_trade(
         "rebate_status": "PENDING" if reb_state not in ("SETTLED", "NONE") else "SETTLED",
         "entry_leg": entry_leg,
         "exit_leg": exit_leg,
+        "position_events": list(r.get("position_events") or ()),
+        "funding_by_day": dict(r.get("funding_by_day") or {}),
+        "rebates_by_day": dict(r.get("rebates_by_day") or {}),
+        "settlements_by_day": dict(r.get("settlements_by_day") or {}),
         "exit_batches": [
             normalize_exit_batch_to_public(b, idx + 1, close_ms)
             for idx, b in enumerate(r.get("exit_batches") or ())

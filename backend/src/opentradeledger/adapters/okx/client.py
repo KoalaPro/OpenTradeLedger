@@ -12,6 +12,7 @@ from functools import partial
 import asyncio
 import base64
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import hmac
 from typing import Any, Callable, Optional
@@ -28,6 +29,9 @@ from opentradeledger.adapters.okx.contracts import (
     instrument_at,
     positive_number,
 )
+from opentradeledger.core.open_reductions import open_reduction_key, open_reduction_record
+from opentradeledger.core.position_batch_pnl import position_fill_accounting, reported_amount
+from opentradeledger.core.venue_primitives import USD_CASH_ASSETS
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError, assert_readonly_request
 
 TZ_UTC8 = timezone(timedelta(hours=8))
@@ -529,6 +533,8 @@ def _match_position_fills(positions: list[dict], fills: list[dict]) -> list[list
         timestamp = int(fill.get("fillTime") or fill.get("ts") or 0)
         matches = []
         for index, pos, start, end, side in windows.get(str(fill.get("instId") or "").upper(), []):
+            if pos.get("_live_fills") is not None and id(fill) not in pos["_live_fills"]:
+                continue
             if fill.get("posId") and str(fill["posId"]) != str(pos.get("posId")):
                 continue
             if (fill.get("posSide") or "net").lower() not in {"net", side}:
@@ -544,6 +550,111 @@ def _match_position_fills(positions: list[dict], fills: list[dict]) -> list[list
     return matched
 
 
+def _fill_order(f: dict) -> tuple:
+    return (
+        int(f.get("fillTime") or f.get("ts") or 0),
+        reported_amount(f.get("tradeId") or f.get("billId")) or 0,
+        str(f.get("tradeId") or f.get("billId") or ""),
+    )
+
+
+def _okx_fill_inputs(inst_fills: list[dict], inst: str, side: str, spec: dict, settlement: str, okb_usd_price: float):
+    # Inverse contracts' represented base quantity varies with fill price.
+    # Keep inventory in contracts unless a constant base multiplier is documented.
+    linear = (spec.get("ctType") in (None, "", "linear") and
+              spec.get("ctValCcy") == inst.split("-")[0] and positive_number(spec.get("ctVal")) > 0)
+    multiplier = Decimal(str(spec["ctVal"])) if linear else Decimal("1")
+    entry_side = "buy" if side == "LONG" else "sell"
+    fill_inputs = []
+    for f in inst_fills:
+        is_entry = str(f.get("side") or "").lower() == entry_side
+        px = positive_number(f.get("fillPx"))
+        raw_pnl = finite_number(f.get("fillPnl"))
+        raw_fee = finite_number(f.get("fee"))
+        fee_ccy = str(f.get("feeCcy") or settlement).upper()
+        fee = amount_usd(raw_fee, fee_ccy, inst, px, okb_usd_price) if raw_fee is not None else None
+        fill_inputs.append({
+            "time_ms": int(f.get("fillTime") or f.get("ts") or 0),
+            "order_id": str(f.get("ordId") or f.get("clOrdId") or ""),
+            "fill_id": str(f.get("tradeId") or f.get("billId") or ""),
+            "role": {"M": "MAKER", "T": "TAKER"}.get(f.get("execType"), "UNKNOWN"),
+            "qty": (reported_amount(f.get("fillSz")) or Decimal("0")) * multiplier,
+            "qty_unit": "base" if linear else "contracts",
+            "price": px, "is_entry": is_entry, "fee_usd": -fee if fee is not None else None,
+            "gross_pnl_usd": amount_usd(raw_pnl, settlement, inst, px, okb_usd_price)
+            if raw_pnl is not None and not is_entry else None,
+        })
+    return fill_inputs, multiplier, linear and settlement in USD_CASH_ASSETS
+
+
+def _live_reduction_positions(live_positions, history, fills, instruments, okb_price):
+    """Admit only a cycle whose retained executions explain the exchange's live position."""
+    candidates = []
+    for live in live_positions:
+        inst = str(live.get("instId") or "").upper()
+        pid = str(live.get("posId") or "")
+        start = int(live.get("cTime") or 0)
+        end = int(live.get("uTime") or 0)
+        balance = reported_amount(live.get("pos"))
+        if not (inst and pid and start and end >= start and balance):
+            continue
+        side = "SHORT" if live.get("posSide") == "short" or balance < 0 else "LONG"
+        symbol = inst.replace("-SWAP", "").replace("-", "_")
+        own = [p for p in history if p.get("instId") == inst and str(p.get("posId")) == pid
+               and int(p.get("cTime") or 0) == start]
+        other = [p for p in history if p.get("instId") == inst and p not in own]
+        for neighbor in live_positions:
+            if neighbor is live or neighbor.get("instId") != inst or not neighbor.get("cTime"):
+                continue
+            neighbor_short = neighbor.get("posSide") == "short" or (reported_amount(neighbor.get("pos")) or 0) < 0
+            other.append({**neighbor, "direction": "short" if neighbor_short else "long"})
+        # Let the same fill matcher resolve neighboring or simultaneous hedge-mode windows.
+        window = {**live, "direction": side.lower()}
+        matched = _match_position_fills([*other, window], [f for f in fills if f.get("instId") == inst])[-1]
+        matched = sorted((f for f in matched if start <= _fill_order(f)[0] <= end), key=_fill_order)
+        spec = instrument_at(instruments, inst, start)
+        settlement = str(live.get("ccy") or spec.get("settleCcy") or inst.split("-")[1]).upper()
+        inputs, multiplier, linear = _okx_fill_inputs(matched, inst, side, spec, settlement, okb_price)
+        raw = open_reduction_record(
+            venue="okx", symbol=symbol, side=side, fills=inputs, remaining_qty=abs(balance) * multiplier,
+            avg_entry_price=live.get("avgPx"), journals={}, history=[], linear=linear,
+        )
+        if not raw:
+            continue
+        events = raw["position_events"]
+        if len(events) != len(inputs):
+            # The native creation-time window contains an earlier flat. Its identity is ambiguous.
+            continue
+        exits = [f for f, e in zip(matched, events) if e["action"] == "REDUCE"]
+        entries = [f for f, e in zip(matched, events) if e["action"] in ("OPEN", "ADD")]
+        closed_contracts = sum((reported_amount(f["fillSz"]) for f in exits), Decimal(0))
+        prior = max(own, key=lambda p: int(p.get("uTime") or 0), default={})
+        if int(prior.get("uTime") or 0) > end or positive_number(prior.get("closeTotalPos")) > float(closed_contracts):
+            continue
+        # Reuse OKX's native fee/credit and settlement accounting for the verified live cycle.
+        # Only cumulative charges can carry forward from a prior history report.
+        position = {k: prior[k] for k in ("fundingFee", "liqPenalty", "settledPnl") if k in prior}
+        position.update(live)
+        if finite_number(position.get("pnl")) is None:
+            if settlement in USD_CASH_ASSETS:
+                position["pnl"] = raw["gross_pnl_usd"]
+            elif all(reported_amount(f.get("fillPnl")) is not None for f in exits):
+                position["pnl"] = sum(reported_amount(f["fillPnl"]) for f in exits)
+            else:
+                continue
+        def average_price(group):
+            count = sum(positive_number(f.get("fillSz")) for f in group)
+            return sum(positive_number(f.get("fillSz")) * positive_number(f.get("fillPx")) for f in group) / count
+        position.update(
+            type="1", direction=side.lower(), closeTotalPos=closed_contracts,
+            openAvgPx=average_price(entries), closeAvgPx=average_price(exits),
+            _live_key=raw["record_key"], _last_exit_ms=raw["close_time_ms"],
+            _live_fills={id(f) for f in matched},
+        )
+        candidates.append(position)
+    return candidates
+
+
 def normalize_okx_closed_trades(
     positions_history: list[dict[str, Any]],
     fills: list[dict[str, Any]],
@@ -552,6 +663,7 @@ def normalize_okx_closed_trades(
     rebate_ratio: float = 0.0,
     okb_usd_price: float = 0.0,
     instruments: Optional[list[dict[str, Any]]] = None,
+    live_positions: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Builds normalized closed trades with per-leg fees, matched rebates, OKB discounts, and partial-close flags."""
     rebate_bills_by_inst: dict[str, list[dict[str, Any]]] = {}
@@ -570,7 +682,10 @@ def normalize_okx_closed_trades(
     # Deduplicate intermediate partial snapshots superseded by a newer cumulative update of the same (instId, posId, cTime)
     dedup_pos_groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     passthrough_positions: list[dict[str, Any]] = []
-    for raw_p in positions_history:
+    live_history = _live_reduction_positions(
+        live_positions or [], positions_history, fills, instruments or [], okb_usd_price
+    )
+    for raw_p in [*positions_history, *live_history]:
         inst_k = str(raw_p.get("instId") or "").upper()
         pid_k = str(raw_p.get("posId") or "").strip()
         ctime_k = int(raw_p.get("cTime") or 0)
@@ -611,7 +726,7 @@ def normalize_okx_closed_trades(
         if not inst:
             continue
         open_ms = int(pos.get("cTime") or 0)
-        close_ms = int(pos.get("uTime") or open_ms)
+        close_ms = int(pos.get("_last_exit_ms") or pos.get("uTime") or open_ms)
         open_px = float(pos.get("openAvgPx") or 0.0)
         close_px = float(pos.get("closeAvgPx") or 0.0)
         contracts = abs(float(pos.get("closeTotalPos") or pos.get("openMaxPos") or 0.0))
@@ -621,6 +736,7 @@ def normalize_okx_closed_trades(
         side = "SHORT" if "SHORT" in direction else "LONG"
 
         entry_side = "buy" if side == "LONG" else "sell"
+        inst_fills.sort(key=_fill_order)
         entry_fills = [f for f in inst_fills if str(f.get("side") or "").lower() == entry_side]
         exit_fills = [f for f in inst_fills if str(f.get("side") or "").lower() != entry_side]
         distinct_exit_oids = {
@@ -629,7 +745,8 @@ def normalize_okx_closed_trades(
             if str(f.get("ordId") or f.get("clOrdId") or "").strip()
         }
         is_partial = (
-            str(pos.get("type") or "") == "2"
+            str(pos.get("type") or "") in {"1", "4", "5"}
+            or (sum(positive_number(f.get("fillSz")) for f in entry_fills) > contracts and contracts > 0)
             or bool(pos.get("_had_partial"))
             or len(distinct_exit_oids) > 1
         )
@@ -637,7 +754,7 @@ def normalize_okx_closed_trades(
         entry_contracts = sum(positive_number(f.get("fillSz")) for f in entry_fills)
         entry_scale = (
             (contracts / entry_contracts)
-            if (contracts > 0 and entry_contracts > contracts + 1e-9)
+            if (not pos.get("_live_key") and contracts > 0 and entry_contracts > contracts + 1e-9)
             else 1.0
         )
 
@@ -708,8 +825,14 @@ def normalize_okx_closed_trades(
         rebate_status = ("PENDING" if external_rebate and not matched_reb_amt
                          else "SETTLED" if total_rebate else "NONE")
 
+        fill_inputs, multiplier, linear = _okx_fill_inputs(inst_fills, inst, side, spec, settlement, okb_usd_price)
+        events, order_pnl = position_fill_accounting(
+            fill_inputs, side=side, closed_qty=Decimal(str(contracts)) * multiplier,
+            gross_pnl=gross_pnl if settlement in USD_CASH_ASSETS and finite_number(pos.get("pnl")) is not None else None,
+            linear=linear, still_open=is_partial,
+        )
         okx_exit_batches: list[dict[str, Any]] = []
-        if len(distinct_exit_oids) > 1:
+        if len(distinct_exit_oids) > 1 and all(f.get("ordId") or f.get("clOrdId") for f in exit_fills):
             ex_by_oid: dict[str, list[dict[str, Any]]] = {}
             for f_idx, ef in enumerate(exit_fills):
                 oid_k = str(ef.get("ordId") or ef.get("clOrdId") or f"fill_{f_idx}").strip()
@@ -718,10 +841,7 @@ def normalize_okx_closed_trades(
                 ex_by_oid.values(),
                 key=lambda g_f: max(int(x.get("fillTime") or x.get("ts") or close_ms) for x in g_f),
             )
-            tot_ex_c = sum(positive_number(x.get("fillSz")) for x in exit_fills)
-            rem_okx_gpnl = gross_pnl
             for b_i, g_fills in enumerate(ordered_ex_grps):
-                b_last = b_i == len(ordered_ex_grps) - 1
                 b_ts = max(int(x.get("fillTime") or x.get("ts") or close_ms) for x in g_fills)
                 b_c = sum(positive_number(x.get("fillSz")) for x in g_fills)
                 b_px_w = sum(positive_number(x.get("fillSz")) * positive_number(x.get("fillPx")) for x in g_fills)
@@ -731,16 +851,10 @@ def normalize_okx_closed_trades(
                 b_paid = float(b_leg["gross_fee_usd"])
                 b_reb = float(b_leg["fill_rebate_usd"]) + b_paid * ratio
                 b_net_f = b_paid - b_reb
-                if b_last:
-                    b_gpnl = rem_okx_gpnl
-                elif b_q is not None and open_px > 0 and b_px > 0 and settlement in ("USDT", "USDC", "USD"):
-                    b_gpnl = ((b_px - open_px) * b_q) if side == "LONG" else ((open_px - b_px) * b_q)
-                    rem_okx_gpnl -= b_gpnl
-                else:
-                    b_gpnl = gross_pnl * (b_c / tot_ex_c) if tot_ex_c > 0 else 0.0
-                    rem_okx_gpnl -= b_gpnl
+                b_gpnl = order_pnl.get(str(g_fills[0].get("ordId") or g_fills[0].get("clOrdId") or ""))
                 okx_exit_batches.append(
                     {
+                        "order_id": str(g_fills[0].get("ordId") or g_fills[0].get("clOrdId") or ""),
                         "batch_index": b_i + 1,
                         "qty": round(b_q, 8) if b_q is not None else None,
                         "contract_count": b_c if b_c > 0 else None,
@@ -757,15 +871,23 @@ def normalize_okx_closed_trades(
                         "discount_asset": b_leg["discount_asset"],
                         "rebate_usd": round(b_reb, 4),
                         "net_fee_usd": round(b_net_f, 4),
-                        "gross_pnl_usd": round(b_gpnl, 4),
-                        "net_pnl_usd": round(b_gpnl - b_net_f, 4),
+                        "gross_pnl_usd": round(float(b_gpnl), 4) if b_gpnl is not None else None,
+                        "net_pnl_usd": round(float(b_gpnl) - b_net_f, 4) if b_gpnl is not None and b_leg["fee_known"] else None,
                     }
                 )
 
         sym = inst.replace("-SWAP", "").replace("-", "_")
+        old_key = f"okx_{pos.get('posId') or sym}_{close_ms}"
+        stable_key = f"okx_{pos['posId']}_{sym}_{side}_{open_ms}" if pos.get("posId") and open_ms else old_key
+        legacy_ids = [old_key, *(pos.get("_legacy_trade_ids") or ())]
+        if pos.get("posId"):
+            legacy_ids.extend(f"okx_{pos['posId']}_{_fill_order(f)[0]}" for f in exit_fills)
+        live_alias = open_reduction_key("okx", sym, side, events)
+        if live_alias:
+            legacy_ids.append(live_alias)
         records.append(
             {
-                "trade_id": f"okx_{pos.get('posId') or sym}_{close_ms}",
+                "trade_id": stable_key,
                 "venue_id": "okx",
                 "venue_name": "OKX",
                 "venue_name_zh": "OKX",
@@ -789,7 +911,8 @@ def normalize_okx_closed_trades(
                 "entry_leg": entry,
                 "exit_leg": exit_leg,
                 "exit_batches": okx_exit_batches,
-                **({"_legacy_trade_ids": list(pos["_legacy_trade_ids"])} if pos.get("_legacy_trade_ids") else {}),
+                "position_events": events,
+                **({"_legacy_trade_ids": legacy_ids} if legacy_ids else {}),
             }
         )
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)

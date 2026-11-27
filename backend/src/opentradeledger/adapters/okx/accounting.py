@@ -6,6 +6,7 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.core.position_lifecycle import trade_daily_amounts
 from opentradeledger.adapters.base import (
     AdapterMeta,
     VenueCopyBundle,
@@ -23,6 +24,7 @@ from opentradeledger.core.venue_primitives import (
     clamp_reconcile_streams_to_target,
     dec,
     fmt_ms,
+    merge_legacy_journal_entries,
     norm_ms,
     is_tokenized_stock_symbol,
 )
@@ -231,6 +233,7 @@ def build_okx_venue_ledger(
         snap.get("fills") or [],
         bills=snap.get("bills") or [],
         instruments=instruments,
+        live_positions=snap.get("positions") or [],
         rebate_ratio=float(snap.get("observed_rebate_ratio") or 0.0),
         okb_usd_price=float(px_map.get("OKB") or 0.0),
     )
@@ -253,26 +256,14 @@ def build_okx_venue_ledger(
         rt["exit_leg"]["time_str"] = fmt_ms(rt["exit_leg"]["time_ms"], "%m-%d %H:%M")
         rt["exit_leg"].setdefault("settled_at", "")
         legacy_ids = rt.pop("_legacy_trade_ids", ()) or ()
-        if rt["trade_id"] in journals:
-            j = journals.get(rt["trade_id"]) or {}
-        else:
-            m_tags: list[str] = []
-            m_notes: list[str] = []
-            for lid in legacy_ids:
-                lj = journals.get(lid) or {}
-                for tg in lj.get("tags") or ():
-                    if tg and tg not in m_tags:
-                        m_tags.append(str(tg))
-                nt = str(lj.get("note") or "").strip()
-                if nt and nt not in m_notes:
-                    m_notes.append(nt)
-            j = {"tags": m_tags, "note": "\n".join(m_notes)} if (m_tags or m_notes) else {}
+        j = merge_legacy_journal_entries(journals, rt["trade_id"], legacy_ids)
         rt["tags"] = list(j.get("tags") or [])
         rt["note"] = str(j.get("note") or "")
         trades.append(rt)
         if rt["close_date"]:
             # Fill credits are already included in exchange realized PnL; separate cash bills post on their settlement day.
-            daily_comp[rt["close_date"]]["okx_futures"] += dec(rt["realized_pnl_usd"])
+            for day, amount in trade_daily_amounts(rt, dec(rt["realized_pnl_usd"])).items():
+                daily_comp[day]["okx_futures"] += amount
 
     equity_2dp = round(equity_usd, 2)
 

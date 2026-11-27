@@ -19,6 +19,10 @@ from urllib.parse import urlencode
 
 import httpx
 
+from opentradeledger.adapters.cycle_evidence import cycle_journal_keys, event_fill, project_live_reduction, usd_fee
+from opentradeledger.core.position_lifecycle import build_position_events, dated_cash
+from opentradeledger.core.venue_primitives import normalize_internal_record_to_public_trade
+
 from opentradeledger.adapters.balance_validation import InvalidWalletSnapshot, finite_amount, optional_amounts, wallet_rows
 from opentradeledger.security.readonly_guard import ReadOnlyGuardError, assert_readonly_request
 
@@ -666,33 +670,85 @@ def normalize_bybit_closed_trades(
     *,
     tx_logs: Optional[list[dict[str, Any]]] = None,
     rebate_ratio: float = 0.0,
+    positions: Optional[list[dict[str, Any]]] = None,
 ) -> list[dict[str, Any]]:
     """Builds normalized closed trades with per-leg fees, SETTLEMENT funding, REBATE logs, and MNT discounts."""
-    execs_by_order: dict[str, list[dict[str, Any]]] = {}
+    execs_by_order: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    closed_orders = {(str(r.get("symbol") or "").upper(), str(r.get("orderId") or "")) for r in closed_pnl_rows}
     open_pool_by_bucket: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    active: dict[tuple[str, str], dict[str, Any]] = {}
+    cycle_by_exit: dict[tuple[str, str], dict[str, Any] | None] = {}
+    reported_qty: dict[tuple[str, str], float] = {}
+    for ex in executions:
+        key = (str(ex.get("symbol") or "").upper(), str(ex.get("orderId") or ""))
+        if key in closed_orders:
+            amount = ex.get("closedSize") if ex.get("closedSize") not in (None, "") else ex.get("execQty")
+            reported_qty[key] = reported_qty.get(key, 0.0) + abs(float(amount or 0))
+    boundaries = []
+    for row in closed_pnl_rows:
+        key = (str(row.get("symbol") or "").upper(), str(row.get("orderId") or ""))
+        gap = abs(float(row.get("closedSize") or row.get("qty") or 0)) - reported_qty.get(key, 0)
+        if gap > 1e-9:
+            boundaries.append({
+                "symbol": key[0], "orderId": key[1], "side": row.get("side"),
+                "execTime": row.get("updatedTime") or row.get("createdTime"),
+                "closedSize": gap, "execQty": gap, "_missing_fill": True,
+            })
     sorted_execs = sorted(
-        executions,
+        [*executions, *boundaries],
         key=lambda x: (int(x.get("execTime") or 0), str(x.get("execId") or "")),
     )
-    for ex_idx, ex in enumerate(sorted_execs):
+    for idx, ex in enumerate(sorted_execs):
         oid = str(ex.get("orderId") or "")
         sym = str(ex.get("symbol") or "").upper()
-        if oid:
-            execs_by_order.setdefault(oid, []).append(ex)
-        if sym and float(ex.get("closedSize") or 0.0) == 0.0:
-            ex_side = str(ex.get("side") or "").lower()
-            pos_side_ex = "LONG" if ex_side == "buy" else ("SHORT" if ex_side == "sell" else "")
-            if pos_side_ex:
-                ex_q = abs(float(ex.get("execQty") or ex.get("qty") or 0.0))
-                open_pool_by_bucket.setdefault((sym, pos_side_ex), []).append(
-                    {
-                        "ex": ex,
-                        "orig_qty": ex_q,
-                        "rem_share": 1.0,
-                        "ts": int(ex.get("execTime") or 0),
-                        "anchor": oid or str(ex.get("execId") or f"open_{ex_idx}"),
-                    }
-                )
+        order_key = (sym, oid)
+        if oid and not ex.get("_missing_fill"):
+            execs_by_order.setdefault(order_key, []).append(ex)
+        side_token = str(ex.get("side") or "").lower()
+        if not sym or side_token not in {"buy", "sell"} or ex.get("execType") in {"Funding", "Settle"}:
+            continue
+        entry_side = "LONG" if side_token == "buy" else "SHORT"
+        close_side = "SHORT" if entry_side == "LONG" else "LONG"
+        qty = abs(float(ex.get("execQty") or ex.get("qty") or 0.0))
+        closed = abs(float(ex.get("closedSize") or 0.0)) if ex.get("closedSize") not in (None, "") else (
+            qty if order_key in closed_orders else 0.0
+        )
+        ts = int(ex.get("execTime") or 0)
+        px = ex.get("execPrice")
+        fee = usd_fee(ex.get("execFee"), ex.get("feeCurrency") or "USDT")
+        role = ("maker" if ex["isMaker"] else "taker") if "isMaker" in ex else ""
+        if closed > 0:
+            bucket = (sym, close_side)
+            cycle = active.get(bucket)
+            if cycle and qty > 0 and closed <= min(qty, cycle["remaining"]) + 1e-9:
+                close_fee = fee * closed / qty if fee is not None else None
+                cycle["fills"].append(event_fill(ts, closed, px, False, close_fee, oid,
+                                                role=role, gross=ex.get("execPnl")))
+                if order_key not in cycle_by_exit or cycle_by_exit[order_key] is cycle:
+                    cycle_by_exit[order_key] = cycle
+                else:
+                    cycle_by_exit[order_key] = None
+                cycle["remaining"] -= closed
+            if cycle and (cycle["remaining"] <= 1e-9 or closed > qty + 1e-9):
+                active.pop(bucket, None)
+            elif cycle and cycle_by_exit.get(order_key) is not cycle:
+                active.pop(bucket, None)
+        if qty > closed or (qty == 0 and closed == 0 and order_key not in closed_orders):
+            bucket = (sym, entry_side)
+            opened = qty - closed
+            slot = {
+                "ex": ex, "orig_qty": qty, "rem_share": opened / qty if qty else 1.0,
+                "ts": ts, "anchor": oid or str(ex.get("execId") or f"open_{idx}"),
+            }
+            open_pool_by_bucket.setdefault(bucket, []).append(slot)
+            if opened > 0:
+                cycle = active.setdefault(bucket, {
+                    "anchor": f"cycle_{idx}", "slots": [], "fills": [], "remaining": 0.0,
+                })
+                cycle["slots"].append(slot)
+                cycle["fills"].append(event_fill(ts, opened, px, True,
+                                                fee * opened / qty if fee is not None else None, oid, role=role))
+                cycle["remaining"] += opened
 
     funding_by_sym: dict[str, list[dict[str, Any]]] = {}
     rebates_by_sym: dict[str, list[dict[str, Any]]] = {}
@@ -732,12 +788,14 @@ def normalize_bybit_closed_trades(
         open_ms = int(row.get("createdTime") or 0)
         close_ms = int(row.get("updatedTime") or open_ms)
 
-        exit_execs = execs_by_order.get(order_id, [])
+        exit_execs = execs_by_order.get((raw_sym, order_id), [])
+        cycle = cycle_by_exit.get((raw_sym, order_id))
+        entry_pool = cycle["slots"] if cycle else open_pool_by_bucket.get((raw_sym, side), [])
         matched_entry_slices: list[tuple[dict[str, Any], float]] = []
         rem_need = qty
-        cycle_anchor = ""
-        for slot in open_pool_by_bucket.get((raw_sym, side), []):
-            if slot["rem_share"] <= 1e-9 or slot["ts"] > close_ms + 5_000:
+        cycle_anchor = cycle["anchor"] if cycle else ""
+        for slot in entry_pool:
+            if slot["rem_share"] <= 1e-9 or slot["ts"] > close_ms:
                 continue
             orig_q = float(slot["orig_qty"])
             rem_sh = float(slot["rem_share"])
@@ -774,9 +832,9 @@ def normalize_bybit_closed_trades(
         entry_gross_fee = sum(abs(float(e.get("execFee") or 0.0)) * sh for e, sh in matched_entry_slices)
         open_fee_field = abs(float(row.get("openFee") or 0.0))
         close_fee_field = abs(float(row.get("closeFee") or 0.0))
-        if open_fee_field > 0:
+        if row.get("openFee") not in (None, ""):
             entry_gross_fee = open_fee_field
-        if close_fee_field > 0:
+        if row.get("closeFee") not in (None, ""):
             exit_gross_fee = close_fee_field
 
         row_drafts.append(
@@ -794,10 +852,12 @@ def normalize_bybit_closed_trades(
                 "close_ms": close_ms,
                 "entry_execs": entry_execs,
                 "exit_execs": exit_execs,
+                "has_open_fee": row.get("openFee") not in (None, ""),
                 "entry_gross_fee": entry_gross_fee,
                 "exit_gross_fee": exit_gross_fee,
                 "closed_pnl": float(row.get("closedPnl") or 0.0),
                 "cycle_anchor": cycle_anchor,
+                "cycle": cycle,
             }
         )
 
@@ -819,7 +879,6 @@ def normalize_bybit_closed_trades(
     for grp in grouped_drafts:
         last_dr = grp[-1]
         raw_sym = last_dr["raw_sym"]
-        order_id = last_dr["order_id"]
         side = last_dr["side"]
         qty = sum(d["qty"] for d in grp)
         entry_notional = sum(d["entry_notional"] for d in grp)
@@ -830,6 +889,24 @@ def normalize_bybit_closed_trades(
         close_ms = max(d["close_ms"] for d in grp)
         entry_execs = [e for d in grp for e in d["entry_execs"]]
         exit_execs = [e for d in grp for e in d["exit_execs"]]
+        cycle = last_dr["cycle"]
+        cycle_fills = cycle["fills"] if cycle else []
+        matched_exit_qty = sum(f["qty"] for f in cycle_fills if not f["is_entry"])
+        events = []
+        if matched_exit_qty > qty + 1e-9:
+            cycle_fills = [f for f in cycle_fills if f["time_ms"] <= close_ms]
+            matched_exit_qty = sum(f["qty"] for f in cycle_fills if not f["is_entry"])
+        if cycle_fills and abs(matched_exit_qty - qty) <= 1e-9:
+            events = build_position_events(cycle_fills, side=side, linear=True)
+        if events:
+            exits_by_order: dict[str, list[dict[str, Any]]] = {}
+            for event in events:
+                if event["action"] in {"REDUCE", "CLOSE"}:
+                    exits_by_order.setdefault(event["order_id"], []).append(event)
+            for draft in grp:
+                matched = exits_by_order.get(draft["order_id"], [])
+                if matched and all(e["allocated_entry_fee_usd"] is not None for e in matched) and not draft["has_open_fee"]:
+                    draft["entry_gross_fee"] = sum(e["allocated_entry_fee_usd"] for e in matched)
         entry_gross_fee = sum(d["entry_gross_fee"] for d in grp)
         exit_gross_fee = sum(d["exit_gross_fee"] for d in grp)
 
@@ -852,6 +929,7 @@ def normalize_bybit_closed_trades(
 
         # Match SETTLEMENT funding logs within [open_ms, close_ms]
         funding_pnl = 0.0
+        funding_receipts = []
         for fl in funding_by_sym.get(raw_sym, []):
             if fl["_id"] in consumed_fund_ids:
                 continue
@@ -859,10 +937,12 @@ def normalize_bybit_closed_trades(
             if open_ms - 5_000 <= fts <= close_ms + 5_000:
                 consumed_fund_ids.add(fl["_id"])
                 funding_pnl += float(fl["_val"])
+                funding_receipts.append((fts, fl["_val"]))
 
         total_fee = round(entry_gross_fee + exit_gross_fee, 6)
 
         # Match explicit REBATE logs on this symbol first; fall back to observed_rebate_ratio
+        rebate_receipts = []
         matched_reb_amt = 0.0
         settled_ts = 0
         for rb in rebates_by_sym.get(raw_sym, []):
@@ -872,6 +952,7 @@ def normalize_bybit_closed_trades(
             if open_ms - 5_000 <= rts <= close_ms + 86_400_000:
                 consumed_reb_ids.add(rb["_id"])
                 matched_reb_amt += float(rb["_val"])
+                rebate_receipts.append((rts, rb["_val"]))
                 settled_ts = max(settled_ts, rts)
 
         if matched_reb_amt > 0 and total_fee > 0:
@@ -893,7 +974,8 @@ def normalize_bybit_closed_trades(
         gross_pnl = round(raw_closed_pnl + total_fee, 6)
         book_pnl = round(raw_closed_pnl + funding_pnl, 6)
         net_pnl = round(book_pnl + total_rebate, 6)
-        is_partial_bb = len(grp) > 1 or any(d["qty"] < d["row_qty"] for d in grp)
+        remaining = cycle["remaining"] if cycle else 0
+        is_partial_bb = remaining > 1e-9 or len(grp) > 1 or any(d["qty"] < d["row_qty"] for d in grp)
 
         bb_exit_batches: list[dict[str, Any]] = []
         if len(grp) > 1:
@@ -919,6 +1001,7 @@ def normalize_bybit_closed_trades(
                 bb_exit_batches.append(
                     {
                         "batch_index": b_i + 1,
+                        "order_id": d_it["order_id"],
                         "qty": round(float(d_it["qty"]), 6),
                         "role": b_role,
                         "mode_code": b_mode,
@@ -941,7 +1024,10 @@ def normalize_bybit_closed_trades(
         sym = _normalize_bybit_symbol(raw_sym)
         records.append(
             {
-                "trade_id": f"bybit_{order_id or sym}_{close_ms}",
+                **cycle_journal_keys(
+                    [f"bybit_{d['order_id'] or sym}_{d['close_ms']}" for d in grp], is_partial_bb,
+                ),
+                "position_events": events,
                 "venue_id": "bybit",
                 "venue_name": "Bybit",
                 "venue_name_zh": "Bybit",
@@ -952,6 +1038,8 @@ def normalize_bybit_closed_trades(
                 "close_time_ms": close_ms,
                 "gross_pnl_usd": round(gross_pnl, 4),
                 "funding_pnl_usd": round(funding_pnl, 4),
+                "rebates_by_day": dated_cash(rebate_receipts),
+                "funding_by_day": dated_cash(funding_receipts),
                 "book_pnl_usd": round(book_pnl, 4),
                 "total_fee_usd": round(total_fee, 4),
                 "total_rebate_usd": round(total_rebate, 4),
@@ -995,5 +1083,21 @@ def normalize_bybit_closed_trades(
                 "exit_batches": bb_exit_batches,
             }
         )
+    for pos in positions or ():
+        symbol = str(pos.get("symbol") or "").upper()
+        token = str(pos.get("side") or "").lower()
+        if token not in {"buy", "sell"}:
+            continue
+        side = "LONG" if token == "buy" else "SHORT"
+        cycle = active.get((symbol, side))
+        if cycle:
+            raw = project_live_reduction(
+                venue="bybit", symbol=_normalize_bybit_symbol(symbol), side=side, fills=cycle["fills"],
+                remaining_qty=pos.get("size"), avg_entry_price=pos.get("avgPrice"), journals={}, history=records,
+            )
+            if raw:
+                records.append({**normalize_internal_record_to_public_trade(
+                    raw, venue_id="bybit", venue_name="Bybit", venue_name_zh="Bybit", color_token="",
+                ), "_journal_keys": raw.get("_journal_keys", [])})
     records.sort(key=lambda r: (r["close_time_ms"], r["open_time_ms"]), reverse=True)
     return records

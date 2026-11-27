@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.adapters.cycle_evidence import event_fill
+from opentradeledger.core.position_lifecycle import build_position_events, dated_cash, trade_daily_amounts
 from opentradeledger.adapters.base import (
     AdapterMeta,
     VenueCopyBundle,
@@ -278,7 +280,8 @@ def _build_binance_closed_records(
         px_f = dec(raw_f.get("price"))
         notional_f = (abs(dec(raw_f.get("quoteQty"))) or (abs(dec(raw_f.get("qty"))) * px_f)) * share
         rpnl_f = dec(raw_f.get("realizedPnl")) * share
-        comm_raw = abs(dec(raw_f.get("commission"))) * share
+        signed_commission = dec(raw_f.get("commission")) * share
+        comm_raw = max(Decimal("0"), signed_commission)
         comm_asset = str(raw_f.get("commissionAsset") or "USDT").strip().upper()
         is_maker = bool(raw_f.get("maker"))
         role_str = "maker" if is_maker else "taker"
@@ -302,7 +305,9 @@ def _build_binance_closed_records(
             bnb_saved = Decimal("0")
             bnb_qty = Decimal("0")
 
-        s_reb_usd = Decimal("0")
+        native_credit = max(Decimal("0"), -signed_commission)
+        fee_credit = native_credit * _bnb_usd_at(ts_f, px_by_day, dated_bnb) if comm_asset == "BNB" else native_credit
+        s_reb_usd = fee_credit
         s_reb_bnb = Decimal("0")
         p_reb_usd = Decimal("0")
         reb_sec = 0
@@ -310,7 +315,7 @@ def _build_binance_closed_records(
         if tid_s and k_reb in rebates_by_trade:
             rb_obj = rebates_by_trade[k_reb]
             claimed_rebate_keys.add(k_reb)
-            s_reb_usd = rb_obj["rebate_usd"] * share
+            s_reb_usd += rb_obj["rebate_usd"] * share
             s_reb_bnb = rb_obj["rebate_bnb"] * share
             reb_sec = int(rb_obj["time_sec"])
         elif fee_usd > 0 and bn_live_rebate_rate > 0 and (now_f - ts_f) <= BN_PENDING_REBATE_WINDOW_SEC:
@@ -323,7 +328,15 @@ def _build_binance_closed_records(
             "px": px_f,
             "notional": notional_f,
             "rpnl": rpnl_f,
+            "has_rpnl": raw_f.get("realizedPnl") not in (None, ""),
+            "execution_id": int(raw_f.get("id") or 0),
+            "event_fee_known": raw_f.get("commission") not in (None, "") and (
+                signed_commission == 0 or comm_asset in {"USD", "USDT", "USDC"} or (
+                    comm_asset == "BNB" and fmt_bj(ts_f, "%Y-%m-%d") in px_by_day
+                )
+            ),
             "fee_usd": fee_usd,
+            "fee_credit": fee_credit,
             "fee_asset": comm_asset,
             "bnb_qty": bnb_qty,
             "bnb_saved_usd": bnb_saved,
@@ -423,6 +436,7 @@ def _build_binance_closed_records(
             a_not = en["notional"] * share
             a_rpnl = en["rpnl"] * share
             a_fee = en["fee_usd"] * share
+            a_credit = en["fee_credit"] * share
             a_bnb = en["bnb_qty"] * share
             a_sav = en["bnb_saved_usd"] * share
             a_sreb = en["settled_reb_usd"] * share
@@ -433,6 +447,7 @@ def _build_binance_closed_records(
             en["notional"] -= a_not
             en["rpnl"] -= a_rpnl
             en["fee_usd"] -= a_fee
+            en["fee_credit"] -= a_credit
             en["bnb_qty"] -= a_bnb
             en["bnb_saved_usd"] -= a_sav
             en["settled_reb_usd"] -= a_sreb
@@ -446,6 +461,7 @@ def _build_binance_closed_records(
                     "notional": a_not,
                     "rpnl": a_rpnl,
                     "fee_usd": a_fee,
+                    "fee_credit": a_credit,
                     "bnb_qty": a_bnb,
                     "bnb_saved_usd": a_sav,
                     "settled_reb_usd": a_sreb,
@@ -462,6 +478,7 @@ def _build_binance_closed_records(
         entry_items: list[dict[str, Any]],
         exit_items: list[dict[str, Any]],
         *,
+        position_events: list[dict[str, Any]],
         is_partial_close: bool = False,
     ) -> None:
         nonlocal total_bnb_burned_qty, total_bnb_rebate_qty, total_bnb_saved_usd
@@ -473,6 +490,7 @@ def _build_binance_closed_records(
         t_open_ms = min((int(x["ts_ms"]) for x in (entry_items or exit_items)), default=0)
         t_close_ms = max((int(x["ts_ms"]) for x in exit_items), default=t_open_ms)
 
+        funding_receipts = []
         fund_usd = Decimal("0")
         for f_id, f_ts, f_val in funding_by_sym.get(sym_u, []):
             if f_id in claimed_funding_ids:
@@ -480,6 +498,7 @@ def _build_binance_closed_records(
             if (t_open - 5.0) <= f_ts <= (t_close + 5.0):
                 claimed_funding_ids.add(f_id)
                 fund_usd += f_val
+                funding_receipts.append((norm_ms(f_ts), f_val))
 
         en_leg = _build_bn_leg(entry_items, is_exit=False)
         ex_leg = _build_bn_leg(exit_items, is_exit=True)
@@ -501,6 +520,7 @@ def _build_binance_closed_records(
                     {
                         **b_leg_bn,
                         "batch_index": b_i + 1,
+                        "order_id": str(g_items[0].get("order_id") or ""),
                         "qty": f2(b_q_bn, 6),
                         "gross_pnl_usd": f2(b_gpnl_bn, 4),
                     }
@@ -571,6 +591,9 @@ def _build_binance_closed_records(
                 "entry_leg": en_leg,
                 "exit_leg": ex_leg,
                 "exit_batches": bn_exit_batches,
+                "position_events": position_events,
+                "funding_by_day": dated_cash(funding_receipts),
+                "rebates_by_day": dated_cash([(norm_ms(x["reb_sec"]), x["settled_reb_usd"] - x["fee_credit"]) for x in all_it]),
                 "gross_pnl_usd": f2(gross_pnl, 4),
                 "funding_pnl_usd": f2(fund_usd, 4),
                 "total_fee_usd": f2(tot_fee, 4),
@@ -607,6 +630,17 @@ def _build_binance_closed_records(
             nonlocal pos_q, pending_exit_group
             if not pending_exit_group:
                 return
+            ordered = [(f, True) for f in cur_entries] + [(f, False) for f in pending_exit_group]
+            ordered.sort(key=lambda item: (item[0]["ts_ms"], item[0]["execution_id"]))
+            evidence = [
+                event_fill(f["ts_ms"], f["qty"], f["px"], is_entry, (f["fee_usd"] - f["fee_credit"]) if f["event_fee_known"] else None,
+                           f["order_id"], gross=f["rpnl"] if not is_entry and f["has_rpnl"] else None)
+                for f, is_entry in ordered
+            ]
+            events = build_position_events(evidence, side=side_emit)
+            for (fill, is_entry), event in zip(ordered, events):
+                if not is_entry and not fill["has_rpnl"] and event["gross_pnl_usd"] is not None:
+                    fill["rpnl"] = dec(event["gross_pnl_usd"])
             ex_q = sum((x["qty"] for x in pending_exit_group), Decimal("0"))
             distinct_oids = {
                 str(x.get("order_id") or "").strip()
@@ -621,13 +655,13 @@ def _build_binance_closed_records(
                     side_emit,
                     alloc_en,
                     pending_exit_group,
-                    is_partial_close=len(distinct_oids) > 1,
+                    position_events=events, is_partial_close=len(distinct_oids) > 1,
                 )
             else:
                 share = ex_q / pos_q
                 alloc_en = _slice_entries(cur_entries, share)
                 pos_q = max(Decimal("0"), pos_q - ex_q)
-                _emit_close_order(sym_u, side_emit, alloc_en, pending_exit_group, is_partial_close=True)
+                _emit_close_order(sym_u, side_emit, alloc_en, pending_exit_group, position_events=events, is_partial_close=True)
             pending_exit_group = []
 
         for rf in sorted_fills:
@@ -669,10 +703,14 @@ def _build_binance_closed_records(
                         close_share = max(Decimal("0"), rem_after_prev / q_abs)
                         open_share = Decimal("1") - close_share
                         if close_share > 0:
-                            pending_exit_group.append(_enrich_fill(rf, sym_u, share=close_share))
+                            closing = _enrich_fill(rf, sym_u, share=close_share)
+                            closing["rpnl"] = dec(rf.get("realizedPnl"))
+                            pending_exit_group.append(closing)
                         _flush_exit_group(cur_side)
                         cur_side = "SHORT" if cur_side == "LONG" else "LONG"
-                        cur_entries = [_enrich_fill(rf, sym_u, share=open_share)]
+                        opening = _enrich_fill(rf, sym_u, share=open_share)
+                        opening["rpnl"] = Decimal("0")
+                        cur_entries = [opening]
                         pos_q = q_abs * open_share
 
         if pending_exit_group:
@@ -1464,10 +1502,9 @@ def build_binance_venue_ledger(
     daily_comp: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
 
     for bn_r in bn_closed_records:
-        d_bn = bn_r["close_date_bj"]
-        v_bn = dec(bn_r["realized_net_pnl_usd"])
-        daily_pnl[d_bn] += v_bn
-        daily_comp[d_bn]["binance_futures"] += v_bn
+        for day, amount in trade_daily_amounts(bn_r, dec(bn_r["realized_net_pnl_usd"])).items():
+            daily_pnl[day] += amount
+            daily_comp[day]["binance_futures"] += amount
     if has_bn_copy:
         for d_uf, v_uf in bn_meta["daily_unmatched_funding"].items():
             daily_pnl[d_uf] += v_uf

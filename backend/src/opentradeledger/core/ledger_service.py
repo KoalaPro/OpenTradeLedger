@@ -24,6 +24,7 @@ from opentradeledger.core.account_partition import (
 )
 from opentradeledger.core.ai_reviewer import build_zero_trade_texts
 from opentradeledger.core.demo_provider import build_demo_dashboard
+from opentradeledger.core.position_lifecycle import exit_counts_by_day, trade_daily_amounts
 from opentradeledger.core.store import LedgerStore
 from opentradeledger.core.venue_health import visible_sync_warnings
 from opentradeledger.core.venue_primitives import dec, f2, fmt_bj
@@ -415,28 +416,27 @@ class LedgerService:
         eligible = {
             trade_key(tr): tr for tr in bundle.trades
             if tr.get("trade_id") and tr.get("symbol") and tr.get("close_time_ms")
-            and tr["trade_id"] not in current_journals
+            and tr["trade_id"] not in current_journals and not (tr.get("note") or tr.get("tags"))
         }
         if not eligible:
             return
         archive_notes: dict[tuple[Any, ...], list[Mapping[str, Any]]] = defaultdict(list)
         for archive_id in archive_ids:
             scoped = scope_journals_for_account(journals, archive_id)
-            if not any(key[0] in scoped for key in eligible):
+            if not scoped:
                 continue
             try:
                 archived = adapter.build_venue_ledger(
                     self.store.for_account(archive_id, adapter.meta.venue_id),
-                    journals={}, now_s=now_s, global_spot_prices=spot_prices,
+                    journals=scoped, now_s=now_s, global_spot_prices=spot_prices,
                 )
             except Exception as exc:
                 logger.warning("Could not read archived trades for %s: %s", archive_id, exc)
                 continue
             for tr in archived.trades if archived else []:
                 key = trade_key(tr)
-                note = scoped.get(tr.get("trade_id", ""))
-                if key in eligible and note:
-                    archive_notes[key].append(note)
+                if key in eligible and (tr.get("note") or tr.get("tags")):
+                    archive_notes[key].append(tr)
         for key, notes in archive_notes.items():
             if len(notes) == 1:
                 eligible[key]["note"] = notes[0].get("note", "")
@@ -858,25 +858,33 @@ class LedgerService:
 
         # 4. Calendar days (all-time whole-account daily PnL across all active venues)
         all_daily_pnl: dict[str, Decimal] = defaultdict(Decimal)
-        all_daily_trade_cnt: dict[str, int] = defaultdict(int)
-        for tr_u in all_trades_unfiltered:
-            d_u = str(tr_u.get("close_date") or "")
-            if d_u:
-                all_daily_trade_cnt[d_u] += 1
+        activity_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for trade in all_trades_unfiltered:
+            counts = exit_counts_by_day(trade)
+            actual = trade.get("realized_pnl_usd", trade.get("realized_net_pnl_usd", trade["net_pnl_usd"]))
+            daily = trade_daily_amounts(trade, dec(actual))
+            for day in daily.keys() | counts.keys():
+                activity_by_day[day].append({
+                    "trade_id": trade["trade_id"], "venue_id": trade["venue_id"],
+                    "symbol": trade["symbol"], "side": trade["side"],
+                    "amount_usd": f2(daily.get(day, Decimal("0")), 6),
+                    "exit_count": counts.get(day, 0),
+                })
         for _, b in active_entries:
             for d_k, v_dec in b.daily_pnl.items():
                 all_daily_pnl[d_k] += v_dec
 
         calendar_days: list[dict[str, Any]] = []
-        for d_sorted in sorted(all_daily_pnl.keys()):
+        for d_sorted in sorted(all_daily_pnl.keys() | activity_by_day.keys()):
             d_val = all_daily_pnl[d_sorted]
-            if abs(d_val) < Decimal("0.0005") and d_sorted != today_bj_str:
+            if abs(d_val) < Decimal("0.0005") and d_sorted != today_bj_str and not activity_by_day.get(d_sorted):
                 continue
             calendar_days.append(
                 {
                     "date": d_sorted,
                     "net_pnl_usd": f2(d_val, 2),
-                    "trade_count": int(all_daily_trade_cnt.get(d_sorted, 0)),
+                    "trade_count": sum(1 for row in activity_by_day[d_sorted] if row["exit_count"]),
+                    "trade_activity": activity_by_day[d_sorted],
                 }
             )
 
@@ -894,13 +902,16 @@ class LedgerService:
                         range_comp_by_vid[b.venue_id][ck] += cv
 
         if sf_norm not in ("ALL", ""):
-            for tr in trades:
-                d_str = str(tr.get("close_date") or "")
-                if not d_str:
+            for tr in venue_scoped_all_time_trades:
+                if str(tr["symbol"]).upper() != sf_norm:
                     continue
-                bucket = curve_by_date.setdefault(d_str, {"delta": Decimal("0"), "book": Decimal("0")})
-                bucket["delta"] += dec(tr["net_pnl_usd"])
-                bucket["book"] += dec(tr["book_pnl_usd"])
+                daily_net = trade_daily_amounts(tr, dec(tr.get("realized_net_pnl_usd", tr["net_pnl_usd"])))
+                daily_book = trade_daily_amounts(tr, dec(tr["book_pnl_usd"]), include_rebates=False)
+                for day, amount in daily_net.items():
+                    if _date_matches_range(day, rk_norm, cutoff_day_bj):
+                        bucket = curve_by_date.setdefault(day, {"delta": Decimal("0"), "book": Decimal("0")})
+                        bucket["delta"] += amount
+                        bucket["book"] += daily_book.get(day, Decimal("0"))
         else:
             scoped_bundles = [
                 b for _, b in active_entries if (vf_norm == "all" or b.venue_id == vf_norm)

@@ -7,6 +7,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from opentradeledger.core.open_reductions import carry_open_reduction_notes, open_reduction_record
+from opentradeledger.core.position_lifecycle import dated_cash, trade_daily_amounts
 from opentradeledger.adapters.base import (
     AdapterMeta,
     VenueCopyBundle,
@@ -19,6 +21,7 @@ from opentradeledger.adapters.stock_channels import (
     classify_spot_stock_token,
     reconstruct_spot_cost_basis,
 )
+from opentradeledger.core.position_batch_pnl import position_fill_accounting, reported_amount
 from opentradeledger.core.venue_primitives import (
     TZ_BEIJING,
     aggregate_trade_legs_decimal,
@@ -82,6 +85,7 @@ def extract_bitget_spot_prices(store: "LedgerStore") -> dict[str, float]:
 def _build_bitget_closed_records(
     *,
     bitget_positions_history: Sequence[Mapping[str, Any]],
+    open_positions: Sequence[Mapping[str, Any]] = (),
     bitget_fills: Sequence[Mapping[str, Any]],
     bitget_orders: Sequence[Mapping[str, Any]],
     bitget_bills: Sequence[Mapping[str, Any]],
@@ -190,8 +194,13 @@ def _build_bitget_closed_records(
         role_f = str(fl.get("tradeScope") or fl.get("execScope") or fl.get("role") or "taker").lower()
         is_m = "maker" in role_f
         oid_f = str(fl.get("orderId") or "").strip()
-        pos_side_f = str(fl.get("posSide") or "").strip().lower()
-        exec_pnl_f = dec(fl.get("execPnl"))
+        trade_side = str(fl.get("tradeSide") or fl.get("side") or "").lower()
+        pos_side_f = str(fl.get("posSide") or order_by_id.get(oid_f, {}).get("posSide") or "").strip().lower()
+        if not pos_side_f and trade_side.endswith(("_long", "_short")):
+            pos_side_f = trade_side.rsplit("_", 1)[-1]
+        exec_pnl_f = reported_amount(fl.get("execPnl"))
+        if exec_pnl_f is None:
+            exec_pnl_f = reported_amount(fl.get("profit"))
 
         fee_detail = fl.get("feeDetail")
         fee_coin = "USDT"
@@ -199,29 +208,33 @@ def _build_bitget_closed_records(
         bgb_saved = Decimal("0")
         bgb_qty = Decimal("0")
         if isinstance(fee_detail, list) and fee_detail:
-            for fd in fee_detail:
-                fc = str(fd.get("feeCoin") or "USDT").upper()
-                fv = abs(dec(fd.get("totalFee") or fd.get("fee")))
-                if fc:
-                    fee_coin = fc
-                fee_raw += _bg_coin_usd(fc, fv)
-                if fc == "BGB":
-                    bgb_qty += fv
-                ded_saved = abs(dec(fd.get("deductionFee") or "0"))
-                if ded_saved > 0:
-                    bgb_saved += ded_saved
+            details = fee_detail
         elif isinstance(fee_detail, Mapping):
-            fee_coin = str(fee_detail.get("feeCoin") or "USDT").upper()
-            fv = abs(dec(fee_detail.get("totalFee") or fee_detail.get("fee")))
-            fee_raw = _bg_coin_usd(fee_coin, fv)
-            if fee_coin == "BGB":
-                bgb_qty = fv
+            details = [fee_detail]
         else:
-            fee_coin = str(fl.get("feeCoin") or "USDT").upper()
-            fv = abs(dec(fl.get("fee") or fl.get("execFee")))
-            fee_raw = _bg_coin_usd(fee_coin, fv)
+            details = [fl]
+        fee_known = True
+        for detail in details:
+            if not isinstance(detail, Mapping):
+                fee_known = False
+                continue
+            fee_coin = str(detail.get("feeCoin") or "USDT").upper()
+            raw_total = reported_amount(detail.get("totalFee"))
+            if raw_total is not None:
+                # Classic accounts report totalFee as a signed balance change.
+                charge = -raw_total
+            else:
+                charge = reported_amount(detail.get("fee"))
+                if charge is None:
+                    charge = reported_amount(detail.get("execFee"))
+                # UTA trade/fills reports a signed charge (positive = paid).
+            if charge is None or (charge and not _bg_coin_usd(fee_coin, Decimal(1))):
+                fee_known = False
+                continue
+            fee_raw += _bg_coin_usd(fee_coin, charge)
             if fee_coin == "BGB":
-                bgb_qty = fv
+                bgb_qty += max(Decimal(0), charge)
+            bgb_saved += abs(dec(detail.get("deductionFee")))
 
         if fee_coin == "BGB" and fee_raw > 0 and bgb_saved == 0:
             r_cfg = sym_rates.get(sym_f, {})
@@ -234,6 +247,9 @@ def _build_bitget_closed_records(
                 "id": str(fl.get("execId") or fl.get("tradeId") or ""),
                 "order_id": oid_f,
                 "pos_side": pos_side_f,
+                "position_id": str(fl.get("positionId") or order_by_id.get(oid_f, {}).get("positionId") or ""),
+                "side": str(fl.get("side") or "").lower(),
+                "fee_known": fee_known,
                 "ts_ms": ts_ms,
                 "ts_sec": ts_s,
                 "qty": q_f,
@@ -245,12 +261,12 @@ def _build_bitget_closed_records(
                 "bgb_qty": bgb_qty,
                 "bgb_saved": bgb_saved,
                 "role": "maker" if is_m else "taker",
-                "trade_side": str(fl.get("tradeSide") or fl.get("side") or "").lower(),
+                "trade_side": trade_side,
             }
         )
 
     for s_list in fills_by_sym.values():
-        s_list.sort(key=lambda x: (x["ts_ms"], x["id"]))
+        s_list.sort(key=lambda x: (x["ts_ms"], dec(x["id"]), x["id"]))
 
     def _classify_bg_leg_mode(flist: list[dict[str, Any]], is_exit: bool) -> tuple[str, str]:
         if is_exit and flist:
@@ -304,15 +320,31 @@ def _build_bitget_closed_records(
         en_fills: list[dict[str, Any]] = []
         ex_fills: list[dict[str, Any]] = []
         for f_cand in fills_by_sym.get(raw_sym, []):
+            if pos.get("positionId") and f_cand["position_id"] and f_cand["position_id"] != str(pos["positionId"]):
+                continue
             if f_cand["id"] and f_cand["id"] in claimed_fill_ids:
                 continue
             if f_cand["pos_side"] and f_cand["pos_side"] not in ("net", "both") and f_cand["pos_side"] != hold_side:
                 continue
-            if f_cand["ts_sec"] < (t_open - 3.0) or f_cand["ts_sec"] > (t_close + 3.0):
+            matched_pid = bool(pos.get("positionId") and f_cand["position_id"])
+            # The explicit position link also supports a slight history/reporting timestamp skew.
+            tolerance_ms = 3000 if matched_pid else 0
+            if not (t_open_ms - tolerance_ms <= f_cand["ts_ms"] <= t_close_ms + tolerance_ms):
+                continue
+            trade_side = f_cand["trade_side"]
+            if "open" in trade_side or "close" in trade_side:
+                is_exit = "close" in trade_side
+                if f_cand["side"] in {"buy", "sell"}:
+                    buy_expected = (side_str == "LONG") != is_exit
+                    if (f_cand["side"] == "buy") != buy_expected:
+                        continue
+            elif f_cand["side"] in {"buy", "sell"}:
+                is_exit = (f_cand["side"] == "sell") == (side_str == "LONG")
+            else:
                 continue
             if f_cand["id"]:
                 claimed_fill_ids.add(f_cand["id"])
-            if "close" in f_cand["trade_side"]:
+            if is_exit:
                 ex_fills.append(f_cand)
             else:
                 en_fills.append(f_cand)
@@ -339,7 +371,7 @@ def _build_bitget_closed_records(
 
         pos_book_target = (
             net_profit
-            if net_profit != 0
+            if reported_amount(pos.get("netProfit")) is not None
             else (
                 pnl_gross
                 + fund_pnl
@@ -377,6 +409,7 @@ def _build_bitget_closed_records(
                 "ex_bgb_sav": ex_bgb_sav_tot,
                 "en_share": Decimal("1"),
                 "pnl_gross": pnl_gross,
+                "reported_gross": next((pos[k] for k in ("cumRealisedPnl", "pnl") if reported_amount(pos.get(k)) is not None), None),
                 "fund_pnl": fund_pnl,
                 "book_pnl": pos_book_target,
             }
@@ -586,17 +619,25 @@ def _build_bitget_closed_records(
             share_leg=Decimal("1"),
             sl_info=ex_sl,
         )
+        fill_inputs = [
+            {"time_ms": x["ts_ms"], "qty": x["qty"], "price": x["px"], "is_entry": is_entry,
+             "order_id": x["order_id"],
+             "fill_id": x["id"], "fee_usd": x["fee_usd"] if x["fee_known"] else None,
+             "gross_pnl_usd": None if is_entry else x["exec_pnl"]}
+            for is_entry, items in ((True, dr["en_fills"]), (False, dr["ex_fills"])) for x in items
+        ]
+        fill_inputs.sort(key=lambda f: (f["time_ms"], dec(f["fill_id"]), f["fill_id"]))
+        events, order_pnl = position_fill_accounting(
+            fill_inputs, side=dr["side_str"], closed_qty=dr["qty_closed"], gross_pnl=dr["reported_gross"],
+        )
         bg_exit_batches: list[dict[str, Any]] = []
         raw_c_groups = sorted(
             dr.get("close_groups") or (),
             key=lambda pair: max(x["ts_ms"] for x in pair[1]),
         )
-        if len(raw_c_groups) > 1:
-            ex_tot_q_bg = sum((x["qty"] for _, fl in raw_c_groups for x in fl), Decimal("0")) or dr["qty_closed"]
+        if len(raw_c_groups) > 1 and all(x["order_id"] for x in dr["ex_fills"]):
             ex_sr_rate = (ex_sr / dr["ex_fee"]) if dr["ex_fee"] > 0 else Decimal("0")
-            rem_bg_gpnl = dr["pnl_gross"]
-            for b_i, (_, b_flist) in enumerate(raw_c_groups):
-                b_last = b_i == len(raw_c_groups) - 1
+            for b_i, (order_id, b_flist) in enumerate(raw_c_groups):
                 b_q = sum((x["qty"] for x in b_flist), Decimal("0"))
                 b_not = sum((x["notional"] for x in b_flist), Decimal("0"))
                 b_px = (b_not / b_q) if b_q > 0 else dr["ex_px"]
@@ -618,18 +659,15 @@ def _build_bitget_closed_records(
                     share_leg=Decimal("1"),
                     sl_info=b_sl,
                 )
-                if b_last:
-                    b_gpnl = rem_bg_gpnl
-                else:
-                    raw_epnl = sum((x["exec_pnl"] for x in b_flist), Decimal("0"))
-                    b_gpnl = raw_epnl if raw_epnl != 0 else (dr["pnl_gross"] * (b_q / ex_tot_q_bg) if ex_tot_q_bg > 0 else Decimal("0"))
-                    rem_bg_gpnl -= b_gpnl
+                b_gpnl = order_pnl.get(order_id)
                 bg_exit_batches.append(
                     {
                         **b_leg_dict,
+                        "order_id": b_flist[0]["order_id"],
                         "batch_index": b_i + 1,
                         "qty": f2(b_q, 6),
-                        "gross_pnl_usd": f2(b_gpnl, 4),
+                        "gross_pnl_usd": f2(b_gpnl, 4) if b_gpnl is not None else None,
+                        "time_ms": max(x["ts_ms"] for x in b_flist),
                     }
                 )
         tot_fee = dr["en_fee"] + dr["ex_fee"]
@@ -666,6 +704,8 @@ def _build_bitget_closed_records(
                 "entry_leg": en_leg,
                 "exit_leg": ex_leg,
                 "exit_batches": bg_exit_batches,
+                "position_events": events,
+                "rebates_by_day": dated_cash([(norm_ms(en_sl["reb_ts"]), en_sr), (norm_ms(ex_sl["reb_ts"]), ex_sr)]),
                 "gross_pnl_usd": f2(dr["pnl_gross"], 4),
                 "funding_pnl_usd": f2(dr["fund_pnl"], 4),
                 "total_fee_usd": f2(tot_fee, 4),
@@ -687,6 +727,38 @@ def _build_bitget_closed_records(
                 "note": str(j_entry.get("note") or ""),
             }
         )
+
+    for pos in open_positions:
+        raw_symbol = str(pos.get("symbol") or "").upper()
+        side = str(pos.get("holdSide") or pos.get("posSide") or "").upper()
+        if side not in {"LONG", "SHORT"} or not raw_symbol.endswith(("USDT", "USDC")):
+            continue
+        pid = str(pos.get("positionId") or "")
+        fills = []
+        for item in fills_by_sym.get(raw_symbol, ()):
+            if (item["id"] in claimed_fill_ids or (pid and item["position_id"] and pid != item["position_id"])
+                    or item["pos_side"] not in ("", "both", "net", side.lower())):
+                continue
+            kind = item["trade_side"]
+            entry = "open" in kind if "open" in kind or "close" in kind else None
+            if item["side"] in ("buy", "sell"):
+                from_side = (item["side"] == "buy") == (side == "LONG")
+                if entry is not None and entry != from_side:
+                    continue
+                entry = from_side
+            if entry is None:
+                continue
+            fills.append({"time_ms": item["ts_ms"], "is_entry": entry, "qty": item["qty"],
+                          "price": item["px"], "fee_usd": item["fee_usd"] if item["fee_known"] else None,
+                          "gross_pnl_usd": item["exec_pnl"], "role": item["role"],
+                          "order_id": item["order_id"]})
+        record = open_reduction_record(venue="bitget", symbol=normalize_contract_symbol(raw_symbol),
+                                       side=side, fills=fills, remaining_qty=abs(dec(pos.get("total") or pos.get("size") or pos.get("pos"))),
+                                       avg_entry_price=pos.get("openPriceAvg") or pos.get("avgPrice"),
+                                       journals=journals, history=records)
+        if record:
+            records.append(record)
+    carry_open_reduction_notes(records, "bitget", journals)
 
     bg_meta = {
         "live_rebate_rate": bg_live_rebate_rate,
@@ -936,6 +1008,7 @@ def build_bitget_venue_ledger(
 
     bg_all_records, bg_meta = _build_bitget_closed_records(
         bitget_positions_history=pos_hist,
+        open_positions=bg_lb.get("futures_positions") or (),
         bitget_fills=fills,
         bitget_orders=orders,
         bitget_bills=bills,
@@ -1149,10 +1222,9 @@ def build_bitget_venue_ledger(
     daily_pnl: dict[str, Decimal] = defaultdict(Decimal)
     daily_comp: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     for bg_r in bg_closed_records:
-        d_bg = bg_r["close_date_bj"]
-        v_bg = dec(bg_r["realized_net_pnl_usd"])
-        daily_pnl[d_bg] += v_bg
-        daily_comp[d_bg]["bitget_futures"] += v_bg
+        for day, amount in trade_daily_amounts(bg_r, dec(bg_r["realized_net_pnl_usd"])).items():
+            daily_pnl[day] += amount
+            daily_comp[day]["bitget_futures"] += amount
     for bg_sr in bg_sess_records:
         d_bs = bg_sr["close_date_bj"]
         v_bs = dec(bg_sr["realized_net_pnl_usd"])
