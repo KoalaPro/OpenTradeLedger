@@ -221,8 +221,9 @@ describe('Stocks & Spot Main-Page Detail Modals, Perp Separation & Blank-Page Pr
     expect(screen.queryByTestId('stock-detail-open-ext-btn')).toBeNull()
 
     // Close stock modal via Escape, then click WLFI spot row -> opens spot detail modal!
-    fireEvent.keyDown(window, { key: 'Escape' })
-    fireEvent.click(screen.getByRole('button', {name: 'WLFI'}))
+    fireEvent.keyDown(stockModal, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('stock-holding-detail-modal')).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'WLFI' }))
     const spotModal = await screen.findByTestId('spot-holding-detail-modal')
     expect(spotModal.textContent).toContain('WLFI')
     expect(spotModal.textContent).toContain('60.570078')
