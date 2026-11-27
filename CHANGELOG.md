@@ -6,6 +6,11 @@ All notable changes to **OpenTradeLedger (交易账本)** are documented in this
 
 ## [Unreleased]
 
+- **全 11 家交易所及子账户统一 1:1 美股代币识别与历史死代码瘦身**：
+  - 在 `adapters/stock_channels.py` 新增统一兜底提升函数 `promote_spot_stock_tokens_from_wallets`，并接入 `core/ledger_service.py` 逐账号聚合管线（位于多账号盖章 `stamp_bundle_for_account` 之前）：覆盖 KuCoin、BingX、HTX、Hyperliquid 及全部 11 家交易所的独立子账户与资金账户，按原始交易所协议代码识别 `xStocks (*X)`、`Ondo (*ON)`、`*STOCK`、Bitget `rStock` 与币安 `bStock`，自动从现货列表归入「股票与代币账户」且绝不重复统计，全平台维持 `0.00 U` 闭环核账。
+  - OKX 与 Bybit 统一切换至 `classify_spot_stock_token`（140 只美股/ETF 词典 + 加密币防误判排除表 + 中文公司名），同步保留平台原生持仓均价与浮盈，移除旧版 45 词重复函数 `is_tokenized_stock_symbol`；补齐 BingX `test_connection` 主/子账户角色自动识别（`/openApi/subAccount/v1/list`），并将 11 家适配器 `tokenized_stocks` 能力标记全部对齐。
+  - 彻底清理 `adapters/stock_channels.py` 中 830+ 行已无调用的历史遗留旧聚合函数 `build_multi_exchange_stock_ledger` 与 `EXCHANGE_LABELS_ZH`，功能扩至全平台与子账户的同时净减生产代码 740+ 行。
+
 - Bark 更换设备时先验证投递回执，验证失败保留原设备。个人合约账户按本轮新增的减仓或平仓合并提醒，首次导入和重复同步保持静默。修正币安开仓误报和 BingX 保本减仓漏报。
 - 修正分批手续费的方向、币种和逐笔精度。KuCoin 区分张数和币数，易币区分成交返费、资金费和其它结算调整。缺少折算凭据时，交割详情、汇总和复盘标明未知，有交易所原生净额的记录仍显示该金额。
 - 合约时间线按实际成交展示费用和挂吃属性，跨日委托在各自日期列示。手机列表首屏可见净盈亏。隐私模式覆盖个人持仓均价，日历使用账户名称，离线汇率标明来源，持仓、归因和逐笔展开支持键盘操作。

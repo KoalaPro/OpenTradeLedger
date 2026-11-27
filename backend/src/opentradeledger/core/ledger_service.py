@@ -12,6 +12,7 @@ from typing import Any
 
 from opentradeledger.adapters.base import BaseExchangeAdapter, VenueLedgerBundle
 from opentradeledger.adapters.registry import AdapterRegistry
+from opentradeledger.adapters.stock_channels import promote_spot_stock_tokens_from_wallets
 from opentradeledger.config import UserPreferences
 from opentradeledger.core.account_partition import (
     format_account_display_names,
@@ -660,6 +661,7 @@ class LedgerService:
             )
             saved_role = str((cred_rec.account_role if cred_rec else "") or raw_sc.get_kv("account_role") or "")
             saved_label = str((cred_rec.label if cred_rec else "") or raw_sc.get_kv("account_label") or "")
+            promote_spot_stock_tokens_from_wallets(bundle, adapter_id=ad_id)
             stamp_bundle_for_account(
                 bundle,
                 account_id=acct_id,

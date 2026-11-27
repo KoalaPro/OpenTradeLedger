@@ -540,3 +540,249 @@ def test_unbind_keep_history_archives_venue_and_allows_later_purge_or_rebind(tmp
     assert dash_after_purge["reconciliation"]["residual_usd"] == 0.0
     assert len(dash_after_purge["trades"]) == len(ALL_SEVEN_VENUES) - 1
     assert all(e["venue_id"] != "gate" for e in dash_after_purge["exchanges"])
+
+
+def test_unified_tokenized_stock_promotion_all_venues_and_subaccounts(tmp_path: Path) -> None:
+    """All 11 exchanges + sub-accounts share stock_channels.py recognition with 0.00 residual and zero double-counting."""
+    store = LedgerStore(tmp_path)
+    vault = CredentialVault(tmp_path)
+    reg = build_default_registry()
+
+    # 1. KuCoin primary + sub-account both holding NVDAX + deceptive crypto SNX (must NOT be misclassified)
+    store.upsert_plugin_snapshot(
+        "kucoin",
+        {
+            "futures_overview": {"accountEquity": 1000.0, "availableBalance": 1000.0},
+            "spot_accounts": [
+                {"type": "trade", "currency": "NVDAX", "balance": "2.0"},
+                {"type": "trade", "currency": "SNX", "balance": "10.0"},
+            ],
+            "deposits": [{"walletTxId": "kc_d1", "currency": "USDT", "amount": "1200.00", "createdAt": 1732000000000}],
+            "withdrawals": [],
+            "positions": [],
+            "history_positions": [],
+            "fills": [],
+            "tx_history": [],
+            "tickers": {"NVDAX": 130.0, "SNX": 2.0},
+        },
+    )
+    store.venue_scope("kucoin__sub1").set_kv("account_role", "subaccount")
+    store.upsert_plugin_snapshot(
+        "kucoin__sub1",
+        {
+            "futures_overview": {"accountEquity": 500.0, "availableBalance": 500.0},
+            "spot_accounts": [{"type": "trade", "currency": "NVDAX", "balance": "1.5"}],
+            "deposits": [{"walletTxId": "kcs_d1", "currency": "USDT", "amount": "695.00", "createdAt": 1732000000000}],
+            "withdrawals": [],
+            "positions": [],
+            "history_positions": [],
+            "fills": [],
+            "tx_history": [],
+            "tickers": {"NVDAX": 130.0},
+        },
+    )
+
+    # 2. BingX holding TSLAX + deceptive crypto GMX
+    store.upsert_plugin_snapshot(
+        "bingx",
+        {
+            "swap_balances": [{"asset": "USDT", "equity": "800.00", "availableMargin": "800.00"}],
+            "spot_balances": [
+                {"asset": "TSLAX", "free": "1.0", "locked": "0"},
+                {"asset": "GMX", "free": "1.0", "locked": "0"},
+            ],
+            "deposits": [{"id": "bx_d1", "coin": "USDT", "amount": "1000.00", "insertTime": 1732000000000}],
+            "withdrawals": [],
+            "positions": [],
+            "fills": [],
+            "income": [],
+            "tickers": {"TSLAX": 250.0, "GMX": 30.0},
+        },
+    )
+
+    # 3. HTX holding AAPLON + deceptive crypto NEON
+    store.upsert_plugin_snapshot(
+        "htx",
+        {
+            "swap_accounts": [{"margin_balance": "700.00", "margin_available": "700.00"}],
+            "spot_balances": [
+                {"currency": "aaplon", "type": "trade", "balance": "2.0"},
+                {"currency": "neon", "type": "trade", "balance": "50.0"},
+            ],
+            "deposits": [{"id": "htx_d1", "currency": "usdt", "amount": "1100.00", "state": "safe", "created-at": 1732000000000}],
+            "withdrawals": [],
+            "positions": [],
+            "matches": [],
+            "financials": [],
+            "tickers": {"AAPLON": 220.0, "NEON": 1.0},
+        },
+    )
+
+    # 4. Hyperliquid holding QQQSTOCK in on-chain spot
+    store.upsert_plugin_snapshot(
+        "hyperliquid",
+        {
+            "wallet_address": "0x" + "2" * 40,
+            "clearinghouse": {"marginSummary": {"accountValue": "600.00", "withdrawable": "600.00"}, "assetPositions": []},
+            "spot": {"balances": [{"coin": "QQQSTOCK", "total": "1.0"}]},
+            "tickers": {"QQQSTOCK": 500.0},
+            "fills": [],
+            "funding_history": [],
+            "ledger_updates": [{"hash": "0xhl2", "time": 1732000000000, "delta": {"type": "deposit", "usdc": "1100.00"}}],
+        },
+    )
+
+    # 5. OKX unified COSTX (from 140-ticker dict, preserves openAvgPx PnL) + funding NVDAX (promoted centrally)
+    store.upsert_plugin_snapshot(
+        "okx",
+        {
+            "balances": [
+                {
+                    "totalEq": "1800.00",
+                    "details": [
+                        {"ccy": "USDT", "availBal": "900.00", "eq": "900.00", "eqUsd": "900.00"},
+                        {"ccy": "COSTX", "eq": "1.0", "eqUsd": "900.00", "openAvgPx": "850.00"},
+                    ],
+                }
+            ],
+            "funding": [{"ccy": "NVDAX", "bal": "1.0"}],
+            "deposits": [{"depId": "okx_d1", "ccy": "USDT", "amt": "1800.00", "state": "2"}],
+            "withdrawals": [],
+            "positions_history": [],
+            "fills": [],
+            "tickers": {"COSTX": 900.0, "NVDAX": 130.0},
+            "observed_rebate_ratio": 0.0,
+        },
+    )
+
+    # 6. Bybit unified VOOX (from 140-ticker dict, preserves avgPrice PnL) + funding TSLAX (promoted centrally)
+    store.upsert_plugin_snapshot(
+        "bybit",
+        {
+            "wallet": {
+                "list": [
+                    {
+                        "totalEquity": "1500.00",
+                        "totalAvailableBalance": "1000.00",
+                        "coin": [
+                            {"coin": "USDT", "walletBalance": "1000.0", "usdValue": "1000.0"},
+                            {"coin": "VOOX", "walletBalance": "1.0", "usdValue": "500.0", "avgPrice": "480.0"},
+                        ],
+                    }
+                ]
+            },
+            "funding": {"balance": [{"coin": "TSLAX", "walletBalance": "1.0", "usdValue": "250.0"}]},
+            "deposits": [{"id": "byb_d1", "coin": "USDT", "amount": "1700.00"}],
+            "withdrawals": [],
+            "closed_pnl": [],
+            "executions": [],
+            "tickers": {"VOOX": 500.0, "TSLAX": 250.0},
+            "observed_rebate_ratio": 0.0,
+        },
+    )
+
+    # 7. Bitget sub-account holding exchange-specific Bitget rStock (rAAPL) in funding wallet
+    bg_sub = store.venue_scope("bitget__sub1")
+    bg_sub.set_kv("account_role", "subaccount")
+    bg_sub.set_kv(
+        "live_bundle",
+        {
+            "uid": "bg_sub_uid",
+            "uta_assets": {"accountEquity": "400.00", "available": "400.00"},
+            "funding_assets": [{"coin": "rAAPL", "available": "2.0"}],
+            "spot_tickers": {"RAAPL": 220.0},
+        },
+    )
+    bg_sub.upsert_records(
+        "bills",
+        [{"id": "bgs_dep_1", "_source": "v3_deposit", "coin": "USDT", "amount": "840.00", "status": "success", "ts": 1732000000000}],
+        key_fn=lambda r: str(r["id"]),
+        ts_fn=lambda r: float(r["ts"]),
+    )
+
+    svc = LedgerService(store, vault, reg, default_demo_mode=False)
+    dash = svc.get_dashboard(range_key="all")
+
+    assert dash["reconciliation"]["residual_usd"] == 0.0
+    holdings_by_key = {(h["venue_id"], h["symbol"]): h for h in dash["extensions"]["stocks"]["holdings"]}
+
+    # All 11 adapters declare tokenized_stocks=True
+    assert all(m.capabilities.tokenized_stocks is True for m in reg.list_all())
+
+    # KuCoin primary & sub-account both recognized cleanly without colliding
+    assert holdings_by_key[("kucoin", "NVDAX")]["name"] == "NVIDIA 英伟达"
+    assert holdings_by_key[("kucoin", "NVDAX")]["market_value_usd"] == pytest.approx(260.0)
+    assert holdings_by_key[("kucoin__sub1", "NVDAX")]["market_value_usd"] == pytest.approx(195.0)
+    assert "子账户" in holdings_by_key[("kucoin__sub1", "NVDAX")]["venue_name_zh"]
+
+    # BingX, HTX, Hyperliquid promoted with localized names
+    assert holdings_by_key[("bingx", "TSLAX")]["name"] == "Tesla 特斯拉"
+    assert holdings_by_key[("htx", "AAPLON")]["name"] == "Apple 苹果"
+    assert holdings_by_key[("hyperliquid", "QQQSTOCK")]["name"] == "Invesco QQQ 纳指100 ETF"
+
+    # OKX & Bybit unified keep native cost basis & get Chinese names, funding tokens promoted without duplicating unified
+    assert holdings_by_key[("okx", "COSTX")]["name"] == "Costco 开市客"
+    assert holdings_by_key[("okx", "COSTX")]["pnl_usd"] == pytest.approx(50.0)
+    assert holdings_by_key[("okx", "NVDAX")]["market_value_usd"] == pytest.approx(130.0)
+    assert holdings_by_key[("bybit", "VOOX")]["name"] == "Vanguard S&P 500 ETF"
+    assert holdings_by_key[("bybit", "VOOX")]["pnl_usd"] == pytest.approx(20.0)
+    assert holdings_by_key[("bybit", "TSLAX")]["market_value_usd"] == pytest.approx(250.0)
+    assert len([h for h in dash["extensions"]["stocks"]["holdings"] if h["venue_id"] == "okx"]) == 2
+    assert len([h for h in dash["extensions"]["stocks"]["holdings"] if h["venue_id"] == "bybit"]) == 2
+
+    # Bitget sub-account preserves BITGET exchange code for rStock (rAAPL)
+    assert holdings_by_key[("bitget__sub1", "RAAPL")]["name"] == "Apple 苹果"
+    assert "子账户" in holdings_by_key[("bitget__sub1", "RAAPL")]["venue_name_zh"]
+
+    # Promoted stock tokens must NOT appear in spot_holdings; deceptive crypto tokens MUST remain in spot_holdings
+    spot_syms = {(s["venue_id"], s["asset"]) for s in dash["spot_holdings"]}
+    for promoted_key in holdings_by_key:
+        assert promoted_key not in spot_syms
+    assert ("kucoin", "SNX") in spot_syms
+    assert ("bingx", "GMX") in spot_syms
+    assert ("htx", "NEON") in spot_syms
+
+    expected_stocks_eq = round(sum(float(h["market_value_usd"]) for h in holdings_by_key.values()), 2)
+    assert dash["extensions"]["stocks"]["equity_usd"] == pytest.approx(expected_stocks_eq, abs=0.02)
+    assert dash["equity_breakdown"]["stocks_equity_usd"] == pytest.approx(expected_stocks_eq, abs=0.02)
+
+
+@pytest.mark.asyncio
+async def test_bingx_test_connection_detects_master_and_subaccount(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BingxAdapter.test_connection probes /openApi/subAccount/v1/list to classify master vs subaccount."""
+    from opentradeledger.adapters.registry import BingxAdapter
+    from opentradeledger.security.vault import ExchangeCredentialRecord
+
+    adapter = BingxAdapter()
+    cred = ExchangeCredentialRecord(venue_id="bingx", api_key="k", api_secret="s")
+
+    class _FakeBingxClient:
+        def __init__(self, *, is_sub: bool) -> None:
+            self._is_sub = is_sub
+
+        async def get_swap_balance(self) -> list[dict]:
+            return [{"asset": "USDT", "equity": "100"}]
+
+        async def get_uid(self) -> str:
+            return "99002" if self._is_sub else "99001"
+
+        async def request_readonly(self, method: str, path: str, params=None):
+            assert method == "GET" and path == "/openApi/subAccount/v1/list"
+            if self._is_sub:
+                raise RuntimeError("BingX GET /openApi/subAccount/v1/list code=100400: sub-account has no permission")
+            return {"subAccountList": []}
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(adapter, "create_client", lambda _c: _FakeBingxClient(is_sub=False))
+    res_master = await adapter.test_connection(cred)
+    assert res_master["remote_uid"] == "99001"
+    assert res_master["account_role"] == "master"
+
+    monkeypatch.setattr(adapter, "create_client", lambda _c: _FakeBingxClient(is_sub=True))
+    res_sub = await adapter.test_connection(cred)
+    assert res_sub["remote_uid"] == "99002"
+    assert res_sub["account_role"] == "subaccount"
+
+

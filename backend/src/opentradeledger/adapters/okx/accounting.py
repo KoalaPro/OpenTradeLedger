@@ -16,6 +16,7 @@ from opentradeledger.adapters.base import (
 from opentradeledger.adapters.okx.contracts import contract_quantity, instrument_at
 from opentradeledger.adapters.okx.client import is_okx_trading_rebate, normalize_okx_closed_trades, okx_fill_credit_ids
 from opentradeledger.adapters.okx.client import validate_snapshot_funding
+from opentradeledger.adapters.stock_channels import classify_spot_stock_token
 from opentradeledger.core.venue_primitives import (
     STABLECOINS,
     build_spot_wallet_balances,
@@ -26,7 +27,6 @@ from opentradeledger.core.venue_primitives import (
     fmt_ms,
     merge_legacy_journal_entries,
     norm_ms,
-    is_tokenized_stock_symbol,
 )
 
 if TYPE_CHECKING:
@@ -84,7 +84,8 @@ def build_okx_venue_ledger(
             if ccy in {"USDT", "USDC"}:
                 available_usd += float(d.get("availBal") or 0.0)
             raw_spot_rows.append((ccy, q, eq_u, "UNIFIED"))
-            if is_tokenized_stock_symbol(ccy):
+            t_info = classify_spot_stock_token(ccy, exchange="OKX")
+            if t_info is not None:
                 mv_stk = eq_u or _coin_usd(ccy, q)
                 if q > 0 and mv_stk >= 0.5:
                     cur_px = mv_stk / q
@@ -97,7 +98,7 @@ def build_okx_venue_ledger(
                             "venue_name": meta.display_name,
                             "venue_name_zh": meta.display_name_zh,
                             "symbol": ccy,
-                            "name": ccy,
+                            "name": t_info["name"],
                             "channel": "1:1 Stock Token",
                             "channel_zh": "1:1美股代币",
                             "shares": round(q, 6),

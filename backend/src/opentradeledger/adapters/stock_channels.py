@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from typing import Any, Mapping, Sequence
+from math import isfinite
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from opentradeledger.adapters.base import VenueLedgerBundle
 
 TZ_BEIJING = timezone(timedelta(hours=8))
-
-EXCHANGE_LABELS_ZH: dict[str, str] = {
-    "GATE": "Gate",
-    "BITGET": "Bitget",
-    "BINANCE": "币安",
-    "MEXC": "MEXC",
-    "EASICOIN": "易币",
-}
 
 US_EQUITY_TICKERS: dict[str, str] = {
     "AAPL": "Apple 苹果",
@@ -494,832 +489,91 @@ def reconstruct_spot_cost_basis(
     }
 
 
-def build_multi_exchange_stock_ledger(
+def promote_spot_stock_tokens_from_wallets(
+    bundle: "VenueLedgerBundle",
     *,
-    gate_live_bundle: Mapping[str, Any],
-    gate_stock_deals: Sequence[Mapping[str, Any]],
-    gate_stock_transactions: Sequence[Mapping[str, Any]],
-    bitget_live_bundle: Mapping[str, Any] | None = None,
-    binance_live_bundle: Mapping[str, Any] | None = None,
-    mexc_live_bundle: Mapping[str, Any] | None = None,
-    mexc_transfers: Sequence[Mapping[str, Any]] = (),
-    easicoin_live_bundle: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Aggregate real US/HK stocks & 1:1 tokenized spot stocks across all 5 exchanges."""
-    positions: list[dict[str, Any]] = []
-    deals: list[dict[str, Any]] = []
-    transactions: list[dict[str, Any]] = []
+    adapter_id: str,
+) -> int:
+    """Promote 1:1 tokenized stock spot balances into `bundle.stocks.holdings` across any exchange/sub-account without double-counting."""
+    source_rows = bundle.spot_wallet_balances or bundle.spot_holdings
+    if not source_rows:
+        return 0
 
-    spot_stock_val_by_ex: dict[str, Decimal] = defaultdict(Decimal)
-    stock_net_pnl_by_ex: dict[str, Decimal] = defaultdict(Decimal)
-    isolated_stock_equity_by_ex: dict[str, Decimal] = defaultdict(Decimal)
-    platform_equity_by_ex: dict[str, Decimal] = defaultdict(Decimal)
-    total_fees_usd = Decimal("0")
-    total_position_pnl_usd = Decimal("0")
+    ex_code = (adapter_id or bundle.venue_id or "").strip().upper()
+    existing_syms = {
+        str(h.get("symbol") or "").strip().upper()
+        for h in bundle.stocks.holdings
+        if isinstance(h, Mapping)
+    }
 
-    def _append_spot_token_holding(
-        *,
-        ex_code: str,
-        token_info: Mapping[str, str],
-        qty: Decimal,
-        live_val_usd: Decimal,
-        live_px_usd: Decimal,
-        raw_fills: Sequence[Mapping[str, Any]],
-        quote_map: Mapping[str, Any] | None = None,
-    ) -> None:
-        nonlocal total_fees_usd, total_position_pnl_usd
-        if qty <= 0:
-            return
-        px_use = live_px_usd if live_px_usd > 0 else ((live_val_usd / qty) if live_val_usd > 0 else Decimal("0"))
-        val_use = live_val_usd if live_val_usd > 0 else (qty * px_use)
-        tok_sym = token_info["token_symbol"]
-        und_sym = token_info["underlying"]
-        recon = reconstruct_spot_cost_basis(
-            fills=raw_fills,
-            current_qty=qty,
-            current_price=px_use,
-            token_symbol=tok_sym,
-            quote_price_map=quote_map,
-        )
-        spot_stock_val_by_ex[ex_code] += val_use
-        platform_equity_by_ex[ex_code] += val_use
-        stock_net_pnl_by_ex[ex_code] += recon["net_pnl_usd"]
-        total_fees_usd += recon["total_fee_usd"]
-        total_position_pnl_usd += recon["unrealized_pnl_usd"]
-
-        positions.append(
-            {
-                "platform": ex_code,
-                "platform_zh": EXCHANGE_LABELS_ZH.get(ex_code, ex_code),
-                "channel": "SPOT_TOKEN",
-                "channel_zh": "1:1 美股代币",
-                "symbol": tok_sym,
-                "underlying_symbol": und_sym,
-                "name": token_info["name"],
-                "exchange": "US",
-                "trade_status": "SPOT_1_TO_1",
-                "shares": _f2(qty, 6),
-                "avg_cost_usd": _f2(recon["avg_cost_usd"], 4),
-                "current_price_usd": _f2(px_use, 4),
-                "market_value_usd": _f2(val_use, 2),
-                "pnl_usd": _f2(recon["unrealized_pnl_usd"], 2),
-                "pnl_pct": _f2(recon["pnl_pct"], 2),
-            }
-        )
-        for pf in recon["parsed_fills"]:
-            ts_s = _norm_sec(pf["time_ms"])
-            deals.append(
-                {
-                    "id": f"{ex_code.lower()}_sp_{pf['id']}",
-                    "order_id": pf["order_id"],
-                    "platform": ex_code,
-                    "platform_zh": EXCHANGE_LABELS_ZH.get(ex_code, ex_code),
-                    "channel_zh": "1:1 美股代币",
-                    "side_zh": pf["side_zh"],
-                    "symbol": tok_sym,
-                    "underlying_symbol": und_sym,
-                    "role_zh": f"{pf['side_zh']} · {pf['role_zh']}",
-                    "price_usd": _f2(pf["price"], 4),
-                    "shares": _f2(pf["qty"], 6),
-                    "value_usd": _f2(pf["qty"] * pf["price"], 2),
-                    "fee_usd": _f2(pf["fee_usd"], 4),
-                    "_time_ms": pf["time_ms"],
-                    "time_bj": _fmt_bj(ts_s) if ts_s > 0 else "—",
-                }
-            )
-
-    # ── 1. Gate: Real Stock Sub-Account + Spot xStocks / Ondo ──────────────────
-    gate_stk_assets = gate_live_bundle.get("stock_assets") or {}
-    gate_wt_details = ((gate_live_bundle.get("wallet_total") or {}).get("details") or {})
-    gate_real_eq = _dec(gate_stk_assets.get("equity") or (gate_wt_details.get("tradfi_spot") or {}).get("amount"))
-    platform_equity_by_ex["GATE"] += gate_real_eq
-    total_position_pnl_usd += _dec(gate_stk_assets.get("position_pnl"))
-
-    for sp in gate_live_bundle.get("stock_positions") or []:
-        vol = _dec(sp.get("volume"))
-        if vol <= 0:
+    agg: dict[str, list[Any]] = {}
+    for row in source_rows:
+        if not isinstance(row, Mapping):
             continue
-        cost_px = _dec(sp.get("avg_cost_price"))
-        pos_pnl = _dec(sp.get("position_pnl"))
-        cost_val = vol * cost_px
-        mkt_val = cost_val + pos_pnl
-        cur_px = (mkt_val / vol) if vol > 0 else cost_px
-        mkt_code = str(sp.get("exchange") or "us").upper()
-        chan_lbl = "港股正股" if mkt_code == "HK" else "美股正股"
-        sym_g = str(sp.get("symbol") or "").strip().upper()
-        positions.append(
-            {
-                "platform": "GATE",
-                "platform_zh": "Gate",
-                "channel": "REAL_STOCK",
-                "channel_zh": chan_lbl,
-                "symbol": sym_g,
-                "underlying_symbol": sym_g,
-                "name": str(sp.get("symbol_desc") or US_EQUITY_TICKERS.get(sym_g) or sym_g),
-                "exchange": mkt_code,
-                "trade_status": str(sp.get("trade_status") or ""),
-                "shares": _f2(vol, 4),
-                "avg_cost_usd": _f2(cost_px, 4),
-                "current_price_usd": _f2(cur_px, 4),
-                "market_value_usd": _f2(mkt_val, 2),
-                "pnl_usd": _f2(pos_pnl, 2),
-                "pnl_pct": _f2(_dec(sp.get("pnl_rate")), 2),
-            }
-        )
-
-    for sd in gate_stock_deals:
-        fee = abs(_dec(sd.get("fee")))
-        px = _dec(sd.get("price"))
-        amt = _dec(sd.get("amount") or sd.get("quantity"))
-        total_fees_usd += fee
-        ts_ms = _norm_ms(sd.get("time") or sd.get("create_time"))
-        ts_d = _norm_sec(ts_ms)
-        sym_sd = str(sd.get("symbol") or "").strip().upper()
-        deals.append(
-            {
-                "id": str(sd.get("id") or f"gate_{ts_ms}"),
-                "order_id": str(sd.get("order_id") or ""),
-                "platform": "GATE",
-                "platform_zh": "Gate",
-                "channel_zh": "美股正股",
-                "side_zh": "卖出" if str(sd.get("side") or "").lower() == "sell" else "买入",
-                "symbol": sym_sd,
-                "underlying_symbol": sym_sd,
-                "role_zh": "限价 Maker" if str(sd.get("role") or "").lower() == "maker" else "市价 Taker",
-                "price_usd": _f2(px, 4),
-                "shares": _f2(amt, 4),
-                "value_usd": _f2(_dec(sd.get("value")) or (px * amt), 2),
-                "fee_usd": _f2(fee, 4),
-                "_time_ms": ts_ms,
-                "time_bj": _fmt_bj(ts_d) if ts_d > 0 else "—",
-            }
-        )
-
-    for tx in gate_stock_transactions:
-        ts_ms = _norm_ms(tx.get("time"))
-        ts_t = _norm_sec(ts_ms)
-        transactions.append(
-            {
-                "ref_id": str(tx.get("ref_id") or f"gate_tx_{ts_ms}"),
-                "platform": "GATE",
-                "platform_zh": "Gate",
-                "channel_zh": "美股正股",
-                "_time_ms": ts_ms,
-                "time_bj": _fmt_bj(ts_t),
-                "type": str(tx.get("type") or ""),
-                "type_desc": str(tx.get("type_desc") or tx.get("type") or ""),
-                "symbol": str(tx.get("symbol") or tx.get("asset") or "USDT"),
-                "change": str(tx.get("change") or "0"),
-                "unit": str(tx.get("unit_text") or tx.get("asset") or ""),
-            }
-        )
-
-    gate_uni_bals = ((gate_live_bundle.get("unified") or {}).get("balances") or {})
-    gate_sp_bundle = gate_live_bundle.get("spot_stock_bundle") or {}
-    gate_sp_tickers = gate_sp_bundle.get("tickers") or {}
-    gate_sp_trades = gate_sp_bundle.get("trades") or {}
-    if isinstance(gate_uni_bals, Mapping):
-        for ccy_k, b_obj in gate_uni_bals.items():
-            if not isinstance(b_obj, Mapping):
+        asset_u = str(row.get("asset") or "").strip().upper()
+        if not asset_u or asset_u in existing_syms:
+            continue
+        qty = float(row.get("qty") or 0.0)
+        raw_mv = row.get("market_value_usd")
+        mv = float(raw_mv) if raw_mv is not None else 0.0
+        if not isfinite(qty) or qty <= 0.0 or not isfinite(mv) or mv <= 0.0:
+            continue
+        if asset_u not in agg:
+            t_info = classify_spot_stock_token(asset_u, exchange=ex_code)
+            if t_info is None:
                 continue
-            t_info = classify_spot_stock_token(str(ccy_k), exchange="GATE")
-            if not t_info:
-                continue
-            qty_g = _dec(b_obj.get("available")) + _dec(b_obj.get("freeze") or b_obj.get("locked"))
-            if qty_g <= 0:
-                continue
-            eq_g = _dec(b_obj.get("equity"))
-            px_g = _dec(gate_sp_tickers.get(t_info["token_symbol"])) or ((eq_g / qty_g) if eq_g > 0 else Decimal("0"))
-            val_g = eq_g if eq_g > 0 else (qty_g * px_g)
-            _append_spot_token_holding(
-                ex_code="GATE",
-                token_info=t_info,
-                qty=qty_g,
-                live_val_usd=val_g,
-                live_px_usd=px_g,
-                raw_fills=gate_sp_trades.get(t_info["token_symbol"]) or [],
-            )
+            agg[asset_u] = [0.0, 0.0, t_info]
+        agg[asset_u][0] += qty
+        agg[asset_u][1] += mv
 
-    # ── 2. Bitget: Stock+ Real US Stocks + Spot rTokens / Ondo / xStocks ───────
-    bg_lb = bitget_live_bundle or {}
-    bg_sb = bg_lb.get("stock_bundle") or {}
-    bg_tickers = bg_lb.get("spot_tickers") or {}
-    bg_sp_acc = bg_sb.get("stockplus_account") or {}
-    bg_sp_positions = bg_sb.get("stockplus_positions") or []
-    bg_sp_execs = bg_sb.get("stockplus_executions") or []
-    bg_sp_cfs = bg_sb.get("stockplus_cashflows") or []
-    bg_sp_trs = bg_sb.get("stockplus_transfers") or []
+    if not agg:
+        return 0
 
-    bg_pos_mkt_sum = Decimal("0")
-    bg_pos_unr_sum = Decimal("0")
-    for bp in bg_sp_positions:
-        if not isinstance(bp, Mapping):
+    ex_card = bundle.exchange_card
+    venue_id = str(bundle.venue_id or ex_card.get("venue_id") or adapter_id)
+    venue_name = str(ex_card.get("display_name") or ex_code)
+    venue_name_zh = str(ex_card.get("display_name_zh") or venue_name)
+
+    promoted_rows: list[dict[str, Any]] = []
+    promoted_syms: set[str] = set()
+    promoted_mv_total = 0.0
+    for asset_u, (qty, mv, t_info) in agg.items():
+        if qty <= 0.0 or mv < 0.5:
             continue
-        vol_b = _dec(bp.get("qty") or bp.get("position") or bp.get("holdVol") or bp.get("availableQty") or bp.get("volume"))
-        if vol_b <= 0:
-            continue
-        cost_b = _dec(bp.get("avgCostPrice") or bp.get("openAvgPrice") or bp.get("costPrice") or bp.get("avg_cost_price"))
-        cur_b = _dec(bp.get("marketPrice") or bp.get("lastPrice") or bp.get("currentPrice"))
-        mkt_b = _dec(bp.get("marketValue") or bp.get("positionValue")) or (vol_b * (cur_b or cost_b))
-        if cur_b <= 0 and vol_b > 0:
-            cur_b = mkt_b / vol_b
-        unr_b = _dec(bp.get("unrealizedPnl") or bp.get("unrealisedPnl") or bp.get("positionPnl")) or (mkt_b - vol_b * cost_b)
-        pct_b = _dec(bp.get("unrealizedPnlRate") or bp.get("pnlRate"))
-        if pct_b == 0 and cost_b > 0:
-            pct_b = (unr_b / (vol_b * cost_b)) * Decimal("100")
-        bg_pos_mkt_sum += mkt_b
-        bg_pos_unr_sum += unr_b
-        sym_b = str(bp.get("symbol") or "").strip().upper()
-        positions.append(
+        cur_px = mv / qty
+        mv_2dp = round(mv, 2)
+        promoted_syms.add(asset_u)
+        promoted_mv_total += mv_2dp
+        promoted_rows.append(
             {
-                "platform": "BITGET",
-                "platform_zh": "Bitget",
-                "channel": "REAL_STOCK",
-                "channel_zh": "美股正股",
-                "symbol": sym_b,
-                "underlying_symbol": sym_b,
-                "name": str(bp.get("name") or US_EQUITY_TICKERS.get(sym_b) or sym_b),
-                "exchange": "US",
-                "trade_status": "STOCK_PLUS",
-                "shares": _f2(vol_b, 4),
-                "avg_cost_usd": _f2(cost_b, 4),
-                "current_price_usd": _f2(cur_b, 4),
-                "market_value_usd": _f2(mkt_b, 2),
-                "pnl_usd": _f2(unr_b, 2),
-                "pnl_pct": _f2(pct_b, 2),
-            }
-        )
-
-    bg_sp_eq = Decimal("0")
-    if isinstance(bg_sp_acc, Mapping) and bg_sp_acc:
-        bg_sp_eq = _dec(
-            bg_sp_acc.get("totalEquity")
-            or bg_sp_acc.get("netLiquidationValue")
-            or bg_sp_acc.get("usdtEquity")
-            or bg_sp_acc.get("equity")
-        )
-        if bg_sp_eq <= 0:
-            bg_sp_eq = _dec(bg_sp_acc.get("cashBalance") or bg_sp_acc.get("available")) + bg_pos_mkt_sum
-    elif isinstance(bg_sp_acc, list):
-        for item_a in bg_sp_acc:
-            if isinstance(item_a, Mapping):
-                bg_sp_eq += _dec(item_a.get("totalEquity") or item_a.get("equity") or item_a.get("cashBalance") or item_a.get("balance"))
-    elif bg_pos_mkt_sum > 0:
-        bg_sp_eq = bg_pos_mkt_sum
-
-    bg_exec_fees = Decimal("0")
-    for bex in bg_sp_execs:
-        if not isinstance(bex, Mapping):
-            continue
-        pf = _extract_fill_fields(bex, quote_price_map=bg_tickers)
-        bg_exec_fees += pf["fee_usd"]
-        total_fees_usd += pf["fee_usd"]
-        ts_s = _norm_sec(pf["time_ms"])
-        sym_ex = str(bex.get("symbol") or "").strip().upper()
-        deals.append(
-            {
-                "id": f"bg_sp_{pf['id']}",
-                "order_id": pf["order_id"],
-                "platform": "BITGET",
-                "platform_zh": "Bitget",
-                "channel_zh": "美股正股",
-                "side_zh": pf["side_zh"],
-                "symbol": sym_ex,
-                "underlying_symbol": sym_ex,
-                "role_zh": f"{pf['side_zh']} · Stock+",
-                "price_usd": _f2(pf["price"], 4),
-                "shares": _f2(pf["qty"], 4),
-                "value_usd": _f2(pf["qty"] * pf["price"], 2),
-                "fee_usd": _f2(pf["fee_usd"], 4),
-                "_time_ms": pf["time_ms"],
-                "time_bj": _fmt_bj(ts_s) if ts_s > 0 else "—",
-            }
-        )
-
-    bg_div_sum = Decimal("0")
-    for bcf in bg_sp_cfs:
-        if not isinstance(bcf, Mapping):
-            continue
-        ts_ms = _norm_ms(bcf.get("cTime") or bcf.get("ts") or bcf.get("time"))
-        amt_cf = _dec(bcf.get("amount") or bcf.get("change"))
-        tp_cf = str(bcf.get("type") or bcf.get("bizType") or "CASH_FLOW").upper()
-        if "DIV" in tp_cf:
-            bg_div_sum += amt_cf
-        transactions.append(
-            {
-                "ref_id": f"bg_cf_{bcf.get('id') or ts_ms}",
-                "platform": "BITGET",
-                "platform_zh": "Bitget",
-                "channel_zh": "美股正股",
-                "_time_ms": ts_ms,
-                "time_bj": _fmt_bj(_norm_sec(ts_ms)),
-                "type": tp_cf,
-                "type_desc": "美股现金分红" if "DIV" in tp_cf else tp_cf,
-                "symbol": str(bcf.get("symbol") or bcf.get("currency") or "USD"),
-                "change": f"{amt_cf:+.2f}",
-                "unit": str(bcf.get("currency") or "USD"),
-            }
-        )
-
-    bg_tr_net_in = Decimal("0")
-    has_bg_sp_tr = False
-    for btr in bg_sp_trs:
-        if not isinstance(btr, Mapping):
-            continue
-        amt_tr = abs(_dec(btr.get("amount") or btr.get("size")))
-        if amt_tr <= 0:
-            continue
-        has_bg_sp_tr = True
-        dir_tr = str(btr.get("direction") or btr.get("type") or btr.get("toType") or "IN").upper()
-        is_out = dir_tr in ("OUT", "WITHDRAW", "TO_SPOT", "TO_UTA") or "OUT" in dir_tr
-        bg_tr_net_in += (-amt_tr if is_out else amt_tr)
-        ts_ms = _norm_ms(btr.get("cTime") or btr.get("ts") or btr.get("time"))
-        transactions.append(
-            {
-                "ref_id": f"bg_tr_{btr.get('id') or ts_ms}",
-                "platform": "BITGET",
-                "platform_zh": "Bitget",
-                "channel_zh": "美股正股",
-                "_time_ms": ts_ms,
-                "time_bj": _fmt_bj(_norm_sec(ts_ms)),
-                "type": "STOCKPLUS_TRANSFER",
-                "type_desc": "Stock+ 资金转出" if is_out else "转入 Stock+ 股票账户",
-                "symbol": str(btr.get("coin") or btr.get("currency") or "USDC"),
-                "change": f"{(-amt_tr if is_out else amt_tr):+.2f}",
-                "unit": str(btr.get("coin") or btr.get("currency") or "USDC"),
-            }
-        )
-
-    if bg_sp_eq > 0 or has_bg_sp_tr or bg_pos_unr_sum != 0:
-        isolated_stock_equity_by_ex["BITGET"] += bg_sp_eq
-        platform_equity_by_ex["BITGET"] += bg_sp_eq
-        total_position_pnl_usd += bg_pos_unr_sum
-        if has_bg_sp_tr:
-            stock_net_pnl_by_ex["BITGET"] += (bg_sp_eq - bg_tr_net_in)
-        else:
-            stock_net_pnl_by_ex["BITGET"] += (bg_pos_unr_sum + bg_div_sum - bg_exec_fees)
-
-    # Bitget Spot rTokens in UTA / Funding
-    bg_spot_qty_val: dict[str, list[Decimal]] = defaultdict(lambda: [Decimal("0"), Decimal("0")])
-    bg_uta = bg_lb.get("uta_assets")
-    uta_arr = (bg_uta.get("assets") or bg_uta.get("list") or []) if isinstance(bg_uta, Mapping) else (bg_uta if isinstance(bg_uta, list) else [])
-    for ca in uta_arr:
-        if not isinstance(ca, Mapping):
-            continue
-        c_nm = str(ca.get("coin") or "").strip()
-        if not classify_spot_stock_token(c_nm, exchange="BITGET"):
-            continue
-        q_c = _dec(ca.get("equity") or ca.get("available") or ca.get("balance"))
-        cu = c_nm.upper()
-        px_c = _dec(bg_tickers.get(cu))
-        v_c = _dec(ca.get("usdtEquity")) or (q_c * px_c)
-        if q_c > 0:
-            bg_spot_qty_val[cu][0] += q_c
-            bg_spot_qty_val[cu][1] += v_c
-    for fa_r in bg_lb.get("funding_assets") or []:
-        if not isinstance(fa_r, Mapping):
-            continue
-        c_nm = str(fa_r.get("coin") or "").strip()
-        if not classify_spot_stock_token(c_nm, exchange="BITGET"):
-            continue
-        q_f = _dec(fa_r.get("balance") or fa_r.get("available"))
-        cu = c_nm.upper()
-        v_f = q_f * _dec(bg_tickers.get(cu))
-        if q_f > 0:
-            bg_spot_qty_val[cu][0] += q_f
-            bg_spot_qty_val[cu][1] += v_f
-
-    bg_sp_fills_map = bg_sb.get("spot_stock_fills") or {}
-    for cu, (q_tot, v_tot) in sorted(bg_spot_qty_val.items()):
-        t_info = classify_spot_stock_token(cu, exchange="BITGET")
-        if t_info and q_tot > 0:
-            _append_spot_token_holding(
-                ex_code="BITGET",
-                token_info=t_info,
-                qty=q_tot,
-                live_val_usd=v_tot,
-                live_px_usd=_dec(bg_tickers.get(cu)),
-                raw_fills=bg_sp_fills_map.get(cu) or [],
-                quote_map=bg_tickers,
-            )
-
-    # ── 3. Binance: `/sapi/v1/equity/*` Real US Stocks + Spot bStocks ──────────
-    bn_lb = binance_live_bundle or {}
-    bn_sb = bn_lb.get("stock_bundle") or {}
-    bn_tickers = bn_lb.get("spot_tickers") or {}
-    bn_dyn_cat: dict[str, dict[str, Any]] = {}
-    for ta in bn_sb.get("tokenized_assets") or []:
-        if isinstance(ta, Mapping):
-            a_sym = str(ta.get("asset") or ta.get("tokenSymbol") or ta.get("symbol") or "").strip().upper()
-            u_sym = str(ta.get("underlying") or ta.get("underlyingSymbol") or "").strip().upper()
-            if a_sym:
-                bn_dyn_cat[a_sym] = {
-                    "underlying": u_sym or a_sym.rstrip("B"),
-                    "name": str(ta.get("name") or US_EQUITY_TICKERS.get(u_sym, u_sym or a_sym)),
-                    "series": "币安 bStock",
-                }
-
-    bn_eq_trades = bn_sb.get("equity_trades") or []
-    bn_eq_quotes = bn_sb.get("equity_quotes") or {}
-    bn_trades_by_sym: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for bt in bn_eq_trades:
-        if isinstance(bt, Mapping) and bt.get("symbol"):
-            bn_trades_by_sym[str(bt["symbol"]).strip().upper()].append(bt)
-
-    bn_has_equity_wallet_row = any(
-        any(k in str(w.get("walletName") or "").upper() for k in ("EQUITY", "STOCK"))
-        and _dec(w.get("balance")) > 0
-        for w in (bn_lb.get("wallet_balances") or [])
-        if isinstance(w, Mapping)
-    )
-    for sym_bn, sym_trades in sorted(bn_trades_by_sym.items()):
-        # Compute net shares from trade history
-        tmp = reconstruct_spot_cost_basis(
-            fills=sym_trades,
-            current_qty=Decimal("0"),
-            current_price=Decimal("0"),
-            token_symbol=sym_bn,
-            quote_price_map=bn_tickers,
-        )
-        net_sh = tmp["net_qty_from_fills"]
-        q_obj = bn_eq_quotes.get(sym_bn) or {}
-        live_q_px = _dec(
-            q_obj.get("lastPrice") or q_obj.get("price") or q_obj.get("bidPrice") or q_obj.get("askPrice")
-        )
-        recon_bn = reconstruct_spot_cost_basis(
-            fills=sym_trades,
-            current_qty=net_sh,
-            current_price=live_q_px if live_q_px > 0 else tmp["avg_cost_usd"],
-            token_symbol=sym_bn,
-            quote_price_map=bn_tickers,
-        )
-        stock_net_pnl_by_ex["BINANCE"] += recon_bn["net_pnl_usd"]
-        total_fees_usd += recon_bn["total_fee_usd"]
-        if net_sh > Decimal("1e-8"):
-            mkt_bn = recon_bn["market_value_usd"]
-            platform_equity_by_ex["BINANCE"] += mkt_bn
-            total_position_pnl_usd += recon_bn["unrealized_pnl_usd"]
-            if not bn_has_equity_wallet_row:
-                isolated_stock_equity_by_ex["BINANCE"] += mkt_bn
-            positions.append(
-                {
-                    "platform": "BINANCE",
-                    "platform_zh": "币安",
-                    "channel": "REAL_STOCK",
-                    "channel_zh": "美股正股",
-                    "symbol": sym_bn,
-                    "underlying_symbol": sym_bn,
-                    "name": US_EQUITY_TICKERS.get(sym_bn, sym_bn),
-                    "exchange": "US",
-                    "trade_status": "BINANCE_EQUITY",
-                    "shares": _f2(net_sh, 4),
-                    "avg_cost_usd": _f2(recon_bn["avg_cost_usd"], 4),
-                    "current_price_usd": _f2(live_q_px if live_q_px > 0 else recon_bn["avg_cost_usd"], 4),
-                    "market_value_usd": _f2(mkt_bn, 2),
-                    "pnl_usd": _f2(recon_bn["unrealized_pnl_usd"], 2),
-                    "pnl_pct": _f2(recon_bn["pnl_pct"], 2),
-                }
-            )
-        for pf in recon_bn["parsed_fills"]:
-            ts_s = _norm_sec(pf["time_ms"])
-            deals.append(
-                {
-                    "id": f"bn_eq_{pf['id']}",
-                    "order_id": pf["order_id"],
-                    "platform": "BINANCE",
-                    "platform_zh": "币安",
-                    "channel_zh": "美股正股",
-                    "side_zh": pf["side_zh"],
-                    "symbol": sym_bn,
-                    "underlying_symbol": sym_bn,
-                    "role_zh": f"{pf['side_zh']} · 币安正股",
-                    "price_usd": _f2(pf["price"], 4),
-                    "shares": _f2(pf["qty"], 4),
-                    "value_usd": _f2(pf["qty"] * pf["price"], 2),
-                    "fee_usd": _f2(pf["fee_usd"], 4),
-                    "_time_ms": pf["time_ms"],
-                    "time_bj": _fmt_bj(ts_s) if ts_s > 0 else "—",
-                }
-            )
-
-    bn_sp_trades_map = bn_sb.get("spot_stock_trades") or {}
-    for sb_bn in bn_lb.get("spot_balances") or []:
-        if not isinstance(sb_bn, Mapping):
-            continue
-        a_bn = str(sb_bn.get("asset") or "").strip().upper()
-        q_bn = _dec(sb_bn.get("free")) + _dec(sb_bn.get("locked"))
-        if q_bn <= 0:
-            continue
-        t_info = classify_spot_stock_token(a_bn, exchange="BINANCE", dynamic_catalog=bn_dyn_cat)
-        if not t_info:
-            continue
-        px_bn = _dec(bn_tickers.get(a_bn))
-        _append_spot_token_holding(
-            ex_code="BINANCE",
-            token_info=t_info,
-            qty=q_bn,
-            live_val_usd=q_bn * px_bn,
-            live_px_usd=px_bn,
-            raw_fills=bn_sp_trades_map.get(a_bn) or [],
-            quote_map=bn_tickers,
-        )
-
-    # ── 4. MEXC: RealStocks Transfer Conservation + Spot Tokenized Stocks ──────
-    mx_lb = mexc_live_bundle or {}
-    mx_sb = mx_lb.get("stock_bundle") or {}
-    mx_tickers = mx_lb.get("spot_tickers") or {}
-    mx_dyn_cat = mx_sb.get("tokenized_catalog") if isinstance(mx_sb.get("tokenized_catalog"), Mapping) else {}
-    mx_sp_trades_map = mx_sb.get("spot_stock_trades") or {}
-
-    for sb_mx in mx_lb.get("spot_balances") or []:
-        if not isinstance(sb_mx, Mapping):
-            continue
-        a_mx = str(sb_mx.get("asset") or "").strip().upper()
-        q_mx = _dec(sb_mx.get("free")) + _dec(sb_mx.get("locked"))
-        if q_mx <= 0:
-            continue
-        t_info = classify_spot_stock_token(a_mx, exchange="MEXC", dynamic_catalog=mx_dyn_cat)
-        if not t_info:
-            continue
-        px_mx = _dec(mx_tickers.get(a_mx))
-        _append_spot_token_holding(
-            ex_code="MEXC",
-            token_info=t_info,
-            qty=q_mx,
-            live_val_usd=q_mx * px_mx,
-            live_px_usd=px_mx,
-            raw_fills=mx_sp_trades_map.get(a_mx) or [],
-            quote_map=mx_tickers,
-        )
-
-    mx_rs_net_in = Decimal("0")
-    for mtr in mexc_transfers:
-        if not isinstance(mtr, Mapping):
-            continue
-        if str(mtr.get("_source") or "") != "universal_transfer":
-            continue
-        st_m = str(mtr.get("status") or "SUCCESS").upper()
-        if st_m not in ("SUCCESS", "COMPLETED", "CONFIRMED", ""):
-            continue
-        from_acc = str(mtr.get("fromAccountType") or "").strip().upper()
-        to_acc = str(mtr.get("toAccountType") or "").strip().upper()
-        if from_acc not in _STOCK_SUBACCOUNT_NAMES and to_acc not in _STOCK_SUBACCOUNT_NAMES:
-            continue
-        amt_m = abs(_dec(mtr.get("amount")))
-        cur_m = str(mtr.get("asset") or mtr.get("coin") or "USDT").strip().upper()
-        px_m = Decimal("1") if cur_m in ("USDT", "USDC", "USDE", "FDUSD", "USD") else _dec(mx_tickers.get(cur_m))
-        val_m = amt_m * px_m
-        if val_m <= 0:
-            continue
-        is_into_stock = to_acc in _STOCK_SUBACCOUNT_NAMES and from_acc not in _STOCK_SUBACCOUNT_NAMES
-        mx_rs_net_in += (val_m if is_into_stock else -val_m)
-        ts_ms = _norm_ms(mtr.get("_time_ms") or mtr.get("timestamp"))
-        transactions.append(
-            {
-                "ref_id": f"mx_rs_{mtr.get('tranId') or ts_ms}",
-                "platform": "MEXC",
-                "platform_zh": "MEXC",
-                "channel_zh": "美股正股",
-                "_time_ms": ts_ms,
-                "time_bj": _fmt_bj(_norm_sec(ts_ms)),
-                "type": "REALSTOCKS_TRANSFER",
-                "type_desc": "划入 RealStocks 美股账户" if is_into_stock else "RealStocks 美股账户转回",
-                "symbol": cur_m,
-                "change": f"{(val_m if is_into_stock else -val_m):+.2f}",
-                "unit": cur_m,
-            }
-        )
-
-    mx_live_rs_eq = _dec((mx_sb.get("realstocks_account") or {}).get("totalEquity"))
-    if mx_live_rs_eq > 0:
-        isolated_stock_equity_by_ex["MEXC"] += mx_live_rs_eq
-        platform_equity_by_ex["MEXC"] += mx_live_rs_eq
-        if mx_rs_net_in > 0:
-            stock_net_pnl_by_ex["MEXC"] += (mx_live_rs_eq - mx_rs_net_in)
-    elif mx_rs_net_in > Decimal("0.01"):
-        isolated_stock_equity_by_ex["MEXC"] += mx_rs_net_in
-        platform_equity_by_ex["MEXC"] += mx_rs_net_in
-        positions.append(
-            {
-                "platform": "MEXC",
-                "platform_zh": "MEXC",
-                "channel": "REAL_STOCK",
-                "channel_zh": "美股正股",
-                "symbol": "REALSTOCKS",
-                "underlying_symbol": "SPY",
-                "name": "MEXC RealStocks 美股账户在途资产",
-                "exchange": "US",
-                "trade_status": "IN_TRANSIT",
-                "shares": _f2(mx_rs_net_in, 2),
-                "avg_cost_usd": 1.0,
-                "current_price_usd": 1.0,
-                "market_value_usd": _f2(mx_rs_net_in, 2),
+                "venue_id": venue_id,
+                "venue_name": venue_name,
+                "venue_name_zh": venue_name_zh,
+                "symbol": asset_u,
+                "name": t_info["name"],
+                "channel": "1:1 Stock Token",
+                "channel_zh": "1:1美股代币",
+                "shares": round(qty, 6),
+                "avg_cost_usd": round(cur_px, 2),
+                "current_price_usd": round(cur_px, 2),
+                "market_value_usd": mv_2dp,
                 "pnl_usd": 0.0,
                 "pnl_pct": 0.0,
             }
         )
 
-    # ── 5. EasiCoin: Spot / Funding xStocks / Ondo ─────────────────────────────
-    ec_lb = easicoin_live_bundle or {}
-    ec_sb = ec_lb.get("stock_bundle") or {}
-    ec_px_map: dict[str, Decimal] = {}
-    for tk in ec_lb.get("tickers") or []:
-        if isinstance(tk, Mapping):
-            su = str(tk.get("symbol") or "").upper()
-            if su.endswith("USDT") and tk.get("last_price"):
-                ec_px_map[su[:-4]] = _dec(tk.get("last_price"))
+    if not promoted_syms:
+        return 0
 
-    ec_qty_by_tok: dict[str, Decimal] = defaultdict(Decimal)
-    for fnd in ec_lb.get("funding_balances") or []:
-        if isinstance(fnd, Mapping):
-            c_f = str(fnd.get("coin") or "").strip().upper()
-            q_f = _dec(fnd.get("total_equity") or fnd.get("available_balance"))
-            if q_f > 0 and classify_spot_stock_token(c_f, exchange="EASICOIN"):
-                ec_qty_by_tok[c_f] += q_f
-    for spb in ec_lb.get("spot_balances") or []:
-        if isinstance(spb, Mapping):
-            c_s = str(spb.get("token_name") or spb.get("coin") or "").strip().upper()
-            q_s = _dec(spb.get("balance") or spb.get("available"))
-            if q_s > 0 and classify_spot_stock_token(c_s, exchange="EASICOIN"):
-                ec_qty_by_tok[c_s] += q_s
-
-    ec_sp_fills = ec_sb.get("spot_stock_fills") or {}
-    for c_ec, q_ec in sorted(ec_qty_by_tok.items()):
-        t_info = classify_spot_stock_token(c_ec, exchange="EASICOIN")
-        if t_info and q_ec > 0:
-            px_ec = ec_px_map.get(c_ec, Decimal("0"))
-            _append_spot_token_holding(
-                ex_code="EASICOIN",
-                token_info=t_info,
-                qty=q_ec,
-                live_val_usd=q_ec * px_ec,
-                live_px_usd=px_ec,
-                raw_fills=ec_sp_fills.get(c_ec) or [],
-                quote_map=ec_px_map,
-            )
-
-    deals.sort(key=lambda x: int(x.get("_time_ms") or 0), reverse=True)
-    for d in deals:
-        d.pop("_time_ms", None)
-    transactions.sort(key=lambda x: int(x.get("_time_ms") or 0), reverse=True)
-    for tx in transactions:
-        tx.pop("_time_ms", None)
-
-    def _fmt_pct_clean(v: Decimal) -> str:
-        fv = _f2(v, 3)
-        if fv == int(fv):
-            return f"{int(fv)}%"
-        s = f"{fv:.3f}".rstrip("0").rstrip(".")
-        return f"{s}%"
-
-    platform_fee_rates: list[dict[str, Any]] = []
-
-    # 1) MEXC live Tokenized Stocks fee rate (`exchangeInfo` + observed fills fallback)
-    mx_fr_raw = mx_sb.get("spot_stock_fee_rate") if isinstance(mx_sb.get("spot_stock_fee_rate"), Mapping) else {}
-    mx_obs_not = sum((_dec(d.get("value_usd")) for d in deals if d.get("platform") == "MEXC"), Decimal("0"))
-    mx_obs_fee = sum((_dec(d.get("fee_usd")) for d in deals if d.get("platform") == "MEXC"), Decimal("0"))
-    mx_obs_pct = (mx_obs_fee / mx_obs_not * Decimal("100")) if mx_obs_not > 0 else None
-    has_mx_fr = bool(mx_fr_raw and (mx_fr_raw.get("makerCommission") is not None or mx_fr_raw.get("takerCommission") is not None))
-    if has_mx_fr or mx_obs_pct is not None:
-        mx_m_pct = _dec(mx_fr_raw.get("makerCommission")) * Decimal("100") if has_mx_fr else (mx_obs_pct or Decimal("0"))
-        mx_t_pct = _dec(mx_fr_raw.get("takerCommission")) * Decimal("100") if has_mx_fr else (mx_obs_pct or Decimal("0"))
-        mx_sum = (
-            f"MEXC {_fmt_pct_clean(mx_m_pct)}"
-            if mx_m_pct == mx_t_pct
-            else f"MEXC 挂{_fmt_pct_clean(mx_m_pct)}/吃{_fmt_pct_clean(mx_t_pct)}"
-        )
-        platform_fee_rates.append(
-            {
-                "exchange": "MEXC",
-                "exchange_zh": "MEXC",
-                "maker_fee_pct": _f2(mx_m_pct, 3),
-                "taker_fee_pct": _f2(mx_t_pct, 3),
-                "summary_zh": mx_sum,
-            }
-        )
-
-    # 2) Bitget live rStock fee rate (`/api/v3/account/fee-rate`) + observed Stock+ execution rate
-    bg_fr_raw = bg_sb.get("spot_stock_fee_rate") if isinstance(bg_sb.get("spot_stock_fee_rate"), Mapping) else {}
-    bg_exec_notional = sum(
-        (_dec(d.get("value_usd")) for d in deals if d.get("platform") == "BITGET" and d.get("channel_zh") == "美股正股"),
-        Decimal("0"),
-    )
-    bg_obs_real_pct = (bg_exec_fees / bg_exec_notional * Decimal("100")) if bg_exec_notional > 0 else None
-    has_bg_fr = bool(bg_fr_raw and (bg_fr_raw.get("makerFeeRate") is not None or bg_fr_raw.get("takerFeeRate") is not None))
-    if has_bg_fr or bg_obs_real_pct is not None:
-        bg_m_pct = _dec(bg_fr_raw.get("makerFeeRate")) * Decimal("100") if has_bg_fr else (bg_obs_real_pct or Decimal("0"))
-        bg_t_pct = _dec(bg_fr_raw.get("takerFeeRate")) * Decimal("100") if has_bg_fr else (bg_obs_real_pct or Decimal("0"))
-        bg_parts: list[str] = []
-        if has_bg_fr:
-            bg_parts.append(
-                f"rStock {_fmt_pct_clean(bg_m_pct)}"
-                if bg_m_pct == bg_t_pct
-                else f"rStock 挂{_fmt_pct_clean(bg_m_pct)}/吃{_fmt_pct_clean(bg_t_pct)}"
-            )
-        if bg_obs_real_pct is not None:
-            bg_parts.append(f"Stock+实测{_fmt_pct_clean(bg_obs_real_pct)}")
-        bg_entry: dict[str, Any] = {
-            "exchange": "BITGET",
-            "exchange_zh": "Bitget",
-            "maker_fee_pct": _f2(bg_m_pct, 3),
-            "taker_fee_pct": _f2(bg_t_pct, 3),
-            "summary_zh": f"Bitget {' · '.join(bg_parts)}",
-        }
-        if bg_obs_real_pct is not None:
-            bg_entry["real_stock_fee_pct"] = _f2(bg_obs_real_pct, 4)
-        platform_fee_rates.append(bg_entry)
-
-    # 3) Gate live VIP stock fee rate (`/stock/fee-rate` matched by live `account_detail.tier`, fallback `wallet_fee`)
-    gate_tier = int((gate_live_bundle.get("account_detail") or {}).get("tier") or 0)
-    gate_sfr_list = gate_live_bundle.get("stock_fee_rates") or []
-    gate_matched_fr = next(
-        (r for r in gate_sfr_list if isinstance(r, Mapping) and int(r.get("vip_level") or -1) == gate_tier),
-        None,
-    )
-    gate_wf = gate_live_bundle.get("wallet_fee") or {}
-    if isinstance(gate_matched_fr, Mapping) and (
-        gate_matched_fr.get("maker_fee") is not None or gate_matched_fr.get("taker_fee") is not None
-    ):
-        g_m_pct = _dec(gate_matched_fr.get("maker_fee")) * Decimal("100")
-        g_t_pct = _dec(gate_matched_fr.get("taker_fee")) * Decimal("100")
-    elif isinstance(gate_wf, Mapping) and (gate_wf.get("maker_fee") is not None or gate_wf.get("taker_fee") is not None):
-        g_m_pct = _dec(gate_wf.get("maker_fee")) * Decimal("100")
-        g_t_pct = _dec(gate_wf.get("taker_fee")) * Decimal("100")
-    else:
-        g_m_pct = None
-        g_t_pct = None
-    if g_m_pct is not None and g_t_pct is not None:
-        g_sum = (
-            f"Gate {_fmt_pct_clean(g_m_pct)}"
-            if g_m_pct == g_t_pct
-            else f"Gate 挂{_fmt_pct_clean(g_m_pct)}/吃{_fmt_pct_clean(g_t_pct)}"
-        )
-        platform_fee_rates.append(
-            {
-                "exchange": "GATE",
-                "exchange_zh": "Gate",
-                "maker_fee_pct": _f2(g_m_pct, 3),
-                "taker_fee_pct": _f2(g_t_pct, 3),
-                "summary_zh": g_sum,
-            }
-        )
-
-    # 4) Binance live Spot bStock commission rate (`/api/v3/account` + `bnb_burn`) + observed Equity fill rate
-    bn_cr_raw = bn_sb.get("spot_commission_rates") if isinstance(bn_sb.get("spot_commission_rates"), Mapping) else {}
-    bn_eq_notional = sum(
-        (_dec(d.get("value_usd")) for d in deals if d.get("platform") == "BINANCE" and d.get("channel_zh") == "美股正股"),
-        Decimal("0"),
-    )
-    bn_eq_fees = sum(
-        (_dec(d.get("fee_usd")) for d in deals if d.get("platform") == "BINANCE" and d.get("channel_zh") == "美股正股"),
-        Decimal("0"),
-    )
-    bn_obs_real_pct = (bn_eq_fees / bn_eq_notional * Decimal("100")) if bn_eq_notional > 0 else None
-    has_bn_cr = bool(bn_cr_raw and (bn_cr_raw.get("maker") is not None or bn_cr_raw.get("taker") is not None))
-    if has_bn_cr or bn_obs_real_pct is not None:
-        bn_m_pct = _dec(bn_cr_raw.get("maker")) * Decimal("100") if has_bn_cr else (bn_obs_real_pct or Decimal("0"))
-        bn_t_pct = _dec(bn_cr_raw.get("taker")) * Decimal("100") if has_bn_cr else (bn_obs_real_pct or Decimal("0"))
-        bn_bnb_on = bool((bn_lb.get("bnb_burn") or {}).get("spotBNBBurn"))
-        bn_lbl = (
-            f"币安 {_fmt_pct_clean(bn_m_pct)}"
-            if bn_m_pct == bn_t_pct
-            else f"币安 挂{_fmt_pct_clean(bn_m_pct)}/吃{_fmt_pct_clean(bn_t_pct)}"
-        )
-        if bn_bnb_on:
-            bn_lbl += " (BNB抵扣)"
-        bn_entry: dict[str, Any] = {
-            "exchange": "BINANCE",
-            "exchange_zh": "币安",
-            "maker_fee_pct": _f2(bn_m_pct, 3),
-            "taker_fee_pct": _f2(bn_t_pct, 3),
-            "spot_bnb_burn": bn_bnb_on,
-            "summary_zh": bn_lbl,
-        }
-        if bn_obs_real_pct is not None:
-            bn_entry["real_stock_fee_pct"] = _f2(bn_obs_real_pct, 4)
-        platform_fee_rates.append(bn_entry)
-
-    combined_stock_equity_usd = sum(platform_equity_by_ex.values(), Decimal("0"))
-    platform_breakdown = [
-        {
-            "exchange": ex_k,
-            "exchange_zh": EXCHANGE_LABELS_ZH.get(ex_k, ex_k),
-            "equity_usd": _f2(platform_equity_by_ex[ex_k], 2),
-        }
-        for ex_k in ("GATE", "BITGET", "BINANCE", "MEXC", "EASICOIN")
-        if platform_equity_by_ex.get(ex_k, Decimal("0")) > Decimal("0.005")
+    promoted_rows.sort(key=lambda r: float(r["market_value_usd"]), reverse=True)
+    bundle.stocks.holdings = [*bundle.stocks.holdings, *promoted_rows]
+    bundle.stocks.equity_usd = round(float(bundle.stocks.equity_usd or 0.0) + promoted_mv_total, 2)
+    bundle.spot_wallet_balances = [
+        r for r in bundle.spot_wallet_balances
+        if str(r.get("asset") or "").strip().upper() not in promoted_syms
     ]
-
-    return {
-        "positions": positions,
-        "deals": deals,
-        "transactions": transactions,
-        "combined_stock_equity_usd": combined_stock_equity_usd,
-        "total_position_pnl_usd": total_position_pnl_usd,
-        "total_fees_usd": total_fees_usd,
-        "spot_stock_val_by_ex": dict(spot_stock_val_by_ex),
-        "stock_net_pnl_by_ex": dict(stock_net_pnl_by_ex),
-        "isolated_stock_equity_by_ex": dict(isolated_stock_equity_by_ex),
-        "platform_breakdown": platform_breakdown,
-        "platform_fee_rates": platform_fee_rates,
-    }
+    bundle.spot_holdings = [
+        r for r in bundle.spot_holdings
+        if str(r.get("asset") or "").strip().upper() not in promoted_syms
+    ]
+    return len(promoted_rows)

@@ -201,17 +201,6 @@ def is_stock_or_commodity_base(base: str) -> bool:
     return False
 
 
-def is_tokenized_stock_symbol(ccy: str) -> bool:
-    u = (ccy or "").strip().upper()
-    if len(u) > 5 and u.endswith("STOCK"):
-        return True
-    if len(u) >= 3 and u.endswith("X") and u[:-1] in STOCK_COMMODITY_BASES and u[:-1] not in COMMODITY_BASES:
-        return True
-    if len(u) >= 5 and u.endswith("ON") and u[:-2] in STOCK_COMMODITY_BASES and u[:-2] not in COMMODITY_BASES:
-        return True
-    return False
-
-
 def classify_perp_stock_or_commodity(symbol: str, venue_name_en: str = "", venue_name_zh: str = "") -> tuple[bool, str, str]:
     base = (symbol or "").split("_")[0].strip().upper()
     if not base or not is_stock_or_commodity_base(base):

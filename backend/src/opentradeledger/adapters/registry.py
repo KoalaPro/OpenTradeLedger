@@ -649,7 +649,7 @@ class KucoinAdapter(BaseExchangeAdapter):
         identity_mode="probe",
         requires_passphrase=True,
         capabilities=ExchangeCapabilities(
-            futures=True, rebates=True, token_discount=True, copy_trading=False, stocks=False, tokenized_stocks=False
+            futures=True, rebates=True, token_discount=True, copy_trading=False, stocks=False, tokenized_stocks=True
         ),
         api_base_url="https://api-futures.kucoin.com",
         docs_url="https://www.kucoin.com/docs-new/introduction",
@@ -740,7 +740,7 @@ class BingxAdapter(BaseExchangeAdapter):
         identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
-            futures=True, rebates=True, token_discount=False, copy_trading=True, stocks=True, tokenized_stocks=False
+            futures=True, rebates=True, token_discount=False, copy_trading=True, stocks=True, tokenized_stocks=True
         ),
         api_base_url="https://open-api.bingx.com",
         docs_url="https://bingx-api.github.io/docs/",
@@ -761,6 +761,16 @@ class BingxAdapter(BaseExchangeAdapter):
             except Exception as uid_exc:
                 if is_transient_upstream_error(uid_exc):
                     raise IdentityProbeTransientError(str(uid_exc)) from uid_exc
+            try:
+                subs = await client.request_readonly("GET", "/openApi/subAccount/v1/list", {"page": 1, "limit": 1})
+                if isinstance(subs, (dict, list)):
+                    out["account_role"] = "master"
+            except Exception as sub_exc:
+                if is_transient_upstream_error(sub_exc):
+                    raise IdentityProbeTransientError(str(sub_exc)) from sub_exc
+                msg = str(sub_exc).lower()
+                if any(tok in msg for tok in ("sub", "master", "parent", "permission")):
+                    out["account_role"] = "subaccount"
             return out
         finally:
             if hasattr(client, "aclose"):
@@ -791,7 +801,7 @@ class HtxAdapter(BaseExchangeAdapter):
         identity_mode="probe",
         requires_passphrase=False,
         capabilities=ExchangeCapabilities(
-            futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=False, tokenized_stocks=False
+            futures=True, rebates=True, token_discount=True, copy_trading=True, stocks=False, tokenized_stocks=True
         ),
         api_base_url="https://api.hbdm.com",
         docs_url="https://www.htx.com/en-us/opend/newApiPages/",
