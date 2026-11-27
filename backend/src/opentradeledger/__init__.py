@@ -13,6 +13,6 @@ if os.environ.get("OTL_OTA_ACTIVE") == "1":
         if wheel.is_file():
             sys.path.append(str(wheel))
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 __app_name__ = "OpenTradeLedger"
 __app_name_zh__ = "交易账本"
